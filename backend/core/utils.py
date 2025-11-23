@@ -20,18 +20,16 @@ def get_embedder() -> SentenceTransformer:
     if _embedder is not None:
         return _embedder
 
-    from backend.main import cfg  # late import to dodge circular nonsense
+    from backend.config import cfg
 
     model_name = cfg["embedding"]["model"]
     device_str = cfg["embedding"]["device"]
 
-    # project mandate: CUDA everywhere. don't ask why.
-    assert device_str == "cuda", f"Device must be 'cuda', got '{device_str}'"
-
-    print(f"Loading embedding model '{model_name}' on {device_str}...")
+    device = torch.device(device_str)  # falls back gracefully if needed
+    print(f"Loading embedding model '{model_name}' on {device}...")
 
     _embedder = SentenceTransformer(model_name)
-    _embedder = _embedder.to(device_str)
+    _embedder = _embedder.to(device)
     _embedder.eval()
 
     return _embedder

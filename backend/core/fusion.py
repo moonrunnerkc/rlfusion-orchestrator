@@ -9,7 +9,7 @@ from typing import List, Dict, Any
 from pathlib import Path
 from backend.core.utils import softmax
 from backend.core.retrievers import retrieve
-from backend.main import cfg
+from backend.config import cfg
 
 # cache the policy so we don't reload on every query
 _policy: Any = None
@@ -132,12 +132,8 @@ def fuse_context(
     # sort by score
     all_results.sort(key=lambda x: x["score"], reverse=True)
 
-    # join non-empty texts
-    texts = [r["text"] for r in all_results if r["text"]]
-    fused_text = "\n\n".join(texts)
-
     return {
-        "fused_text": fused_text,
-        "weights": weights,
+        "fused_context": "\n\n".join([r["text"] for r in all_results]),
+        "weights": {"rag": rag_w, "cag": cag_w, "graph": graph_w},
         "sources": all_results
     }

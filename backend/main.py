@@ -4,10 +4,15 @@
 
 import os
 import torch
-import yaml
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
+from backend.config import cfg
+from backend.core.retrievers import retrieve
+from backend.core.fusion import fuse_context
+from backend.core.critique import critique
+from ollama import Client
+import json
 
 # GPU required - if you don't have CUDA this won't run
 assert torch.cuda.is_available(), "ERROR: CUDA not detected. GPU is required for RLFO."
@@ -15,13 +20,6 @@ device = torch.device("cuda")
 
 print(f"RLFO running on GPU: {torch.cuda.get_device_name(0)}")
 print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory // 1024**3} GB")
-
-# config loading
-CONFIG_PATH = Path(__file__).parent / "config.yaml"
-with open(CONFIG_PATH, "r") as f:
-    config = yaml.safe_load(f)
-
-cfg = config
 
 # TODO: split cfg into separate modules when this gets bigger
 # TODO: add request logging middleware
@@ -37,6 +35,90 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def orchestrate(query: str, mode: str = "chat") -> dict:
+    """
+    Main orchestration loop from rlfo.pdf page 5.
+    Runs the full retrieve -> fuse -> generate -> critique pipeline.
+
+    Returns dict with response, weights, reward, and suggestions.
+    """
+    # Step 1: retrieve with default weights
+    retrieval_results = retrieve(query)
+
+    # Step 2: fuse the three result lists
+    fusion_output = fuse_context(
+        query,
+        retrieval_results["rag"],
+        retrieval_results["cag"],
+        retrieval_results["graph"]
+    )
+
+    fused_context = fusion_output["fused_context"]
+    weights = fusion_output["weights"]
+
+    # Step 3: generate response with Ollama
+    client = Client(host=cfg["llm"]["host"])
+    prompt = f"Using only this context:\n\n{fused_context}\n\nAnswer: {query}"
+
+    response_obj = client.chat(
+        model=cfg["llm"]["model"],
+        messages=[{"role": "user", "content": prompt}],
+        options={"temperature": 0.72}
+    )
+
+    generated_response = response_obj["message"]["content"]
+
+    # Step 4: critique the output
+    critique_result = critique(query, fused_context, generated_response)
+
+    # Return exact schema from rlfo.pdf
+    return {
+        "response": generated_response,
+        "fusion_weights": weights,
+        "reward": critique_result["reward"],
+        "proactive_suggestions": critique_result.get("proactive_suggestions", [])
+    }
+
+@app.post("/chat")
+async def chat_endpoint(request: dict):
+    query = request.get("query", "")
+    mode = request.get("mode", "chat")
+    result = orchestrate(query, mode)
+    return result
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_text()
+            request = json.loads(data)
+            query = request.get("query", "")
+            mode = request.get("mode", "chat")
+
+            # Send start signal
+            await websocket.send_json({"type": "start"})
+
+            result = orchestrate(query, mode)
+
+            # Stream the response token-by-token (simulate for now)
+            for token in result["response"].split():
+                await websocket.send_json({
+                    "type": "token",
+                    "token": token + " "
+                })
+
+            # Final payload
+            await websocket.send_json({
+                "type": "done",
+                "response": result["response"],
+                "fusion_weights": result["fusion_weights"],
+                "reward": result["reward"],
+                "proactive_suggestions": result["proactive_suggestions"]
+            })
+    except WebSocketDisconnect:
+        pass
+
 @app.get("/ping")
 async def ping():
     """Health check endpoint"""
@@ -47,18 +129,6 @@ async def ping():
         "policy_exists": policy_exists
     }
 
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    """Main orchestration WebSocket - query handling goes here eventually"""
-    await websocket.accept()
-    try:
-        while True:
-            data = await websocket.receive_text()
-            # TODO: wire up actual fusion orchestration
-            await websocket.send_text(f"Echo: {data} (orchestration coming soon)")
-    except WebSocketDisconnect:
-        print("Client disconnected from WebSocket")
-
 @app.on_event("startup")
 async def startup_event():
     """Print startup banner with system info"""
@@ -68,6 +138,7 @@ async def startup_event():
     print(f"GPU: {torch.cuda.get_device_name(0)}")
     print(f"LLM: {cfg['llm']['model']}")
     print(f"PPO Policy: {policy_status}")
+    print(f"orchestrate() API live - exact spec from rlfo.pdf page 5")
     print("="*64 + "\n")
 
 if __name__ == "__main__":

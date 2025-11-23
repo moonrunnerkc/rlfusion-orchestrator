@@ -10,7 +10,7 @@ Must be 100% deterministic given the same inputs.
 from ollama import Client
 import json
 from typing import Dict, List, Any
-from backend.main import cfg
+from backend.config import cfg
 from backend.core.utils import embed_text
 import numpy as np
 

@@ -9,7 +9,7 @@ import networkx as nx
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
 from backend.core.utils import embed_text, embed_batch, ensure_path, deterministic_id
-from backend.main import cfg
+from backend.config import cfg
 
 # FAISS GPU resource - don't init this twice
 _gpu_res: Any = None

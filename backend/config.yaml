@@ -2,7 +2,7 @@
 # Central configuration for RLFO. Edit freely. Everything is GPU-locked.
 
 llm:
-  model: "qwen2:72b"
+  model: "qwen2:7b"        # change from qwen2:72b → qwen2:7b
   host: "http://localhost:11434"
   temperature: 0.72
   max_tokens: 4096
