@@ -1,0 +1,33 @@
+# backend/requirements.txt
+# Locked November 2025. Works on any RTX 50-series + CUDA 12.x.
+# If this file breaks again, I will personally apologize to every line of code.
+
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+python-multipart==0.0.9
+
+# PyTorch CUDA 12.4 - exact wheels for modern NVIDIA drivers
+torch==2.4.1+cu124
+torchaudio==2.4.1+cu124
+torchvision==0.19.1+cu124
+--extra-index-url https://download.pytorch.org/whl/cu124
+
+# GPU-accelerated vector search - RAG backbone
+faiss-gpu-cu12==1.12.0
+
+# High-quality sentence embeddings
+sentence-transformers==3.1.1
+
+# RL stack - these two versions are officially compatible and stable
+stable-baselines3==2.3.2
+gymnasium==0.29.1
+
+# Graph handling and utilities
+networkx==3.5
+PyYAML==6.0.2
+ollama==0.3.3
+numpy==1.26.4
+tqdm==4.66.5
+python-dotenv==1.0.1
+typing_extensions==4.12.2

@@ -1,0 +1,16 @@
+# Python/venv ignores
+backend/venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+
+# Secrets and data
+.env
+db/*
+indexes/*
+rl_policy.zip  # Models
+
+# OS junk
+*.swp

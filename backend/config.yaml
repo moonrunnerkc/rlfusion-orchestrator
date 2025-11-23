@@ -1,0 +1,42 @@
+# backend/config.yaml
+# Central configuration for RLFO. Edit freely. Everything is GPU-locked.
+
+llm:
+  model: "qwen2:72b"
+  host: "http://localhost:11434"
+  temperature: 0.72
+  max_tokens: 4096
+
+embedding:
+  model: "all-MiniLM-L6-v2"
+  device: "cuda"                    # GPU required - do not change
+
+rl:
+  policy_path: "../rl_policy.zip"
+  timesteps: 10000
+  learning_rate: 3.0e-4
+  batch_size: 64
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+
+paths:
+  db: "../db/rlfo_cache.db"
+  index: "../indexes/rag_index.faiss"
+  graph: "../data/ontology.json"
+  docs: "../data/docs"
+  synthetic_episodes: "../data/synthetic_episodes"
+
+fusion:
+  default_weights:
+    rag: 0.4
+    cag: 0.3
+    graph: 0.3
+  temperature: 1.0
+
+critique:
+  reward_scale: 1.0
+  proactive_threshold: 0.75
+
+# Global GPU enforcement - everything runs on CUDA
+device: "cuda"
