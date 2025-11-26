@@ -1,126 +1,77 @@
-# Author: Bradley R. Kinnard
-# backend/core/utils.py
-# Embedding + misc utilities for RLFO
-
-from sentence_transformers import SentenceTransformer
-from typing import List, Optional
-import torch
 import numpy as np
-from pathlib import Path
+from typing import List
 import hashlib
+from pathlib import Path
+from sentence_transformers import SentenceTransformer
 
-# embedder cache - don't load this thing twice
-_embedder: Optional[SentenceTransformer] = None
-
-
-def get_embedder() -> SentenceTransformer:
-    """Lazy-load sentence transformer. GPU only - project requirement."""
-    global _embedder
-
-    if _embedder is not None:
-        return _embedder
-
-    from backend.config import cfg
-
-    model_name = cfg["embedding"]["model"]
-    device_str = cfg["embedding"]["device"]
-
-    device = torch.device(device_str)  # falls back gracefully if needed
-    print(f"Loading embedding model '{model_name}' on {device}...")
-
-    _embedder = SentenceTransformer(model_name)
-    _embedder = _embedder.to(device)
-    _embedder.eval()
-
-    return _embedder
-
+# Blackwell cuBLAS workaround - use CPU for embeddings
+# GPU still used for: FAISS (if enabled), Ollama LLM, RL training
+print("Using CPU for embeddings (Blackwell GPU compatibility)")
+embedder = SentenceTransformer(
+    "BAAI/bge-small-en-v1.5",
+    device="cpu"
+)
 
 def embed_text(text: str) -> np.ndarray:
-    """Single text -> embedding vector (384-d, normalized)"""
-    embedder = get_embedder()
-
-    with torch.no_grad():
-        embedding = embedder.encode(
-            text,
-            convert_to_numpy=True,
-            normalize_embeddings=True
-        )
-
-    return embedding.astype(np.float32)
-
+    """Turn text into a vector. Magic, basically."""
+    return embedder.encode(text, convert_to_numpy=True, normalize_embeddings=True).astype(np.float32)
 
 def embed_batch(texts: List[str]) -> np.ndarray:
-    """
-    Batch version of embed_text - way faster for multiple inputs.
-    Returns shape: (len(texts), 384)
-    """
-    embedder = get_embedder()
-
-    with torch.no_grad():
-        embeddings = embedder.encode(
-            texts,
-            batch_size=32,
-            show_progress_bar=False,
-            convert_to_numpy=True,
-            normalize_embeddings=True
-        )
-
-    return embeddings.astype(np.float32)
-
+    """Like embed_text but for when you've got a whole pile of text to process."""
+    return embedder.encode(
+        texts,
+        batch_size=32,
+        show_progress_bar=False,
+        convert_to_numpy=True,
+        normalize_embeddings=True
+    ).astype(np.float32)
 
 def chunk_text(text: str, max_tokens: int = 300) -> List[str]:
     """
-    Split text into roughly equal chunks. Tries to respect paragraph breaks.
-    max_tokens is really max_chars but whatever, close enough for embeddings.
+    Chop up text into bite-sized pieces. We're calling them 'tokens' but really
+    we're just counting words because life's too short for proper tokenization.
     """
+    words = text.split()
     chunks = []
-    paragraphs = text.split("\n\n")
-
-    for para in paragraphs:
-        para = para.strip()
-        if not para:
-            continue
-
-        if len(para) <= max_tokens:
-            chunks.append(para)
+    current = []
+    count = 0
+    for word in words:
+        count += 1
+        if count > max_tokens:
+            chunks.append(" ".join(current))
+            current = [word]
+            count = 1
         else:
-            # para too long, chop on spaces
-            words = para.split()
-            current = ""
-
-            for w in words:
-                test = current + " " + w if current else w
-
-                if len(test) <= max_tokens:
-                    current = test
-                else:
-                    if current:
-                        chunks.append(current)
-                    current = w
-
-            if current:  # leftover
-                chunks.append(current)
-
+            current.append(word)
+    if current:  # don't forget the last chunk hanging around
+        chunks.append(" ".join(current))
     return chunks
 
+def ensure_path(path: str) -> None:
+    """Make sure a path exists. If not, create it. Simple as that."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+
+def deterministic_id(text: str) -> str:
+    """Generate a stable hash for text. Same text in = same ID out. Always."""
+    return hashlib.shake_256(text.encode()).hexdigest(16)
 
 def softmax(weights: List[float], temperature: float = 1.0) -> List[float]:
     """
-    Standard softmax with temp control.
-    temperature=0 -> argmax (one-hot on winner)
-    Uses the max-subtraction trick so it doesn't blow up with large weights.
+    Softmax with temperature control. Higher temp = more democratic,
+    lower temp = winner takes all. Set to 0 and you get a hard argmax.
+    We do the max-subtraction dance to avoid numeric explosions.
     """
     w = np.array(weights, dtype=np.float64)
 
     if temperature == 0.0:
-        # degenerate case: just pick the max
+        # Cold as ice - just pick the winner
         result = np.zeros_like(w)
         result[np.argmax(w)] = 1.0
         return result.tolist()
 
     w = w / temperature
     w_max = np.max(w)
-    w_shifted = w - w_max  # numerical stability hack
+    w_shifted = w - w_max  # keeps exp() from going to infinity and beyond
 
     exp_w = np.exp(w_shifted)
     sum_exp = np.sum(exp_w)
@@ -128,15 +79,3 @@ def softmax(weights: List[float], temperature: float = 1.0) -> List[float]:
 
     return probs.tolist()
 
-
-def deterministic_id(text: str) -> str:
-    """Hash text to stable 16-char ID. Same input = same output always."""
-    h = hashlib.sha256(text.encode("utf-8"))
-    return h.hexdigest()[:16]
-
-
-def ensure_path(path_str: str) -> Path:
-    """Convert str to Path and mkdir parent dirs if needed. Idempotent."""
-    p = Path(path_str)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    return p

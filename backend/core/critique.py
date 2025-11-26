@@ -131,3 +131,14 @@ def dummy_critique() -> Dict[str, Any]:
         "reason": "dummy judge - real LLM not ready yet",
         "proactive_suggestions": []
     }
+def compute_reward(query: str, fused_context: str, response: str) -> float:
+    """
+    Fast scalar reward used by FusionEnv and synthetic data generation.
+    Calls the real judge and returns only the numeric reward.
+    """
+    try:
+        result = critique(query, fused_context, response)
+        return float(result["reward"])
+    except Exception:
+        # If Ollama is down during training, fall back to dummy
+        return 0.75

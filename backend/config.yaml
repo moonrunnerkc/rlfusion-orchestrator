@@ -2,7 +2,7 @@
 # Central configuration for RLFO. Edit freely. Everything is GPU-locked.
 
 llm:
-  model: "qwen2:7b"        # change from qwen2:72b → qwen2:7b
+  model: "qwen2.5:14b"     # Better formatting, instruction following
   host: "http://localhost:11434"
   temperature: 0.72
   max_tokens: 4096
@@ -21,17 +21,17 @@ rl:
   clip_range: 0.2
 
 paths:
-  db: "../db/rlfo_cache.db"
-  index: "../indexes/rag_index.faiss"
-  graph: "../data/ontology.json"
-  docs: "../data/docs"
+  db: /home/brad/rlfusion/db/rlfo_cache.db
+  index: "indexes/rag_index.faiss"
+  ontology: "data/ontology.json"
+  docs: "data/docs"
   synthetic_episodes: "../data/synthetic_episodes"
 
 fusion:
   default_weights:
-    rag: 0.4
-    cag: 0.3
-    graph: 0.3
+    rag: 0.2
+    cag: 0.2
+    graph: 0.6
   temperature: 1.0
 
 critique:

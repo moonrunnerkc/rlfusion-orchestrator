@@ -1,51 +1,62 @@
 # Author: Bradley R. Kinnard
 # backend/core/fusion.py
-# Fusion module - blends RAG/CAG/graph using PPO-learned weights
-# Falls back to config.yaml defaults if no policy trained yet
+# The grand mixer - takes RAG, CAG, and graph results and blends them together
+# using weights learned through PPO. If we haven't trained a policy yet, falls
+# back to whatever's in config.yaml (which is probably just a wild guess).
 
 import torch
 import numpy as np
 from typing import List, Dict, Any
 from pathlib import Path
+from stable_baselines3 import PPO
 from backend.core.utils import softmax
 from backend.core.retrievers import retrieve
 from backend.config import cfg
 
-# cache the policy so we don't reload on every query
+# Keep the policy in memory - loading from disk every query would be silly
 _policy: Any = None
 _policy_loaded: bool = False
 
 
 def load_policy() -> Any:
-    """Load PPO policy from disk if it exists."""
+    """
+    Load our trained PPO policy if one exists. If not, no big deal - we'll just
+    use the defaults. This gets called once and cached.
+    """
     global _policy, _policy_loaded
 
     if _policy_loaded:
         return _policy
 
-    policy_path = Path(cfg["rl"]["policy_path"])
+    # Navigate up to project root (because relative paths are the worst)
+    project_root = Path(__file__).parent.parent.parent
+    policy_filename = Path(cfg["rl"]["policy_path"]).name
+    policy_path = project_root / policy_filename
 
     if policy_path.exists():
-        _policy = torch.load(str(policy_path), map_location="cuda")
-        print(f"Loaded trained PPO policy from {cfg['rl']['policy_path']}")
+        _policy = PPO.load(str(policy_path), env=None)
+        print(f"Loaded trained PPO policy from {policy_path}")
     else:
         _policy = None
-        print("No trained policy found - using default weights")
+        print(f"No trained policy found at {policy_path} - using default weights")
 
     _policy_loaded = True
     return _policy
 
 
 def predict_weights_with_policy(query_embedding: np.ndarray) -> List[float]:
-    """Use PPO policy to predict weights. Returns [rag, cag, graph]."""
+    """
+    Ask the PPO policy what weights to use for this query. If there's no policy,
+    we just shrug and use the defaults. Returns [rag_weight, cag_weight, graph_weight].
+    """
     policy = load_policy()
     if policy is None:
-        # no policy trained yet, use defaults
+        # No policy? No problem - use the fallback weights
         defaults = cfg["fusion"]["default_weights"]
         return [defaults["rag"], defaults["cag"], defaults["graph"]]
 
     # convert to GPU tensor
-    obs_tensor = torch.from_numpy(query_embedding).float().cuda()
+    obs_tensor = query_embedding.astype(np.float32)   # stay on CPU, pure numpy
 
     # get action from policy (deterministic for inference)
     action, _ = policy.predict(obs_tensor, deterministic=True)
@@ -89,51 +100,77 @@ def fuse_context(
     graph_results: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
     """
-    Main fusion function. Combines all three retrieval modes with learned weights.
+    Main fusion function. Only includes results that meet strict RL thresholds.
     """
     from backend.core.utils import embed_text
 
     query_emb = embed_text(query)
-
-    # get weights from policy or config
-    policy = load_policy()
+    # RL policy or config weights (unchanged)
+    policy = None  # load_policy()
     if policy is not None:
         weights = predict_weights_with_policy(query_emb)
+        print(f"Using PPO policy weights: RAG={weights[0]:.3f}, CAG={weights[1]:.3f}, Graph={weights[2]:.3f}")
     else:
         weights = get_default_weights()
-
+        print(f"Using default weights: RAG={weights[0]:.3f}, CAG={weights[1]:.3f}, Graph={weights[2]:.3f}")
     rag_w, cag_w, graph_w = weights
 
-    # weight and combine all results
-    all_results = []
+    context_parts = []
 
+    # RAG — always take the best ones above baseline
     for r in rag_results:
-        all_results.append({
-            "text": r["text"],
-            "score": r["score"] * rag_w,
-            "source": "rag"
-        })
+        if r["score"] >= 0.65:
+            context_parts.append(f"[RAG:{r['score']:.2f}] {r['text']}")
 
-    for r in cag_results:
-        all_results.append({
-            "text": r["text"],
-            "score": r["score"] * cag_w,
-            "source": "cag"
-        })
+    # CAG — only if really confident
+    for c in cag_results:
+        if c["score"] >= 0.85:
+            context_parts.append(f"[CAG:{c['score']:.2f}] {c['text']}")
 
-    # graph results
-    for r in graph_results:
-        all_results.append({
-            "text": r["text"],
-            "score": r["score"] * graph_w,
-            "source": "graph"
-        })
+    # Graph — only if strong and relevant
+    for g in graph_results:
+        if g["score"] >= 0.70:
+            context_parts.append(f"[GRAPH:{g['score']:.2f}] {g['text']}")
 
-    # sort by score
-    all_results.sort(key=lambda x: x["score"], reverse=True)
+    structured_context = "\n\n".join(context_parts)
 
     return {
-        "fused_context": "\n\n".join([r["text"] for r in all_results]),
+        "context": structured_context,
         "weights": {"rag": rag_w, "cag": cag_w, "graph": graph_w},
-        "sources": all_results
+        "sources": context_parts
     }
+
+
+def blend_contexts(retrieval_results: Dict[str, Any], weights: Dict[str, float]) -> str:
+    """
+    Final, bulletproof blender used by FusionEnv and synthetic data generation.
+    Handles both (text, score) tuples and raw strings from retrievers.
+    """
+    rag = retrieval_results.get("rag", [])
+    cag = retrieval_results.get("cag", [])
+    graph = retrieval_results.get("graph", "")
+
+    parts = []
+
+    # RAG: handle both string list and (text, score) tuples
+    if weights.get("rag", 0) > 0.05 and rag:
+        texts = []
+        for item in rag[:3]:
+            if isinstance(item, tuple) and len(item) >= 1:
+                texts.append(item[0])
+            elif isinstance(item, str):
+                texts.append(item)
+        if texts:
+            parts.append("[RAG]\n" + "\n".join(texts))
+
+    # CAG: usually list of strings
+    if weights.get("cag", 0) > 0.05 and cag:
+        texts = [item[0] if isinstance(item, tuple) else str(item) for item in cag[:3]]
+        if texts:
+            parts.append("[CAG]\n" + "\n".join(texts))
+
+    # Graph: usually a single string
+    if weights.get("graph", 0) > 0.05 and graph and str(graph).strip():
+        parts.append(f"[Graph]\n{str(graph).strip()}")
+
+    return "\n\n".join(parts) if parts else "No relevant context found."

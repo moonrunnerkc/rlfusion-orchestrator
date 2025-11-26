@@ -1,0 +1,1 @@
+{"query": "Capital of France?", "fused_context": "No relevant context found.", "response": "RLFusion Orchestrator fuses RAG, CAG and graph via PPO-optimized weights for offline, proactive AI.", "reward": 0.0, "weights": {"rag": 0.4949, "cag": 0.1102, "graph": 0.3948}}

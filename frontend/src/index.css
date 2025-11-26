@@ -1,68 +1,54 @@
+@import "tailwindcss";
+
+/* GUNMETAL DAWN: finally a dark grey that doesn't look like a 2015 hacker movie */
 :root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
+  --accent: #e0e7ff;
+  --muted: #a1a1aa;
+  --background: #0f0f12;
+  --foreground: #f1f5f9;
+}
 
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
+/* Body - black void, no mercy */
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: var(--background);
+  color: var(--foreground);
+  min-height: 100vh;
+  scroll-behavior: smooth;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-a:hover {
-  color: #535bf2;
+* { box-sizing: border-box; }
+* { -webkit-tap-highlight-color: transparent; }
+
+/* Scanlines - because pure black is for people who still have hope */
+.scanlines::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(transparent 50%, rgba(224,231,255,0.04) 50%),
+    linear-gradient(90deg, rgba(224,231,255,0.02) 1px, transparent 1px);
+  background-size: 100% 4px, 4px 100%;
+  opacity: 0.13;
+  z-index: 9999;
 }
 
-body {
-  margin: 0;
-  display: flex;
-  place-items: center;
-  min-width: 320px;
-  min-height: 100vh;
+/* RLFO Markdown spacing — cyberpunk edition */
+.prose h1, .prose h2, .prose h3, .prose h4 {
+  margin-top: 1.8em;
+  margin-bottom: 0.6em;
 }
 
-h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
+.prose ul, .prose ol {
+  margin-top: 1em;
+  margin-bottom: 1em;
 }
 
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  background-color: #1a1a1a;
-  cursor: pointer;
-  transition: border-color 0.25s;
-}
-button:hover {
-  border-color: #646cff;
-}
-button:focus,
-button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    color: #213547;
-    background-color: #ffffff;
-  }
-  a:hover {
-    color: #747bff;
-  }
-  button {
-    background-color: #f9f9f9;
-  }
+.prose p {
+  margin-top: 0.8em;
+  margin-bottom: 0.8em;
 }
