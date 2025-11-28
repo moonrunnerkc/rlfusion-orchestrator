@@ -269,7 +269,7 @@ If you use this system in research, please cite:
   title={RLFusion Orchestrator: RL-Optimized Multi-Source Retrieval Fusion},
   author={Kinnard, Bradley R.},
   year={2024},
-  url={https://github.com/yourusername/rlfusion-orchestrator}
+  url={https://github.com/moonrunnerkc/rlfusion-orchestrator}
 }
 ```
 
