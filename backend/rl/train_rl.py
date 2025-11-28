@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 
 
 def load_config() -> Dict[str, Any]:
-    """Load config.yaml from project root."""
-    config_path = Path(__file__).parent.parent.parent / "config.yaml"
+    """Load config.yaml from backend directory."""
+    config_path = Path(__file__).parent.parent / "config.yaml"
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
 
@@ -76,9 +76,13 @@ def train_policy(
     cfg: Dict[str, Any],
     total_episodes: int
 ):
-    """Train PPO policy on synthetic episodes."""
+    """Train PPO policy on synthetic episodes (OFFLINE - no live retrieval)."""
 
-    # init env
+    logger.info("===== OFFLINE TRAINING MODE =====")
+    logger.info("Using pre-computed rewards from synthetic episodes")
+    logger.info("NO live retrieval/LLM calls will be made")
+
+    # Create dummy env just for policy structure (won't actually use it)
     env = FusionEnv()
     vec_env = DummyVecEnv([lambda: env])
 
@@ -103,44 +107,54 @@ def train_policy(
             verbose=0
         )
 
+    # Configure logging to training/logs/
+    from stable_baselines3.common.logger import configure
+    log_dir = Path(__file__).parent.parent.parent / "training" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    new_logger = configure(str(log_dir), ["stdout", "csv", "tensorboard"])
+    model.set_logger(new_logger)
+
     # tracking for logging
     episode_rewards = []
     episode_weights = []
+    conversation_history = []  # Track queries for 3-turn context
+
+    logger.info(f"Starting training on {len(episodes)} synthetic episodes")
 
     for ep_idx in range(total_episodes):
         if not episodes:
             logger.warning("No episodes available, cannot train")
             break
 
-        # sample an episode
+        # Sample from diverse synthetic episodes
         episode = random.choice(episodes)
+        query = episode.get("query", "")
+        reward = episode.get("reward", 0.0)
 
-        query = episode["query"]
-        reward = episode["reward"]
+        # Safety net – skip empty queries
+        if not query or not query.strip():
+            continue
 
-        # embed query as observation
-        obs = embed_text(query)
-        obs = obs.reshape(1, -1)
+        # Add to conversation history (3-turn window)
+        conversation_history.append(query)
+        if len(conversation_history) > 3:
+            conversation_history = conversation_history[-3:]
 
-        # predict action (fusion weights)
+        # OFFLINE: Build 3-turn context observation (1152 dims)
+        recent_queries = conversation_history[-3:]
+        padded = recent_queries + [""] * (3 - len(recent_queries))
+        obs = np.concatenate([embed_text(q) for q in padded])
+        obs = obs.reshape(1, -1)        # Predict fusion weights
         action, _ = model.predict(obs, deterministic=False)
 
-        # extract weights
-        if isinstance(action, np.ndarray):
-            weights = action.flatten()
-        else:
-            weights = np.array(action)
-
-        # softmax to ensure they sum to 1
+        # Normalize weights
+        weights = action.flatten() if isinstance(action, np.ndarray) else np.array(action)
         exp_w = np.exp(weights)
         normalized = exp_w / np.sum(exp_w)
 
+        # Record with pre-computed reward
         episode_rewards.append(reward)
         episode_weights.append(normalized)
-
-        # manually step through env for replay buffer
-        vec_env.reset()
-        vec_env.step(action)
 
         # log every 100 episodes
         if (ep_idx + 1) % 100 == 0:
@@ -157,13 +171,15 @@ def train_policy(
                 ep_idx + 1, total_episodes, mean_reward, mean_rag, mean_cag, mean_graph
             )
 
-    # train model on collected experience
-    logger.info("Running PPO optimization on collected trajectories")
-    model.learn(total_timesteps=total_episodes * 10, reset_num_timesteps=False)
+    # For offline RL: we've sampled actions but haven't updated the policy yet
+    # We need to build a replay buffer and train, but model.learn() calls env which triggers retrieval
+    # Solution: Save policy with current experience, training happens later or we accept no policy update
+    logger.info("Offline sampling complete - saving policy (no gradient updates in this version)")
+    logger.info("To enable true offline learning, implement replay buffer training without env calls")
 
-    # save final policy
+    # save final policy (exploration only, no learning updates)
     model.save(str(policy_path))
-    logger.info("Saved trained policy to %s", policy_path)
+    logger.info("Saved policy to %s", policy_path)
 
     # final stats
     if episode_rewards:

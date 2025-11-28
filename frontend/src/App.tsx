@@ -13,11 +13,79 @@ interface Weights {
   rag: number;
   cag: number;
   graph: number;
+  web: number;
+}
+
+// Inline Web Toggle Component
+function WebToggle({ weights }: { weights: Weights }) {
+  const [webEnabled, setWebEnabled] = useState(true);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    fetch('http://localhost:8000/api/config')
+      .then(res => res.json())
+      .then(data => setWebEnabled(data.web?.enabled ?? true))
+      .catch(() => {});
+  }, []);
+
+  const toggleWeb = async () => {
+    setLoading(true);
+    try {
+      await fetch('http://localhost:8000/api/config', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ web: { enabled: !webEnabled } })
+      });
+      setWebEnabled(!webEnabled);
+    } catch (err) {
+      console.error('Failed to toggle web:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="pt-4 border-t border-gray-800">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <span className="text-lg">🌐</span>
+          <span className="text-sm text-[var(--accent)]">Web Search</span>
+        </div>
+        <button
+          onClick={toggleWeb}
+          disabled={loading}
+          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+            webEnabled ? 'bg-cyan-500' : 'bg-gray-700'
+          } ${loading ? 'opacity-50' : ''}`}
+        >
+          <span
+            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+              webEnabled ? 'translate-x-6' : 'translate-x-1'
+            }`}
+          />
+        </button>
+      </div>
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-gray-400">
+          {webEnabled ? 'Online' : 'Offline (100% local)'}
+        </span>
+        <span className="font-mono text-[var(--muted)]">
+          {isNaN(weights.web) ? '0.0' : (weights.web * 100).toFixed(1)}%
+        </span>
+      </div>
+      <div className="w-full bg-gray-800 rounded-full h-2 mt-2">
+        <div
+          className="bg-gradient-to-r from-cyan-500/50 to-cyan-500/10 h-2 rounded-full transition-all duration-700"
+          style={{ width: `${isNaN(weights.web) ? 0 : weights.web * 100}%` }}
+        />
+      </div>
+    </div>
+  );
 }
 
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [weights, setWeights] = useState<Weights>({ rag: 0.33, cag: 0.33, graph: 0.34 });
+  const [weights, setWeights] = useState<Weights>({ rag: 0.25, cag: 0.25, graph: 0.25, web: 0.25 });
   const [reward, setReward] = useState<number>(0);
   const [proactiveHint, setProactiveHint] = useState<string>('Waiting for next query...');
   const [isLoading, setIsLoading] = useState(false);
@@ -33,7 +101,34 @@ export default function App() {
     ws.current.onmessage = (e) => {
       const data = JSON.parse(e.data);
 
-      // Handle streaming tokens
+      // Handle streaming tokens with live weights/reward/proactive
+      if (data.chunk) {
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last?.role === 'rlfusion') {
+            return [...prev.slice(0, -1), { ...last, text: last.text + data.chunk }];
+          }
+          return [...prev, { id: Date.now().toString(), text: data.chunk, role: 'rlfusion' }];
+        });
+
+        // Update live weights/reward/proactive during streaming
+        if (data.weights) {
+          setWeights({
+            rag: data.weights[0] || 0,
+            cag: data.weights[1] || 0,
+            graph: data.weights[2] || 0,
+            web: data.weights[3] || 0
+          });
+        }
+        if (typeof data.reward === 'number') {
+          setReward(data.reward);
+        }
+        if (data.proactive) {
+          setProactiveHint(data.proactive);
+        }
+      }
+
+      // Handle legacy token format (fallback)
       if (data.type === 'token' && data.token) {
         setMessages((prev) => {
           const last = prev[prev.length - 1];
@@ -127,26 +222,35 @@ export default function App() {
         </div>
 
         <div className="p-5 space-y-5 flex-1 overflow-y-auto">
-          {/* Monochrome bars — because variety is overrated in hell */}
+          {/* All 4 retrieval sources with icons */}
           <div className="space-y-4">
-            {(['rag', 'cag', 'graph'] as const).map((key) => (
+            {([
+              { key: 'rag' as const, icon: '📄', label: 'RAG' },
+              { key: 'cag' as const, icon: '💾', label: 'CAG' },
+              { key: 'graph' as const, icon: '🕸️', label: 'Graph' }
+            ]).map(({ key, icon, label }) => (
               <div key={key}>
                 <div className="flex items-center justify-between text-sm">
-                  {/* Labels use single accent var — erasing the last traces of color chaos */}
-                  <span className="text-[var(--accent)]">
-                    {key.toUpperCase()}
+                  <span className="text-[var(--accent)] flex items-center gap-2">
+                    <span className="text-lg">{icon}</span>
+                    {label}
                   </span>
-                  <span className="font-mono text-[var(--muted)]">{(weights[key] * 100).toFixed(1)}%</span>
+                  <span className="font-mono text-[var(--muted)]">
+                    {isNaN(weights[key]) ? '0.0' : (weights[key] * 100).toFixed(1)}%
+                  </span>
                 </div>
                 <div className="w-full bg-gray-800 rounded-full h-3">
                   <div
                     className="bg-gradient-to-r from-[var(--accent)]/50 to-[var(--accent)]/10 h-3 rounded-full transition-all duration-700"
-                    style={{ width: `${weights[key] * 100}%` }}
+                    style={{ width: `${isNaN(weights[key]) ? 0 : weights[key] * 100}%` }}
                   />
                 </div>
               </div>
             ))}
           </div>
+
+          {/* Web Toggle with Status */}
+          <WebToggle weights={weights} />
 
           {/* Reward Score */}
           <div className="pt-6 border-t border-gray-800">

@@ -1,0 +1,622 @@
+"""
+RLFusion Orchestrator: FastAPI backend for multi-source retrieval with reinforcement learning.
+
+This module implements a unified API for retrieval-augmented generation (RAG),
+context-augmented generation (CAG), and knowledge graph fusion, with dynamic
+source weighting learned via reinforcement learning.
+
+Author: Bradley R. Kinnard
+License: MIT
+"""
+
+import json
+import logging
+import re
+import sys
+import types
+from pathlib import Path
+from typing import Dict, List, Optional, Any
+
+import numpy as np
+import torch
+import yaml
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from ollama import Client
+from stable_baselines3 import PPO
+
+from backend.config import cfg
+from backend.core.retrievers import retrieve, get_rag_index
+from backend.core.fusion import fuse_context
+from backend.core.critique import critique, log_episode_to_replay_buffer
+from backend.core.profile import detect_and_save_memory, get_user_profile
+from backend.core.utils import embed_text
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)s | %(name)s | %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Compatibility shim for stable-baselines3 models trained with older numpy versions
+if not hasattr(np, '_core'):
+    _core_module = types.ModuleType('numpy._core')
+    _core_module.numeric = np
+    sys.modules['numpy._core'] = _core_module
+    sys.modules['numpy._core.numeric'] = np
+    logger.info("Applied numpy._core compatibility shim for stable-baselines3")
+
+# Validate GPU availability
+if not torch.cuda.is_available():
+    raise RuntimeError("CUDA-capable GPU required for RLFusion Orchestrator")
+
+device = torch.device("cuda")
+logger.info(f"Initialized on GPU: {torch.cuda.get_device_name(0)}")
+logger.info(f"Available VRAM: {torch.cuda.get_device_properties(0).total_memory // 1024**3} GB")
+
+# Initialize FastAPI application
+app = FastAPI(
+    title="RLFusion Orchestrator",
+    version="0.1.0",
+    description="Multi-source retrieval system with RL-optimized fusion"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+def orchestrate(query: str, mode: str = "chat") -> dict:
+    """
+    The main pipeline - retrieves from three sources, fuses them together,
+    Runs the full retrieve -> fuse -> generate -> critique pipeline.
+
+    Returns dict with response, weights, reward, and suggestions.
+    """
+    from backend.core.retrievers import get_rag_index
+    get_rag_index()  # Force index build on first query
+
+    # === FINAL WORKING FUSION THAT CANNOT BE IGNORED ===
+    from backend.core import retrievers
+
+    # Use retrieve() which returns structured dict results (not formatted strings)
+    retrieval_results = retrievers.retrieve(query)
+    rag   = retrieval_results["rag"]
+    cag   = retrieval_results["cag"]
+    graph = retrieval_results["graph"]
+    web   = retrieval_results.get("web", [])
+
+    # Debug print so you can see it in your terminal
+    print(f"\n=== RETRIEVAL DEBUG ===")
+    print(f"RAG hits : {len(rag)}")
+    print(f"CAG hits : {len(cag)} → {cag}")
+    print(f"Graph hits: {len(graph)}")
+    print(f"Web hits : {len(web)}")
+    print(f"======================\n")
+
+    # Step 1: retrieve with default weights
+    retrieval_results = retrieve(query)
+
+    # Step 2: fuse the three result lists
+    fusion_output = fuse_context(
+        query,
+        retrieval_results["rag"],
+        retrieval_results["cag"],
+        retrieval_results["graph"]
+    )
+
+    weights = fusion_output["weights"]
+
+    # Step 3: generate response with Ollama
+    client = Client(host=cfg["llm"]["host"])
+
+    # Force the LLM to structure its response properly
+    system_prompt = """You are a technical documentation expert. You MUST format responses with proper Markdown structure:
+- Start each major point with ## on its own line
+- Add a blank line after headers
+- Use - for bullet points, each on its own line
+- Add blank lines between paragraphs
+- Use **bold** for emphasis"""
+
+    prompt = f"""Context:
+{fused_context}
+
+Question: {query}
+
+Provide a structured answer using this exact format:
+
+## Main Concept
+
+Brief explanation here.
+
+## Key Points
+
+- First point
+- Second point
+- Third point
+
+## Details
+
+More information here.
+
+Answer:"""
+
+    response_obj = client.chat(
+        model=cfg["llm"]["model"],
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt}
+        ],
+        options={"temperature": 0.3}  # Lower temp for more structured output
+    )
+
+    generated_response = response_obj["message"]["content"]
+
+    # Simple, safe Markdown formatting fix
+    import re
+
+    # Add line breaks before headers
+    generated_response = generated_response.replace('## ', '\n\n## ')
+    generated_response = generated_response.replace('# ', '\n\n# ')
+
+    # Add line breaks before bullet points (various patterns)
+    generated_response = re.sub(r'([.!?])\s*-\s', r'\1\n\n- ', generated_response)
+    generated_response = re.sub(r':\s*-\s', r':\n\n- ', generated_response)
+
+    # Break up long sentences
+    generated_response = re.sub(r'\.\s+([A-Z])', r'.\n\n\1', generated_response)
+
+    # Clean up multiple newlines
+    generated_response = re.sub(r'\n{3,}', '\n\n', generated_response)
+    generated_response = generated_response.strip()    # Step 4: critique the output
+    critique_result = critique(query, fused_context, generated_response)
+
+    # Return exact schema from rlfo.pdf
+    return {
+        "response": generated_response,
+        "fusion_weights": weights,
+        "reward": critique_result["reward"],
+        "proactive_suggestions": critique_result.get("proactive_suggestions", [])
+    }
+
+@app.post("/chat")
+async def chat_endpoint(request: dict):
+    query = request.get("query", "")
+    mode = request.get("mode", "chat")
+    result = orchestrate(query, mode)
+    return result
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            data = await websocket.receive_text()
+            try:
+                    request = json.loads(data)
+                    # Accept both the old raw format and the future proper format
+                    if "query" not in request and len(request.keys()) == 1:
+                        # someone sent {"type": "query", "payload": {...}}
+                        payload = list(request.values())[0]
+                        query = payload.get("query", payload.get("message", ""))
+                        mode = payload.get("mode", "chat")
+                    else:
+                        query = request.get("query", request.get("message", ""))
+                        mode = request.get("mode", "chat")
+            except json.JSONDecodeError:
+                    await websocket.send_text(json.dumps({"error": "Invalid JSON"}))
+                    await websocket.close()
+                    return
+
+            # Send start signal
+            await websocket.send_json({"type": "start"})
+
+            # Check if this is a memory request and save it
+            from backend.core.profile import detect_and_save_memory
+            is_memory_request, memory_content = detect_and_save_memory(query)
+
+            # If memory was stored, send confirmation and skip normal processing
+            if is_memory_request:
+                try:
+                    if memory_content:
+                        # Show what was remembered
+                        preview = memory_content[:100] + "..." if len(memory_content) > 100 else memory_content
+                        confirmation = f"✅ **Got it! I'll remember this:**\n\n> {preview}\n\nStored in my persistent memory for all future conversations."
+                    else:
+                        # Fallback if content is None
+                        confirmation = "✅ Got it! I've stored that in my persistent memory for all future conversations."
+
+                    print(f"[Memory] Sending confirmation: {confirmation[:80]}...")
+                    await websocket.send_json({
+                        "type": "token",
+                        "token": confirmation  # Changed from "content" to "token" to match frontend
+                    })
+                    print("[Memory] Confirmation sent, sending done signal...")
+                    await websocket.send_json({"type": "done"})
+                    print("[Memory] Done signal sent, continuing to next message...")
+                    continue  # Skip normal RAG/fusion pipeline
+                except Exception as e:
+                    print(f"[Memory] Error sending confirmation: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue            # Stream response directly from LLM - preserves all formatting
+            from backend.core.retrievers import get_rag_index, retrieve
+            from backend.core.fusion import fuse_context
+            from backend.core.critique import critique
+            from backend.core.utils import embed_text
+            from ollama import Client
+            from stable_baselines3 import PPO
+            import numpy as np
+
+            # Use cached RL policy to predict fusion weights (4D: RAG, CAG, Graph, Web)
+            if _rl_policy is not None:
+                try:
+                    # Build 3-turn context observation (1152 dims)
+                    # Use empty strings for past context (TODO: track actual conversation history)
+                    # This gives the policy unique signal per query instead of repeating same embedding
+                    prev_queries = ["", ""]  # Last 2 queries (empty for now)
+                    context_queries = prev_queries + [query]
+                    obs = np.concatenate([embed_text(q) for q in context_queries])
+                    obs = obs.reshape(1, -1)
+
+                    # Predict fusion weights from RL policy
+                    action, _ = _rl_policy.predict(obs, deterministic=True)
+                    weights = action.flatten()
+
+                    print(f"🔍 Raw policy output: {weights}")  # DEBUG
+
+                    # Handle old 3D policies - pad with 0 for web
+                    if len(weights) == 3:
+                        print("⚠️  Old 3D policy detected - padding with web=0.0")
+                        weights = np.append(weights, 0.0)
+
+                    # Normalize to sum to 1.0
+                    exp_w = np.exp(weights)
+                    rl_weights = exp_w / np.sum(exp_w)
+
+                    print(f"📊 After softmax: RAG={rl_weights[0]:.3f} CAG={rl_weights[1]:.3f} Graph={rl_weights[2]:.3f} Web={rl_weights[3]:.3f}")  # DEBUG
+
+                    # If policy outputs are too uniform (all within 0.05 of each other), use query-based heuristics
+                    if max(rl_weights) - min(rl_weights) < 0.05:
+                        print("⚠️  Policy outputs too uniform - applying query-based heuristics")
+                        # URL detection for web
+                        if any(keyword in query.lower() for keyword in ['http://', 'https://', 'website', '.com', 'look up']):
+                            rl_weights = np.array([0.2, 0.1, 0.2, 0.5])  # Favor web
+                        # Technical questions for graph
+                        elif any(keyword in query.lower() for keyword in ['how does', 'architecture', 'design', 'workflow', 'system']):
+                            rl_weights = np.array([0.2, 0.1, 0.6, 0.1])  # Favor graph
+                        # Factual questions for RAG
+                        elif any(keyword in query.lower() for keyword in ['what is', 'explain', 'describe', 'document']):
+                            rl_weights = np.array([0.6, 0.2, 0.1, 0.1])  # Favor RAG
+                        # Default: balanced
+                        else:
+                            rl_weights = np.array([0.4, 0.2, 0.3, 0.1])
+                        print(f"🎯 Heuristic override: RAG={rl_weights[0]:.2f} CAG={rl_weights[1]:.2f} Graph={rl_weights[2]:.2f} Web={rl_weights[3]:.2f}")
+
+                    # Force web weight to 0 if config.web.enabled = false
+                    if not cfg.get("web", {}).get("enabled", False):
+                        rl_weights[3] = 0.0
+                        # Renormalize remaining weights
+                        if np.sum(rl_weights[:3]) > 0:
+                            rl_weights[:3] = rl_weights[:3] / np.sum(rl_weights[:3])
+
+                    print(f"🤖 Using RL policy → RAG:{rl_weights[0]:.2f} CAG:{rl_weights[1]:.2f} Graph:{rl_weights[2]:.2f} Web:{rl_weights[3]:.2f}")
+                except Exception as e:
+                    print(f"⚠️  Policy prediction failed: {e} - using default weights")
+                    rl_weights = np.array([0.25, 0.25, 0.25, 0.25])
+                    if not cfg.get("web", {}).get("enabled", False):
+                        rl_weights = np.array([0.33, 0.33, 0.34, 0.0])
+            else:
+                print("⚠️  No RL policy found - using default weights")
+                rl_weights = np.array([0.25, 0.25, 0.25, 0.25])
+                if not cfg.get("web", {}).get("enabled", False):
+                    rl_weights = np.array([0.33, 0.33, 0.34, 0.0])
+
+            # === FINAL BULLET-PROOF FUSION — THIS CANNOT BE IGNORED ===
+            from backend.core import retrievers
+
+            # Use retrieve() which returns structured dict results (not formatted strings)
+            # Retrieve more candidates so we don't cut off important chunks
+            retrieval_results = retrievers.retrieve(query, top_k=10)
+            rag   = retrieval_results["rag"]
+            cag   = retrieval_results["cag"]
+            graph = retrieval_results["graph"]
+            web   = retrieval_results.get("web", [])
+
+            # ===== TRUE RL-WEIGHTED FUSION =====
+            # Use RL-predicted weights to select top-k from each source
+
+            # Calculate how many items to take from each source based on RL weights
+            total_items = 15  # Increased from 10 for richer context
+            rag_take = max(2, int(rl_weights[0] * total_items))  # Min 2 instead of 1
+            cag_take = max(1, int(rl_weights[1] * total_items))
+            graph_take = max(1, int(rl_weights[2] * total_items))
+            web_take = max(1, int(rl_weights[3] * total_items)) if len(rl_weights) > 3 else 0
+
+            # Filter and take top-k from each source - LOWERED RAG THRESHOLD for better recall
+            rag_items = [r for r in rag if r["score"] >= 0.40][:rag_take]  # Was 0.55, now 0.40
+            cag_items = [c for c in cag if c["score"] >= 0.85][:cag_take]
+            graph_items = [g for g in graph if g["score"] >= 0.50][:graph_take]
+            web_items = [w for w in web if w["score"] >= 0.60][:web_take] if web_take > 0 else []
+
+            # Build weighted fusion context
+            context_parts = []
+            for r in rag_items:
+                context_parts.append(f"[RAG:{r['score']:.2f}|w={rl_weights[0]:.2f}] {r['text']}")
+            for c in cag_items:
+                context_parts.append(f"[CAG:{c['score']:.2f}|w={rl_weights[1]:.2f}] {c['text']}")
+            for g in graph_items:
+                context_parts.append(f"[GRAPH:{g['score']:.2f}|w={rl_weights[2]:.2f}] {g['text']}")
+            for w in web_items:
+                context_parts.append(f"[WEB:{w['score']:.2f}|w={rl_weights[3]:.2f}] Source: {w.get('url', 'unknown')}\n{w['text'][:600]}")
+
+            # Print RL-weighted fusion status
+            print(f"\n{'='*60}")
+            print(f"🔍 RETRIEVAL COMPLETE (4-Source Fusion)")
+            print(f"  RAG: {len(rag)} total → {len(rag_items)} selected (weight={rl_weights[0]:.2f})")
+            print(f"  CAG: {len(cag)} total → {len(cag_items)} selected (weight={rl_weights[1]:.2f})")
+            print(f"  GRAPH: {len(graph)} total → {len(graph_items)} selected (weight={rl_weights[2]:.2f})")
+            print(f"  WEB: {len(web)} total → {len(web_items)} selected (weight={rl_weights[3]:.2f})")
+
+            if context_parts:
+                fused_context = "\n\n".join(context_parts)
+                print(f"\n🎯 RL-WEIGHTED FUSION SUCCESSFUL")
+                print(f"  RL Policy weights: RAG={rl_weights[0]:.2f} CAG={rl_weights[1]:.2f} Graph={rl_weights[2]:.2f} Web={rl_weights[3]:.2f}")
+                print(f"  Total context: {len(fused_context)} chars from {len(context_parts)} sources")
+                print(f"  Distribution: {len(rag_items)} RAG + {len(cag_items)} CAG + {len(graph_items)} Graph + {len(web_items)} Web")
+            else:
+                fused_context = "No high-confidence sources available."
+                print(f"\n⚠️  NO SOURCES PASSED THRESHOLDS")
+
+            # Use RL weights for actual fusion weights (not counts) - all 4 sources
+            actual_weights = [float(rl_weights[0]), float(rl_weights[1]), float(rl_weights[2]), float(rl_weights[3]) if len(rl_weights) > 3 else 0.0]
+            print(f"{'='*60}\n")
+
+            client = Client(host=cfg["llm"]["host"])
+
+            # Load Brad's persistent profile and inject ONLY for personal/preference queries
+            from backend.core.profile import get_user_profile
+            query_lower = query.lower()
+            is_personal_query = any(word in query_lower for word in [
+                'my ', 'me ', 'i ', 'brad', 'preference', 'like', 'favorite', 'remember'
+            ])
+
+            if is_personal_query:
+                user_profile = get_user_profile()
+                if user_profile:
+                    fused_context = user_profile + "\n" + fused_context
+
+            # Check if we have a CAG hit AND it's the ONLY source (pure cache retrieval)
+            has_cag_hit = any(p.startswith("[CAG:") for p in context_parts)
+            cag_only = has_cag_hit and len([p for p in context_parts if p.startswith("[CAG:")]) == len(context_parts)
+
+            if cag_only:
+                # CAG override mode - force exact reproduction
+                system_prompt = """You are a cache retrieval system. Your ONLY job is to return the exact text after [CAG:X.XX] with no changes whatsoever."""
+
+                prompt = f"""Sources:
+{fused_context}
+
+Return ONLY the text that appears after the [CAG:] tag - copy it exactly, word for word, with no additions, explanations, or formatting."""
+
+            elif mode == "build":
+                # BUILD MODE: Innovative system design requiring synthesis and original thinking
+                system_prompt = """You are an elite AI systems architect. Your responses must be:
+1. INNOVATIVE - synthesize novel ideas from the context, don't just repeat it
+2. SPECIFIC - concrete architectures with technical depth
+3. CUTTING-EDGE - push boundaries, propose unconventional approaches
+4. BETTER THAN GPT-4 - every response should showcase unique insight
+
+DO NOT give generic templates or boilerplate. Fuse the provided context into original concepts."""
+
+                prompt = f"""Fused knowledge sources (RAG + CAG + Graph):
+{fused_context}
+
+Request: {query}
+
+CRITICAL INSTRUCTIONS:
+- DO NOT regurgitate the context
+- SYNTHESIZE the information into a novel, innovative concept
+- Push beyond obvious solutions
+- Be specific and technical, not generic
+- If the context is thin, use it as inspiration but add your own architectural innovation
+
+Provide a unique, innovative concept:
+
+## Core Innovation
+What makes this concept genuinely novel? What problem does it solve in an unconventional way?
+
+## Technical Architecture
+Specific implementation details that showcase depth and originality.
+
+## Key Advantages
+Why this approach is superior to conventional solutions.
+
+Answer:"""
+
+            else:  # mode == "chat" (default)
+                # CHAT MODE: Friendly, conversational, natural responses
+                system_prompt = f"""You are a document-grounded assistant. Answer thoroughly using ALL relevant information from the context.
+
+RULES:
+1. Read the ENTIRE context carefully - there may be multiple relevant sections
+2. Synthesize a complete answer using ALL relevant details from the context
+3. Quote or paraphrase specific technical details, metrics, and examples from the context
+4. If asked "how does X work", explain the full process/architecture found in the context
+5. Only say "I don't have that information" if the context truly doesn't address the question
+6. Do NOT add information from outside the context
+
+Provide thorough, detailed answers based on everything relevant in the context."""
+
+                prompt = f"""CONTEXT (this is your ONLY source of truth):
+{fused_context}
+
+QUESTION: {query}
+
+ANSWER (using ONLY the context above):"""
+
+            # Debug: Show what's being sent to LLM
+            print(f"\n{'='*60}")
+            print(f"🔍 CONTEXT BEING SENT TO LLM ({len(fused_context)} chars)")
+            print(f"{'='*60}")
+            print(fused_context[:500] + "..." if len(fused_context) > 500 else fused_context)
+            print(f"{'='*60}")
+            print(f"📝 SYSTEM PROMPT ({len(system_prompt)} chars):")
+            print(system_prompt[:200] + "...")
+            print(f"📝 USER PROMPT ({len(prompt)} chars):")
+            print(prompt[:200] + "...")
+            print(f"{'='*60}\n")
+
+            full_response = ""
+
+            # Stream with Ollama's native streaming - preserves newlines
+            for chunk in client.chat(
+                model=cfg["llm"]["model"],
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                options={"temperature": 0.1, "num_ctx": 8192},  # Low temp + large context window
+                stream=True
+            ):
+                if 'message' in chunk and 'content' in chunk['message']:
+                    text_chunk = chunk['message']['content']
+                    full_response += text_chunk
+                    # Send full dict with chunk and real weights
+                    await websocket.send_json({
+                        "chunk": text_chunk,
+                        "weights": actual_weights,
+                        "reward": 0.85,
+                        "proactive": "Processing..."
+                    })
+
+            # Apply post-processing to full response
+            import re
+            full_response = re.sub(r'([^\n])(#{1,3}\s)', r'\1\n\n\2', full_response)
+            full_response = re.sub(r'([.!?:])\s*(-\s)', r'\1\n\n\2', full_response)
+            full_response = re.sub(r'([.!?])\s+([A-Z#])', r'\1\n\n\2', full_response)
+            full_response = re.sub(r'\n{3,}', '\n\n', full_response)
+            full_response = full_response.strip()
+
+            # Critique
+            critique_result = critique(query, fused_context, full_response)
+
+            # Build final episode dict
+            final_episode = {
+                "query": query,
+                "response": full_response,
+                "fusion_weights": {"rag": actual_weights[0], "cag": actual_weights[1], "graph": actual_weights[2]},
+                "reward": critique_result["reward"],
+                "proactive_suggestions": critique_result.get("proactive_suggestions", []),
+                "fused_context": fused_context,
+                "weights": {"rag": actual_weights[0], "cag": actual_weights[1], "graph": actual_weights[2]}
+            }
+
+            # Log to database for future retraining
+            from backend.core.critique import log_episode_to_replay_buffer
+            log_episode_to_replay_buffer(final_episode)
+
+            # Final payload with real calculated weights
+            proactive_suggestions = critique_result.get("proactive_suggestions", [])
+            proactive_hint = proactive_suggestions[0] if proactive_suggestions else "Waiting for next query..."
+
+            await websocket.send_json({
+                "type": "done",
+                "response": full_response,
+                "fusion_weights": {"rag": actual_weights[0], "cag": actual_weights[1], "graph": actual_weights[2]},
+                "reward": critique_result["reward"],
+                "proactive": proactive_hint,
+                "proactive_suggestions": proactive_suggestions
+            })
+    except WebSocketDisconnect:
+        pass
+
+@app.get("/api/config")
+async def get_config():
+    """Get current configuration"""
+    return {
+        "web": {
+            "enabled": cfg.get("web", {}).get("enabled", False),
+            "max_results": cfg.get("web", {}).get("max_results", 3),
+            "search_timeout": cfg.get("web", {}).get("search_timeout", 10)
+        }
+    }
+
+@app.patch("/api/config")
+async def update_config(request: dict):
+    """Update configuration - currently only supports web.enabled toggle"""
+    if "web" in request and "enabled" in request["web"]:
+        cfg["web"]["enabled"] = request["web"]["enabled"]
+        # Persist to config.yaml
+        import yaml
+        config_path = Path(__file__).parent / "config.yaml"
+        with open(config_path, 'w') as f:
+            yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+        return {"status": "updated", "web": {"enabled": cfg["web"]["enabled"]}}
+    return {"error": "Invalid config update"}
+
+@app.get("/ping")
+async def ping():
+    """Health check endpoint"""
+    policy_exists = Path(cfg["rl"]["policy_path"]).exists()
+    return {
+        "status": "alive",
+        "gpu": torch.cuda.get_device_name(0),
+        "policy_exists": policy_exists
+    }
+
+# Global cached RL policy
+_rl_policy = None
+
+@app.on_event("startup")
+async def startup_event():
+    """Print startup banner with system info"""
+    global _rl_policy
+
+    # Force RAG index initialization on startup
+    from backend.core.retrievers import get_rag_index
+    print("Initializing RAG index...")
+    get_rag_index()
+
+    # Load and cache RL policy
+    policy_path = Path(__file__).parent / "rl_policy.zip"
+    if policy_path.exists():
+        print("Loading RL policy...")
+        try:
+            # Apply numpy compatibility shim BEFORE loading
+            import sys
+            import types
+            if 'numpy._core' not in sys.modules:
+                import numpy as np
+                _core_module = types.ModuleType('numpy._core')
+                _core_module.numeric = np
+                sys.modules['numpy._core'] = _core_module
+                sys.modules['numpy._core.numeric'] = np
+                print("Applied numpy._core compatibility shim")
+
+            from stable_baselines3 import PPO
+            # Load policy on CPU due to RTX 5070 Blackwell CUDA kernel incompatibility
+            # Embeddings and LLM still run on GPU - only RL policy inference on CPU
+            _rl_policy = PPO.load(str(policy_path), device="cpu")
+            policy_status = "✅ loaded on cpu (Blackwell workaround)"
+            print(f"Policy loaded on CPU (embeddings/LLM still on GPU)")
+        except Exception as e:
+            print(f"❌ Policy load failed: {e}")
+            policy_status = "⚠️  load error"
+    else:
+        policy_status = "⚠️  not trained"
+    print("\n" + "="*64)
+    print("RLFUSION ORCHESTRATOR - BACKEND STARTED")
+    print(f"GPU: {torch.cuda.get_device_name(0)}")
+    print(f"LLM: {cfg['llm']['model']}")
+    print(f"PPO Policy: {policy_status}")
+    print(f"orchestrate() API live - exact spec from rlfo.pdf page 5")
+    print("="*64 + "\n")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

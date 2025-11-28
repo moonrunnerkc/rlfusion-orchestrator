@@ -1,0 +1,64 @@
+{
+  "nodes": [
+    { "id": "RLFusion", "type": "orchestrator", "label": "RLFusion Orchestrator", "version": "2025" },
+    { "id": "Aegis", "type": "project", "label": "AEGIS-K8s Autonomous SRE Brain", "priority": "critical", "tier": "all" },
+    { "id": "Sentinel", "type": "tier", "label": "Tier 1: Sentinel MVP", "plans": 3, "debate": false },
+    { "id": "Legion", "type": "tier", "label": "Tier 2: Legion Multi-Plan Debate", "plans": 9, "debate": true },
+    { "id": "Evo", "type": "tier", "label": "Tier 3: Evo Evolution Mode", "mutation": true, "optional": true },
+
+    { "id": "ForgeExcalibur", "type": "logic", "label": "Forge Excalibur Decision Engine" },
+    { "id": "CascadeShadowing", "type": "mechanism", "label": "Cascade Shadowing" },
+    { "id": "PropagationDecay", "type": "risk_model", "label": "Propagation Decay Risk" },
+    { "id": "ParetoSelector", "type": "selector", "label": "Pareto Selector with Tiebreak" },
+
+    { "id": "Simulator", "type": "engine", "label": "Synthetic Kubernetes Simulator", "real_k8s": false },
+    { "id": "LangGraph", "type": "framework", "label": "LangGraph 0.2+" },
+    { "id": "Chroma", "type": "vector_store", "label": "Chroma Local Vector DB" },
+    { "id": "SQLite", "type": "belief_store", "label": "SQLite Belief & Memory Store" },
+
+    { "id": "RAG", "type": "module", "label": "Retrieval-Augmented Generation" },
+    { "id": "CAG", "type": "module", "label": "Cache-Augmented Generation" },
+    { "id": "Graph", "type": "module", "label": "Graph Semantic Reasoning" },
+    { "id": "PPO", "type": "policy", "label": "Proximal Policy Optimization" },
+
+    { "id": "ShieldNode", "type": "agent", "label": "Defensive Shield Node", "count": 16 },
+    { "id": "IntruderSim", "type": "adversary", "label": "Red-Team Intruder Simulator" },
+    { "id": "MADDPG", "type": "policy", "label": "Multi-Agent DDPG" },
+    { "id": "zero_trust", "type": "principle", "label": "Zero-Trust Architecture" },
+    { "id": "emergent_cooperation", "type": "behavior", "label": "Emergent Cooperative Defense" },
+
+    { "id": "RTX5070", "type": "hardware", "label": "RTX 5070 Blackwell", "vram_gb": 11 },
+    { "id": "user", "type": "human", "label": "Operator", "stress_level": "high", "humor": "dark" }
+  ],
+  "edges": [
+    { "from": "RLFusion", "to": "Aegis", "relation": "orchestrates", "weight": 1.0 },
+    { "from": "RLFusion", "to": "RAG", "relation": "uses", "weight": 0.98 },
+    { "from": "RLFusion", "to": "CAG", "relation": "uses", "weight": 0.98 },
+    { "from": "RLFusion", "to": "Graph", "relation": "uses", "weight": 1.0 },
+    { "from": "RLFusion", "to": "PPO", "relation": "trains_with", "weight": 1.0 },
+
+    { "from": "Aegis", "to": "Sentinel", "relation": "implements", "weight": 1.0 },
+    { "from": "Aegis", "to": "Legion", "relation": "implements", "weight": 0.98 },
+    { "from": "Aegis", "to": "Evo", "relation": "implements", "weight": 0.9 },
+    { "from": "Aegis", "to": "ForgeExcalibur", "relation": "uses_logic", "weight": 1.0 },
+    { "from": "Aegis", "to": "Simulator", "relation": "runs_on", "weight": 1.0 },
+    { "from": "Aegis", "to": "LangGraph", "relation": "built_with", "weight": 1.0 },
+    { "from": "Aegis", "to": "Chroma", "relation": "uses_vector_store", "weight": 0.97 },
+    { "from": "Aegis", "to": "SQLite", "relation": "uses_belief_store", "weight": 0.97 },
+
+    { "from": "ForgeExcalibur", "to": "CascadeShadowing", "relation": "implements", "weight": 1.0 },
+    { "from": "ForgeExcalibur", "to": "PropagationDecay", "relation": "computes", "weight": 1.0 },
+    { "from": "ForgeExcalibur", "to": "ParetoSelector", "relation": "uses", "weight": 1.0 },
+
+    { "from": "Aegis", "to": "ShieldNode", "relation": "deploys", "count": 16, "weight": 1.0 },
+    { "from": "Aegis", "to": "MADDPG", "relation": "uses_policy", "weight": 0.95 },
+    { "from": "Aegis", "to": "RTX5070", "relation": "runs_on", "weight": 0.9 },
+    { "from": "Aegis", "to": "zero_trust", "relation": "enforces", "weight": 1.0 },
+    { "from": "ShieldNode", "to": "IntruderSim", "relation": "counters", "success_rate": 0.92, "weight": 0.98 },
+    { "from": "Aegis", "to": "emergent_cooperation", "relation": "exhibits", "weight": 0.97 },
+
+    { "from": "user", "to": "Aegis", "relation": "is_building", "phase": "defense_layer_v3", "weight": 1.0 },
+    { "from": "user", "to": "emergent_cooperation", "relation": "observing", "weight": 0.9 },
+    { "from": "user", "to": "RLFusion", "relation": "operates", "weight": 1.0 }
+  ]
+}

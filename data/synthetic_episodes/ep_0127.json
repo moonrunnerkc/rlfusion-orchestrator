@@ -1,1 +1,0 @@
-{"query": "How does adaptive fusion work?", "fused_context": "No relevant context found.", "response": "RLFusion Orchestrator fuses RAG, CAG and graph via PPO-optimized weights for offline, proactive AI.", "reward": 0.7, "weights": {"rag": 0.3226, "cag": 0.319, "graph": 0.3584}}

@@ -4,7 +4,7 @@
 
 import { motion } from 'framer-motion';
 
-interface Weights { rag: number; cag: number; graph: number; }
+interface Weights { rag: number; cag: number; graph: number; web?: number; }
 
 interface FusionMeterProps {
   weights: Weights;
@@ -12,9 +12,10 @@ interface FusionMeterProps {
 
 export default function FusionMeter({ weights }: FusionMeterProps) {
   const items = [
-    { label: 'RAG',   value: weights.rag },
-    { label: 'CAG',   value: weights.cag },
-    { label: 'Graph', value: weights.graph },
+    { label: 'RAG',   value: weights.rag, icon: '📄' },
+    { label: 'CAG',   value: weights.cag, icon: '💾' },
+    { label: 'Graph', value: weights.graph, icon: '🕸️' },
+    { label: 'Web',   value: weights.web ?? 0, icon: '🌐' },
   ];
 
   return (
@@ -31,8 +32,11 @@ export default function FusionMeter({ weights }: FusionMeterProps) {
           {items.map((item) => (
             <div key={item.label}>
               <div className="flex justify-between items-baseline mb-4">
-                {/* Label uses muted color for consistency */}
-                <span className="text-gray-300 font-medium text-lg">{item.label}</span>
+                {/* Label with icon */}
+                <span className="text-gray-300 font-medium text-lg flex items-center gap-2">
+                  <span className="text-xl">{item.icon}</span>
+                  {item.label}
+                </span>
                 <motion.span
                   key={item.value}
                   initial={{ scale: 0.8, opacity: 0 }}

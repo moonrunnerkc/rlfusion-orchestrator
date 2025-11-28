@@ -1,16 +1,73 @@
-# Python/venv ignores
-backend/venv/
+# === Virtual environments (never commit these) ===
+venv/
+.venv/
+env/
+ENV/
+env*/
+.env
+
+# === Python cache & bytecode ===
 __pycache__/
+*.py[cod]
+*$py.class
 *.pyc
 *.pyo
 *.pyd
-.DS_Store
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# Secrets and data
-.env
-db/*
-indexes/*
-rl_policy.zip  # Models
+# === Heavy RLFO artifacts (these get huge) ===
+rl_policy.zip
+*.zip
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
 
-# OS junk
+# === Databases & indexes ===
+db/
+indexes/
+rag_index.faiss
+*.db
+*.sqlite
+*.sqlite3
+
+# === User data & training artifacts ===
+data/docs/
+data/synthetic_episodes/
+training/logs/
+tests/results/
+
+# === IDE / Editor junk ===
+.vscode/
+.idea/
 *.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.desktop
+
+# === OS garbage ===
+.DS_Store
+.Trashes
+ehthumbs.db
+
+# === Optional: if you ever add local model caches ===
+models/
+.cache/

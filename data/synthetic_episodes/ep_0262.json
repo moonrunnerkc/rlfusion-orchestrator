@@ -1,1 +1,0 @@
-{"query": "How to train the PPO policy?", "fused_context": "No relevant context found.", "response": "RLFusion Orchestrator fuses RAG, CAG and graph via PPO-optimized weights for offline, proactive AI.", "reward": 0.3, "weights": {"rag": 0.0963, "cag": 0.6454, "graph": 0.2583}}

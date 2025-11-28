@@ -1,42 +1,61 @@
-# backend/config.yaml
-# Central configuration for RLFO. Edit freely. Everything is GPU-locked.
+# RLFusion Orchestrator Configuration
+# Default settings for local deployment with GPU acceleration
 
 llm:
-  model: "qwen2.5:14b"     # Better formatting, instruction following
-  host: "http://localhost:11434"
-  temperature: 0.72
+  model: llama3.1:8b
+  host: http://localhost:11434
+  temperature: 0.7
   max_tokens: 4096
 
 embedding:
-  model: "all-MiniLM-L6-v2"
-  device: "cuda"                    # GPU required - do not change
+  model: all-MiniLM-L6-v2
+  device: cuda
 
 rl:
-  policy_path: "../rl_policy.zip"
+  policy_path: rl_policy.zip
   timesteps: 10000
-  learning_rate: 3.0e-4
+  learning_rate: 0.0003
   batch_size: 64
   gamma: 0.99
   gae_lambda: 0.95
   clip_range: 0.2
 
 paths:
-  db: /home/brad/rlfusion/db/rlfo_cache.db
-  index: "indexes/rag_index.faiss"
-  ontology: "data/ontology.json"
-  docs: "data/docs"
-  synthetic_episodes: "../data/synthetic_episodes"
+  db: db/rlfo_cache.db
+  index: indexes/rag_index.faiss
+  ontology: data/ontology.json
+  docs: data/docs
+  synthetic_episodes: data/synthetic_episodes
 
 fusion:
   default_weights:
-    rag: 0.2
-    cag: 0.2
-    graph: 0.6
+    rag: 0.33
+    cag: 0.33
+    graph: 0.34
   temperature: 1.0
 
 critique:
   reward_scale: 1.0
   proactive_threshold: 0.75
+  critique_temperature: 0.2
+  proactive_reward_bonus: 0.25
 
-# Global GPU enforcement - everything runs on CUDA
-device: "cuda"
+web:
+  enabled: false
+  api_key: "YOUR_TAVILY_API_KEY_HERE"  # Get free key at https://tavily.com
+  search_type: all
+  max_results: 3
+  search_timeout: 10
+
+cswr:
+  enabled: true
+  top_k: 20
+  pack_token_budget: 1800
+  min_csw_score: 0.25
+  answerability_threshold: 0.55
+  vector_weight: 0.4
+  local_stability_weight: 0.3
+  question_fit_weight: 0.2
+  drift_penalty_weight: 0.1
+
+device: cuda

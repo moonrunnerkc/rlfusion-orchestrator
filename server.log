@@ -1,0 +1,260 @@
+nohup: ignoring input
+2025-11-28 16:04:14,782 | INFO | __main__ | Initialized on GPU: NVIDIA GeForce RTX 5070
+2025-11-28 16:04:14,782 | INFO | __main__ | Available VRAM: 11 GB
+/home/brad/rlfusion-public/backend/main.py:595: DeprecationWarning: 
+        on_event is deprecated, use lifespan event handlers instead.
+
+        Read more about it in the
+        [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+        
+  @app.on_event("startup")
+INFO:     Will watch for changes in these directories: ['/home/brad/rlfusion-public']
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [64029] using WatchFiles
+
+CONFIG LOADED FROM: /home/brad/rlfusion/backend/config.yaml
+docs → data/docs
+index → indexes/rag_index.faiss 
+
+FAISS using CPU mode (GPU disabled due to Blackwell compatibility)
+2025-11-28 16:04:19,571 | INFO | __mp_main__ | Initialized on GPU: NVIDIA GeForce RTX 5070
+2025-11-28 16:04:19,571 | INFO | __mp_main__ | Available VRAM: 11 GB
+2025-11-28 16:04:19,603 | INFO | main | Initialized on GPU: NVIDIA GeForce RTX 5070
+2025-11-28 16:04:19,603 | INFO | main | Available VRAM: 11 GB
+INFO:     Started server process [64157]
+INFO:     Waiting for application startup.
+2025-11-28 16:04:19,608 | INFO | main | Initializing RAG index...
+2025-11-28 16:04:19,608 | INFO | main | Loading RL policy...
+2025-11-28 16:04:19,622 | INFO | main | Policy loaded successfully on CPU
+2025-11-28 16:04:19,623 | INFO | main | ================================================================
+2025-11-28 16:04:19,623 | INFO | main | RLFUSION ORCHESTRATOR - BACKEND STARTED
+2025-11-28 16:04:19,623 | INFO | main | GPU: NVIDIA GeForce RTX 5070
+2025-11-28 16:04:19,623 | INFO | main | LLM: llama3.1:8b-instruct-q4_0
+2025-11-28 16:04:19,623 | INFO | main | PPO Policy: loaded on CPU
+2025-11-28 16:04:19,623 | INFO | main | ================================================================
+INFO:     Application startup complete.
+2025-11-28 16:04:19,664 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:20,014 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:20,365 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:20,716 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:21,067 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:21,418 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:21,769 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:22,120 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:22,471 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:22,822 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:23,173 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:23,524 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:23,875 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:24,226 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:24,577 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:24,928 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:25,279 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:25,630 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:25,981 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:26,332 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:26,682 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:27,033 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:27,383 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:27,734 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:28,085 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:28,436 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:28,786 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:29,137 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:29,488 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:29,839 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:30,190 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:30,541 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:30,892 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:31,243 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:31,594 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:31,945 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:32,296 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:32,647 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:32,998 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:33,349 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:33,699 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:34,050 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:34,401 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:34,752 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:35,104 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:35,455 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:35,806 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:36,157 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:36,508 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:36,858 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:37,209 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:37,560 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:37,911 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:38,262 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:38,614 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:38,965 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:39,315 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:39,666 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:40,016 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:40,367 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:40,717 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:41,068 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:41,421 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:41,771 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:42,122 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:42,473 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:42,824 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:43,174 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:43,525 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:43,876 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:44,226 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:44,577 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:44,928 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:45,279 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:45,630 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:45,980 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:46,332 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:46,683 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:47,034 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:47,385 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:47,736 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:48,087 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:48,438 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:48,789 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:49,140 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:49,491 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:49,841 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:50,193 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:50,544 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:50,895 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:51,246 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:51,596 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:51,947 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:52,298 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:52,649 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:53,000 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:53,351 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:53,702 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:54,054 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:54,405 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:54,756 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:55,106 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:55,457 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:55,808 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:56,159 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:56,510 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:56,860 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:57,211 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:57,562 | INFO | watchfiles.main | 1 change detected
+
+CONFIG LOADED FROM: /home/brad/rlfusion/backend/config.yaml
+docs → data/docs
+index → indexes/rag_index.faiss 
+
+FAISS using CPU mode (GPU disabled due to Blackwell compatibility)
+RAG index loaded from disk
+INFO:     127.0.0.1:46642 - "GET /ping HTTP/1.1" 200 OK
+2025-11-28 16:04:57,913 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:58,264 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:58,615 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:58,966 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:59,317 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:04:59,668 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:00,019 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:00,370 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:00,721 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:01,072 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:01,423 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:01,774 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:02,125 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:02,475 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:02,826 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:03,177 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:03,527 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:03,878 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:04,229 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:04,580 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:04,931 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:05,282 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:05,633 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:05,983 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:06,334 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:06,685 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:07,037 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:07,388 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:07,738 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:08,089 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:08,440 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:08,791 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:09,142 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:09,493 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:09,844 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:10,195 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:10,545 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:10,896 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:11,247 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:11,597 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:11,948 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:12,299 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:12,649 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:13,000 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:13,351 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:13,702 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:14,053 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:14,404 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:14,756 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:15,106 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:15,457 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:15,808 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:16,159 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:16,510 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:16,861 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:17,212 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:17,562 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:17,913 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:18,264 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:18,614 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:18,965 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:19,316 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:19,666 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:20,017 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:20,368 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:20,719 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:21,069 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:21,420 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:21,771 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:22,121 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:22,472 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:22,823 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:23,173 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:23,524 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:23,875 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:24,225 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:24,575 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:24,926 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:25,277 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:25,628 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:25,978 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:26,329 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:26,680 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:27,031 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:27,382 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:27,733 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:28,084 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:28,435 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:28,786 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:29,137 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:29,488 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:29,839 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:30,190 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:30,541 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:30,892 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:31,243 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:31,594 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:31,945 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:32,295 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:32,646 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:32,997 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:33,348 | INFO | watchfiles.main | 1 change detected
+2025-11-28 16:05:33,700 | INFO | watchfiles.main | 1 change detected
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [64157]
+INFO:     Stopping reloader process [64029]

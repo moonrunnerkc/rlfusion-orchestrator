@@ -1,1 +1,0 @@
-{"query": "Why offline training?", "fused_context": "No relevant context found.", "response": "RLFusion Orchestrator fuses RAG, CAG and graph via PPO-optimized weights for offline, proactive AI.", "reward": 0.8, "weights": {"rag": 0.4095, "cag": 0.4527, "graph": 0.1377}}
