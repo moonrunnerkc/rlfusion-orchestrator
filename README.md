@@ -66,7 +66,7 @@ frontend/                   # React application (optional)
 ### 1. Clone Repository
 
 ```bash
-git clone https://github.com/yourusername/rlfusion-orchestrator.git
+git clone https://github.com/moonrunnerkc/rlfusion-orchestrator.git
 cd rlfusion-orchestrator
 ```
 
