@@ -556,7 +556,8 @@ async def update_config(request: Dict[str, Any]) -> Dict[str, Any]:
     Update system configuration dynamically.
 
     Currently supports toggling web search functionality. Changes are
-    persisted to config.yaml for permanence across restarts.
+    persisted to config.yaml for permanence across restarts, but API
+    keys are never written back to prevent accidental exposure.
 
     Args:
         request: Dict with 'web.enabled' boolean
@@ -567,9 +568,17 @@ async def update_config(request: Dict[str, Any]) -> Dict[str, Any]:
     if "web" in request and "enabled" in request["web"]:
         cfg["web"]["enabled"] = request["web"]["enabled"]
 
+        # Save config but preserve API key placeholder
         config_path = Path(__file__).parent / "config.yaml"
+        config_to_save = cfg.copy()
+
+        # Replace actual API key with placeholder before saving
+        if "web" in config_to_save and "api_key" in config_to_save["web"]:
+            if config_to_save["web"]["api_key"] and not config_to_save["web"]["api_key"].startswith("YOUR_"):
+                config_to_save["web"]["api_key"] = "YOUR_TAVILY_API_KEY_HERE"
+
         with open(config_path, 'w') as f:
-            yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+            yaml.dump(config_to_save, f, default_flow_style=False, sort_keys=False)
 
         return {"status": "updated", "web": {"enabled": cfg["web"]["enabled"]}}
 
