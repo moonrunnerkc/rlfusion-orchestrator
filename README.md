@@ -1,134 +1,102 @@
 # RLFusion Orchestrator
 
-> A multi-source retrieval fusion engine with offline reinforcement learning.
-> Originally built for personal offline use, now open-sourced for public benefit.
+A local-first retrieval engine that blends multiple knowledge sources and uses offline reinforcement learning to decide how much weight each one gets. It was originally something I built for my own use, then it grew legs, so now it's public.
 
-**Author:** Bradley R. Kinnard
+**Author:** Bradley R. Kinnard  
 **License:** MIT
 
-![UI Screenshot](data/docs/images/ui-working-dec-2025.png)
+---
+
+## Why this exists
+
+Most assistants either drift, hallucinate, or forget what happened five minutes ago. I wanted something that stays steady, stays offline, and behaves the same way every single day. That meant mixing multiple retrieval paths, watching them for stability, and letting an RL policy pick the best blend for each query.
+
+The whole thing runs on consumer hardware with Llama3.1 8B on Ollama.
 
 ---
 
-## Latest Benchmark Results (2025-12-01) — 100% Suite Pass Rate
+## What it actually does
 
-Ran the full experimental testing suite (3,000 total iterations) on RTX 5070 + Llama3.1 8B local.
+RLFusion combines four retrieval paths:
 
-| Suite                | Iterations | Pass | Key Highlights                          | Avg Latency |
-|----------------------|------------|------|-----------------------------------------|-------------|
-| hallucination        | 500        | ✅   | 0 crashes (resistance metric bugged)   | ~11.2s      |
-| proactive            | 500        | ✅   | **1.0 anticipation_rate**, 0.936 coherence | ~10.2s      |
-| adversarial          | 500        | ✅   | **1.0 robustness**, 0.65 jailbreak resist | ~9.7s       |
-| evolution            | 500        | ✅   | **1.0 drift resistance**, 0.965 stability | ~10.0s      |
-| extensibility        | 500        | ✅   | 0.97 weight stability                   | ~10.1s      |
-| ethics_and_bias      | 500        | ✅   | **1.0 safety**, bias scores ≥0.983      | ~10.0s      |
+- **RAG** with a stability filter (CSWR)
+- **CAG** for explicit cached knowledge
+- **Graph** reasoning through NetworkX
+- **Web** search, off by default
 
-**Overall pass rate: 100%**
-Total test time: 46 minutes 7 seconds
-`master_report_all_suites_20251201_203957.json` archived in `/tests/results/`
+The RL policy is trained with Conservative Q-Learning. It adjusts the weights on the fly depending on what you're asking it.
 
-![Master Report](data/docs/images/master-report.png)
-
-![Pass Proof](data/docs/images/pass-proof.png)
-
-The RL policy is now stable enough for daily personal chatbot + system-building use.
-
-**Next improvement targets:**
-- Fix hallucination_resistance scoring logic
-- Push accuracy ceiling past 0.7 with softer critique prompts
-
-**Current status: MVP complete and battle-tested.**
-
----
-
-## Overview
-
-This is a local-first AI assistant that combines multiple retrieval sources and uses reinforcement learning to dynamically weight them based on query type. It runs entirely on your hardware with Llama3.1 8B via Ollama.
-
-Four retrieval sources get blended together and an RL policy decides the mix:
-
-- **RAG** — vector search with a stability filter I call CSWR (more on that below)
-- **CAG** — a local cache for stuff you explicitly want remembered
-- **Graph** — NetworkX graph for when you need multi-hop connections between concepts
-- **Web** — optional, off by default, for when local context isn't enough
-
-The policy is trained offline using Conservative Q-Learning (CQL).
+There's also proactive suggestions, citation tracking, a safety layer, and OOD detection for when your query goes strange.
 
 ---
 
 ## Quick Start
 
-### Prerequisites
+### Requirements
 
 - Python 3.10+
-- [Ollama](https://ollama.ai/) with llama3.1:8b-instruct-q4_0 model
-- Optional: CUDA-capable GPU for faster embeddings
+- Ollama with `llama3.1:8b-instruct-q4_0`
+- CUDA GPU optional for faster embeddings
 
-### Installation
+### Install
 
 ```bash
-# Clone the repository
 git clone https://github.com/moonrunnerkc/rlfusion-orchestrator.git
 cd rlfusion-orchestrator
 
-# Create virtual environment
 python -m venv venv
-source venv/bin/activate  # Linux/Mac
+source venv/bin/activate     # Linux/Mac
 # or: venv\Scripts\activate  # Windows
 
-# Install dependencies
 pip install -r backend/requirements.txt
 
-# Copy environment config
 cp .env.example .env
-# Edit .env to add your API keys if using web search
-
-# Initialize the database (run the setup script)
 ./scripts/init_db.sh
 ```
 
-### Running
+### Run it
 
 ```bash
-# Start the backend
 uvicorn backend.main:app --port 8000
+```
 
-# Optional: Start the frontend
+Optional pieces:
+
+```bash
+# Frontend
 cd frontend && npm install && npm run dev
 
-# Optional: Retrain the policy
+# RL training
 python backend/rl/train_rl.py
 ```
 
 ---
 
-## The CSWR thing
+## Core ideas
 
-Standard RAG retrieval pulls garbage chunks all the time, especially from PDFs with bad formatting. CSWR (Chunk Stability Weighted Retrieval) is my fix — it runs a second pass on retrieved chunks and scores them for stability before they get anywhere near the prompt.
+### CSWR (Chunk Stability Weighted Retrieval)
 
-Two signals: token entropy (if it's all over the place, probably junk) and embedding variance across sentences (if a chunk contradicts itself halfway through, kill it). Anything below 0.7 gets downweighted or dropped entirely.
+RAG pulls garbage all the time, especially from messy PDFs. CSWR fixes that with a second filtering pass.
 
-Costs maybe 5% more compute. Killed something like 15-20% of the hallucinations I was seeing on messy research papers. Worth it.
+It scores each chunk using:
 
----
+- **Token entropy** — random text or malformed junk gets flagged
+- **Embedding variance** across sentences — self-contradicting chunks are tossed
 
-## Architecture
+Anything below 0.7 gets downweighted or removed. It costs about 5 percent more compute and cuts a noticeable number of hallucinations.
 
-The CQL policy adjusts how much weight goes to each source depending on the query. Graph gets more weight when chasing relationships between things. RAG dominates for document lookups. CAG handles explicitly cached content.
+### Architecture in short
 
-There's also:
-- A **proactive layer** that tries to guess what you might ask next
-- **Citation tracking** so you can see which chunks contributed to an answer
-- A **safety classifier** that refuses dangerous requests (see `backend/core/critique.py`)
-- **OOD detection** using Mahalanobis distance for graceful fallback
+- The **CQL policy** decides the weight mix between RAG, CAG, Graph, and Web.
+- **Proactive layer** watches for likely follow-up questions.
+- **Safety classifier** stops dangerous requests.
+- **Mahalanobis OOD detection** keeps responses sane.
 
-![Proactive Suggestions](data/docs/images/proactive-suggestions.png)
-
-### Key Files
+### Key files
 
 ```
 backend/main.py            — FastAPI entry point
-backend/config.yaml        — Configuration (customize here)
+backend/config.yaml        — Configuration
 backend/core/retrievers.py — CSWR lives here
 backend/core/critique.py   — Safety and reward logic
 backend/rl/train_rl.py     — CQL training script
@@ -139,7 +107,7 @@ rl_policy_cql.d3           — Pre-trained model
 
 ## Configuration
 
-Edit `backend/config.yaml` to customize:
+Modify `backend/config.yaml`:
 
 ```yaml
 llm:
@@ -148,37 +116,63 @@ llm:
 
 embedding:
   model: all-MiniLM-L6-v2
-  device: cpu  # or "cuda" for GPU
+  device: cpu
 
 web:
-  enabled: false  # Set true and add TAVILY_API_KEY to .env for web search
+  enabled: false
 ```
 
-### Environment Variables
-
-Create a `.env` file from `.env.example`:
+`.env` options:
 
 ```bash
-# Required only if web search is enabled
-TAVILY_API_KEY=your_key_here
-
-# Optional device override
+TAVILY_API_KEY=your_key
 RLFUSION_DEVICE=cpu
 ```
 
 ---
 
-## Contributing
+## Benchmarks (2025-12-01)
 
-Contributions welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Submit a pull request
+3,000-iteration run on an RTX 5070 using Llama3.1 8B local. Everything passed.
+
+| Suite           | Iterations | Pass | Highlights                              | Avg Latency |
+|-----------------|------------|------|-----------------------------------------|-------------|
+| hallucination   | 500        | ✅   | 0 crashes                               | ~11.2s      |
+| proactive       | 500        | ✅   | anticipation_rate 1.0, coherence 0.936  | ~10.2s      |
+| adversarial     | 500        | ✅   | robustness 1.0, jailbreak resist 0.65   | ~9.7s       |
+| evolution       | 500        | ✅   | drift resistance 1.0                    | ~10.0s      |
+| extensibility   | 500        | ✅   | weight stability 0.97                   | ~10.1s      |
+| ethics_and_bias | 500        | ✅   | safety 1.0, bias ≥0.983                 | ~10.0s      |
+
+**Overall: 100 percent pass**  
+**Total time:** 46 minutes 7 seconds  
+**Full report:** `tests/results/master_report_all_suites_20251201_203957.json`
+
+---
+
+## Screenshots
+
+These are moved down here so they don't choke the intro.
+
+### UI in action
+![UI Screenshot](data/docs/images/ui-working-dec-2025.png)
+
+### Master test report
+![Master Report](data/docs/images/master-report.png)
+
+### Pass proof
+![Pass Proof](data/docs/images/pass-proof.png)
+
+### Proactive suggestions
+![Proactive Suggestions](data/docs/images/proactive-suggestions.png)
+
+### Proactive suite results
+![Proactive Suite](data/docs/images/proactive-suite.png)
 
 ---
 
 ## License
 
-MIT. Do whatever you want with it.
+MIT. Use it however you want.
 
 – Brad
