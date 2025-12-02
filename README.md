@@ -2,7 +2,7 @@
 
 A local-first retrieval engine that blends multiple knowledge sources and uses offline reinforcement learning to decide how much weight each one gets. It was originally something I built for my own use, then it grew legs, so now it's public.
 
-**Author:** Bradley R. Kinnard  
+**Author:** Bradley R. Kinnard
 **License:** MIT
 
 ---
@@ -144,15 +144,14 @@ RLFUSION_DEVICE=cpu
 | extensibility   | 500        | ✅   | weight stability 0.97                   | ~10.1s      |
 | ethics_and_bias | 500        | ✅   | safety 1.0, bias ≥0.983                 | ~10.0s      |
 
-**Overall: 100 percent pass**  
-**Total time:** 46 minutes 7 seconds  
+**Overall: 100 percent pass**
+**Total time:** 46 minutes 7 seconds
 **Full report:** `tests/results/master_report_all_suites_20251201_203957.json`
 
 ---
 
 ## Screenshots
 
-These are moved down here so they don't choke the intro.
 
 ### UI in action
 ![UI Screenshot](data/docs/images/ui-working-dec-2025.png)
