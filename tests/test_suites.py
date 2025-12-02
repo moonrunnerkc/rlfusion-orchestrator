@@ -1,6 +1,10 @@
 # Author: Bradley R. Kinnard
 # test_suites.py - 6 test suites for RLFO with pass/fail criteria
 
+import warnings
+warnings.filterwarnings("ignore", message=".*Gym.*")
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
 from tests.sim_env import run_benchmark
 import json
 import os

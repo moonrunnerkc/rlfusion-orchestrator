@@ -5,7 +5,7 @@ llm:
   max_tokens: 4096
 embedding:
   model: all-MiniLM-L6-v2
-  device: cpu
+  device: cuda
 rl:
   policy_path: rl_policy_cql.d3
   timesteps: 10000

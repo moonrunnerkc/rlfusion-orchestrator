@@ -50,9 +50,12 @@ rag_index.faiss
 # === User data & training artifacts ===
 data/docs/*
 !data/docs/.gitkeep
+!data/docs/images/
 data/synthetic_episodes/
 training/logs/
-tests/results/
+tests/results/*
+!tests/results/.gitkeep
+!tests/results/master_report_all_suites_*.json
 
 # === IDE / Editor junk ===
 .vscode/

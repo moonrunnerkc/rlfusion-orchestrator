@@ -2,6 +2,10 @@
 # sim_env.py - batch runner for FusionEnv stress testing
 
 from __future__ import annotations
+import warnings
+warnings.filterwarnings("ignore", message=".*Gym.*")
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
 import sys
 import os
 from pathlib import Path

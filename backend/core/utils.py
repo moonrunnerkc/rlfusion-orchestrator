@@ -7,10 +7,23 @@ import os
 from pathlib import Path
 from typing import List
 import numpy as np
+import yaml
 from sentence_transformers import SentenceTransformer
 
-# Device selection based on config or environment
-_device = os.environ.get("RLFUSION_DEVICE", "cpu")
+# Load device from config, fallback to env var, then to cuda if available
+def _get_device() -> str:
+    env_device = os.environ.get("RLFUSION_DEVICE")
+    if env_device:
+        return env_device
+    try:
+        cfg_path = Path(__file__).parent.parent / "config.yaml"
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f)
+        return cfg.get("embedding", {}).get("device", "cuda")
+    except:
+        return "cuda"
+
+_device = _get_device()
 embedder = SentenceTransformer("BAAI/bge-small-en-v1.5", device=_device)
 
 

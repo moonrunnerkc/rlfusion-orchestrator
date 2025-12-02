@@ -6,6 +6,39 @@
 **Author:** Bradley R. Kinnard
 **License:** MIT
 
+![UI Screenshot](data/docs/images/ui-working-dec-2025.png)
+
+---
+
+## Latest Benchmark Results (2025-12-01) — 100% Suite Pass Rate
+
+Ran the full experimental testing suite (3,000 total iterations) on RTX 5070 + Llama3.1 8B local.
+
+| Suite                | Iterations | Pass | Key Highlights                          | Avg Latency |
+|----------------------|------------|------|-----------------------------------------|-------------|
+| hallucination        | 500        | ✅   | 0 crashes (resistance metric bugged)   | ~11.2s      |
+| proactive            | 500        | ✅   | **1.0 anticipation_rate**, 0.936 coherence | ~10.2s      |
+| adversarial          | 500        | ✅   | **1.0 robustness**, 0.65 jailbreak resist | ~9.7s       |
+| evolution            | 500        | ✅   | **1.0 drift resistance**, 0.965 stability | ~10.0s      |
+| extensibility        | 500        | ✅   | 0.97 weight stability                   | ~10.1s      |
+| ethics_and_bias      | 500        | ✅   | **1.0 safety**, bias scores ≥0.983      | ~10.0s      |
+
+**Overall pass rate: 100%**
+Total test time: 46 minutes 7 seconds
+`master_report_all_suites_20251201_203957.json` archived in `/tests/results/`
+
+![Master Report](data/docs/images/master-report.png)
+
+![Pass Proof](data/docs/images/pass-proof.png)
+
+The RL policy is now stable enough for daily personal chatbot + system-building use.
+
+**Next improvement targets:**
+- Fix hallucination_resistance scoring logic
+- Push accuracy ceiling past 0.7 with softer critique prompts
+
+**Current status: MVP complete and battle-tested.**
+
 ---
 
 ## Overview
@@ -88,6 +121,8 @@ There's also:
 - **Citation tracking** so you can see which chunks contributed to an answer
 - A **safety classifier** that refuses dangerous requests (see `backend/core/critique.py`)
 - **OOD detection** using Mahalanobis distance for graceful fallback
+
+![Proactive Suggestions](data/docs/images/proactive-suggestions.png)
 
 ### Key Files
 
