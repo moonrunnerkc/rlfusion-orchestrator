@@ -6,6 +6,8 @@ A local-first system I built after getting fed up with assistants drifting, forg
 **LinkedIn:** https://www.linkedin.com/in/brad-kinnard/
 
 **License:** [MIT](LICENSE)
+**Whitepaper:** [WHITEPAPER.md](WHITEPAPER.md) — full technical write-up covering CSWR, CQL routing, self-critique rewards, and benchmark results.
+
 If you use this work in your own project, research, or write-up, please cite this repo and my LinkedIn above.
 
 ---
