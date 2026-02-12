@@ -47,6 +47,153 @@ function saveChats(chats: ChatSession[]) {
   localStorage.setItem('rlfusion_chats', JSON.stringify(chats));
 }
 
+// RAG Documents panel — upload + reindex
+function ReindexButton() {
+  const [status, setStatus] = useState<'idle' | 'uploading' | 'indexing' | 'done' | 'empty' | 'error'>('idle');
+  const [details, setDetails] = useState<string>('');
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const uploadAndIndex = async (files: FileList | File[]) => {
+    const allowed = ['.txt', '.md', '.pdf'];
+    const valid = Array.from(files).filter(f =>
+      allowed.some(ext => f.name.toLowerCase().endsWith(ext))
+    );
+    if (valid.length === 0) {
+      setStatus('error');
+      setDetails('Only .txt, .md, .pdf files accepted');
+      setTimeout(() => { setStatus('idle'); setDetails(''); }, 3000);
+      return;
+    }
+
+    // Upload
+    setStatus('uploading');
+    setDetails(`Uploading ${valid.length} file${valid.length > 1 ? 's' : ''}...`);
+    const form = new FormData();
+    valid.forEach(f => form.append('files', f));
+
+    try {
+      const upRes = await fetch('http://localhost:8000/api/upload', { method: 'POST', body: form });
+      const upData = await upRes.json();
+      if (upData.total_saved === 0) {
+        setStatus('error');
+        setDetails(upData.message || 'Upload failed');
+        setTimeout(() => { setStatus('idle'); setDetails(''); }, 3000);
+        return;
+      }
+
+      // Auto-reindex after upload
+      setStatus('indexing');
+      setDetails(`Uploaded ${upData.total_saved} — building index...`);
+      const ixRes = await fetch('http://localhost:8000/api/reindex', { method: 'POST' });
+      const ixData = await ixRes.json();
+      setStatus('done');
+      setDetails(`${ixData.files_processed} files, ${ixData.chunks_indexed} chunks (${ixData.elapsed_seconds}s)`);
+      setTimeout(() => { setStatus('idle'); setDetails(''); }, 6000);
+    } catch {
+      setStatus('error');
+      setDetails('Backend unreachable');
+      setTimeout(() => { setStatus('idle'); setDetails(''); }, 4000);
+    }
+  };
+
+  const handleReindexOnly = async () => {
+    setStatus('indexing');
+    setDetails('Rebuilding index...');
+    try {
+      const res = await fetch('http://localhost:8000/api/reindex', { method: 'POST' });
+      const data = await res.json();
+      if (data.status === 'empty') {
+        setStatus('empty');
+        setDetails('No documents in data/docs/');
+      } else {
+        setStatus('done');
+        setDetails(`${data.files_processed} files, ${data.chunks_indexed} chunks (${data.elapsed_seconds}s)`);
+      }
+      setTimeout(() => { setStatus('idle'); setDetails(''); }, 5000);
+    } catch {
+      setStatus('error');
+      setDetails('Backend unreachable');
+      setTimeout(() => { setStatus('idle'); setDetails(''); }, 4000);
+    }
+  };
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    if (e.dataTransfer.files.length > 0) uploadAndIndex(e.dataTransfer.files);
+  };
+
+  const onFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      uploadAndIndex(e.target.files);
+      e.target.value = '';
+    }
+  };
+
+  const busy = status === 'uploading' || status === 'indexing';
+
+  return (
+    <div className="pt-4 border-t border-gray-800">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <span className="text-lg">📄</span>
+          <span className="text-sm text-[var(--accent)]">RAG Documents</span>
+        </div>
+        <button
+          onClick={handleReindexOnly}
+          disabled={busy}
+          className="text-xs text-gray-400 hover:text-cyan-400 transition disabled:opacity-40"
+          title="Rebuild index without uploading"
+        >
+          ↻ Reindex
+        </button>
+      </div>
+
+      {/* Drop zone */}
+      <div
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={onDrop}
+        onClick={() => !busy && fileInputRef.current?.click()}
+        className={`w-full border-2 border-dashed rounded-lg px-3 py-4 text-center cursor-pointer transition ${
+          dragOver ? 'border-cyan-400 bg-cyan-500/10' :
+          busy ? 'border-gray-700 bg-gray-800/30 cursor-wait' :
+          'border-gray-700 hover:border-gray-500 hover:bg-gray-800/30'
+        }`}
+      >
+        {busy ? (
+          <p className="text-xs text-gray-400 animate-pulse">{details}</p>
+        ) : (
+          <>
+            <p className="text-sm text-gray-400">Drop files here</p>
+            <p className="text-xs text-gray-600 mt-1">.txt  .md  .pdf</p>
+          </>
+        )}
+      </div>
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept=".txt,.md,.pdf"
+        onChange={onFileSelect}
+        className="hidden"
+      />
+
+      {/* Status feedback */}
+      {status === 'done' && details && (
+        <p className="text-xs text-emerald-400 mt-1">✓ {details}</p>
+      )}
+      {status === 'empty' && details && (
+        <p className="text-xs text-amber-400 mt-1">⚠ {details}</p>
+      )}
+      {status === 'error' && details && (
+        <p className="text-xs text-red-400 mt-1">✕ {details}</p>
+      )}
+    </div>
+  );
+}
+
 // Inline Web Toggle Component
 function WebToggle() {
   const [webEnabled, setWebEnabled] = useState(true);
@@ -427,6 +574,9 @@ export default function App() {
               </div>
             ))}
           </div>
+
+          {/* Reindex Documents */}
+          <ReindexButton />
 
           {/* Web Toggle with Status */}
           <WebToggle />

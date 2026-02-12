@@ -492,6 +492,79 @@ async def ping(request: Request) -> Dict[str, Any]:
     }
 
 
+@app.post("/api/upload")
+@limiter.limit("10/minute")
+async def upload_documents(request: Request) -> Dict[str, Any]:
+    """Upload files to data/docs/ for RAG indexing."""
+    from fastapi import UploadFile
+    import shutil
+
+    form = await request.form()
+    files = form.getlist("files")
+    if not files:
+        return {"status": "error", "message": "No files provided"}
+
+    docs_path = PROJECT_ROOT / "data" / "docs"
+    docs_path.mkdir(parents=True, exist_ok=True)
+
+    saved, skipped = [], []
+    allowed = {".txt", ".md", ".pdf"}
+
+    for f in files:
+        if not hasattr(f, 'filename'):
+            continue
+        ext = Path(f.filename).suffix.lower()
+        if ext not in allowed:
+            skipped.append(f.filename)
+            continue
+        dest = docs_path / f.filename
+        content = await f.read()
+        dest.write_bytes(content)
+        saved.append(f.filename)
+        logger.info(f"Uploaded: {f.filename} ({len(content)} bytes)")
+
+    return {
+        "status": "uploaded",
+        "saved": saved,
+        "skipped": skipped,
+        "total_saved": len(saved),
+        "total_skipped": len(skipped),
+    }
+
+
+@app.post("/api/reindex")
+@limiter.limit("3/minute")
+async def reindex_documents(request: Request) -> Dict[str, Any]:
+    """Rebuild the RAG FAISS index from documents in data/docs/."""
+    from backend.core.retrievers import build_rag_index, _get_docs_path, _get_metadata_path
+    import time
+
+    docs_path = _get_docs_path()
+    supported = list(docs_path.rglob("*.txt")) + list(docs_path.rglob("*.md")) + list(docs_path.rglob("*.pdf"))
+
+    if not supported:
+        return {
+            "status": "empty",
+            "message": "No documents found. Add .txt, .md, or .pdf files to data/docs/ and try again.",
+            "docs_path": str(docs_path),
+        }
+
+    t0 = time.time()
+    index = build_rag_index()
+    elapsed = round(time.time() - t0, 2)
+
+    meta_path = _get_metadata_path()
+    chunk_count = len(json.loads(meta_path.read_text())) if meta_path.exists() else 0
+
+    logger.info(f"Reindex complete: {len(supported)} files, {chunk_count} chunks, {elapsed}s")
+    return {
+        "status": "reindexed",
+        "files_processed": len(supported),
+        "chunks_indexed": chunk_count,
+        "elapsed_seconds": elapsed,
+    }
+
+
 @app.delete("/api/reset")
 @limiter.limit("5/minute")
 async def reset_state(request: Request) -> Dict[str, Any]:
