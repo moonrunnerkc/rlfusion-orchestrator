@@ -174,6 +174,28 @@ The UI will be available at [http://localhost:5173](http://localhost:5173).
 python backend/rl/train_rl.py
 ```
 
+### What to Expect on a Fresh Install
+
+RLFusion ships with a pre-trained CQL policy that provides reasonable defaults out of the box, but it genuinely improves with use.
+
+The system learns from every interaction. Each query you send gets scored by the critique layer, and those scores feed back into the RL policy that controls how retrieval sources are weighted. For the first **100–500 interactions**, the system is still calibrating — responses will be decent but the routing won't be personalized to your usage patterns yet.
+
+After that warm-up window:
+
+- Retrieval weights start reflecting what actually works for your queries
+- The CAG cache builds up with high-quality answers the system has seen before
+- Proactive suggestions become more relevant to your workflow
+- The critique layer has enough signal to meaningfully differentiate good from bad responses
+
+This is by design. The policy updates slowly and conservatively to avoid behavior swings. You won't notice a sudden shift — it just gradually gets better at knowing which retrieval path to trust for different types of questions.
+
+If you want to accelerate the warm-up, you can batch-seed episodes:
+
+```bash
+python backend/rl/add_batch_episodes.py
+python backend/rl/train_rl.py
+```
+
 ---
 
 ## Environment Variables
