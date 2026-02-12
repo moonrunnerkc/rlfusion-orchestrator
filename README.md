@@ -10,6 +10,8 @@ A local-first system I built after getting fed up with assistants drifting, forg
 
 If you use this work in your own project, research, or write-up, please cite this repo and my LinkedIn above.
 
+![RLFusion Orchestrator UI](data/docs/images/ui-screenshot-rlfusion.png)
+
 ---
 
 ## What This Actually Is
