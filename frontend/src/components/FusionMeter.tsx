@@ -64,7 +64,7 @@ export default function FusionMeter({ weights }: FusionMeterProps) {
 
         <div className="mt-10 pt-8 border-t border-gray-700 text-center">
           <div className="text-gray-500 text-sm font-light tracking-wider">
-            RTX 5070 • Blackwell • 11 GB VRAM
+            RLFusion Orchestrator
           </div>
         </div>
       </div>

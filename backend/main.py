@@ -85,7 +85,7 @@ class CQLPolicyWrapper:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _rl_policy
-    
+
     # ── Ollama health check ──────────────────────────────────
     ollama_host = cfg["llm"]["host"]
     ollama_model = cfg["llm"]["model"]
@@ -477,8 +477,15 @@ async def update_config(request: Request, body: Dict[str, Any]) -> Dict[str, Any
 @app.get("/ping")
 @limiter.limit("10/minute")
 async def ping(request: Request) -> Dict[str, Any]:
-    return {"status": "alive", "gpu": torch.cuda.get_device_name(0),
-            "policy_exists": Path(cfg["rl"]["policy_path"]).exists()}
+    gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
+    return {
+        "status": "alive",
+        "gpu": gpu_name,
+        "device": "cuda" if torch.cuda.is_available() else "cpu",
+        "model": cfg["llm"]["model"],
+        "policy": "CQL" if Path(cfg["rl"]["policy_path"]).exists() else "heuristic",
+        "policy_exists": Path(cfg["rl"]["policy_path"]).exists(),
+    }
 
 
 if __name__ == "__main__":

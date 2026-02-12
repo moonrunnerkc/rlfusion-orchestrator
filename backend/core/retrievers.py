@@ -408,7 +408,13 @@ def retrieve_rag(query: str, mode: str = "chat", top_k: int = None) -> str:
 
     vec = embed_text(query).reshape(1, 384)
     index = get_rag_index()
-    dists, idxs = index.search(vec, top_k)
+
+    # empty index — nothing to search
+    if index.ntotal == 0:
+        return ""
+
+    search_k = min(top_k, index.ntotal)
+    dists, idxs = index.search(vec, search_k)
 
     meta_path = _get_metadata_path()
     meta = json.loads(meta_path.read_text()) if meta_path.exists() else []
@@ -416,9 +422,12 @@ def retrieve_rag(query: str, mode: str = "chat", top_k: int = None) -> str:
     chunks = []
     for i in range(len(idxs[0])):
         idx, dist = int(idxs[0][i]), float(dists[0][i])
+        # FAISS returns -1 for missing neighbors
+        if idx < 0 or idx >= len(meta):
+            continue
         chunks.append({
-            "text": meta[idx]["text"] if idx < len(meta) else "",
-            "source": meta[idx]["source"] if idx < len(meta) else "unknown",
+            "text": meta[idx]["text"],
+            "source": meta[idx]["source"],
             "score": 1.0 / (1.0 + dist), "id": str(idx),
             "local_stability": 0.0, "question_fit": 0.0, "drift_penalty": 0.0, "csw_score": 0.0
         })
@@ -465,7 +474,13 @@ def retrieve_rag_structured(query: str, top_k: int = 5) -> list:
 
     vec = embed_text(query).reshape(1, 384)
     index = get_rag_index()
-    dists, idxs = index.search(vec, top_k)
+
+    # empty index — nothing to search
+    if index.ntotal == 0:
+        return []
+
+    search_k = min(top_k, index.ntotal)
+    dists, idxs = index.search(vec, search_k)
 
     meta_path = _get_metadata_path()
     meta = json.loads(meta_path.read_text()) if meta_path.exists() else []
@@ -473,9 +488,12 @@ def retrieve_rag_structured(query: str, top_k: int = 5) -> list:
     chunks = []
     for i in range(len(idxs[0])):
         idx, dist = int(idxs[0][i]), float(dists[0][i])
+        # FAISS returns -1 for missing neighbors
+        if idx < 0 or idx >= len(meta):
+            continue
         chunks.append({
-            "text": meta[idx]["text"] if idx < len(meta) else "",
-            "source": meta[idx]["source"] if idx < len(meta) else "unknown",
+            "text": meta[idx]["text"],
+            "source": meta[idx]["source"],
             "score": 1.0 / (1.0 + dist), "id": str(idx),
             "local_stability": 0.0, "question_fit": 0.0, "drift_penalty": 0.0, "csw_score": 0.0
         })

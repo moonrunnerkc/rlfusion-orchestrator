@@ -114,7 +114,23 @@ export default function App() {
   const [proactiveHint, setProactiveHint] = useState<string>('Waiting for next query...');
   const [isLoading, setIsLoading] = useState(false);
   const [mode, setMode] = useState<'chat' | 'build' | 'test'>('chat');
+  const [systemInfo, setSystemInfo] = useState<{gpu: string | null; model: string; policy: string; device: string}>({
+    gpu: null, model: '—', policy: '—', device: 'cpu'
+  });
   const ws = useRef<WebSocket | null>(null);
+
+  // Fetch system info from backend on mount
+  useEffect(() => {
+    fetch('http://localhost:8000/ping')
+      .then(res => res.json())
+      .then(data => setSystemInfo({
+        gpu: data.gpu || null,
+        model: data.model || '—',
+        policy: data.policy || '—',
+        device: data.device || 'cpu',
+      }))
+      .catch(() => {});
+  }, []);
 
   // Save messages to current chat when they change
   useEffect(() => {
@@ -415,10 +431,9 @@ export default function App() {
 
           {/* System Info */}
           <div className="text-xs text-[var(--muted)] space-y-1 pt-6 border-t border-gray-800">
-            <div className="flex justify-between"><span>Model</span><span className="text-[var(--accent)]">qwen2:7b</span></div>
-            <div className="flex justify-between"><span>GPU</span><span className="text-[var(--accent)]">RTX 5070</span></div>
-            <div className="flex justify-between"><span>VRAM</span><span className="text-[var(--accent)]">11 GB</span></div>
-            <div className="flex justify-between"><span>Policy</span><span className="text-[var(--accent)]">PPO (live)</span></div>
+            <div className="flex justify-between"><span>Model</span><span className="text-[var(--accent)]">{systemInfo.model}</span></div>
+            <div className="flex justify-between"><span>Device</span><span className="text-[var(--accent)]">{systemInfo.gpu || systemInfo.device.toUpperCase()}</span></div>
+            <div className="flex justify-between"><span>Policy</span><span className="text-[var(--accent)]">{systemInfo.policy}</span></div>
           </div>
         </div>
       </div>

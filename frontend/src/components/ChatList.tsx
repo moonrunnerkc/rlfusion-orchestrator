@@ -38,7 +38,7 @@ export default function ChatList({ messages, isLoading, proactiveHint, onSuggest
           <h2 className="text-3xl mb-4 font-bold text-[var(--accent)]">
             RLFusion Orchestrator
           </h2>
-          <p className="text-lg text-[var(--muted)]">Your RTX 5070 is alive. Ask me anything.</p>
+          <p className="text-lg text-[var(--muted)]">System ready. Ask me anything.</p>
         </div>
       )}
 

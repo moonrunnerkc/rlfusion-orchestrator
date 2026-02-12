@@ -3,11 +3,19 @@ import { useEffect, useState } from 'react';
 
 export default function ConnectionStatus() {
   const [status, setStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
+  const [deviceLabel, setDeviceLabel] = useState<string>('');
 
   useEffect(() => {
-    // Yeah, we're actually checking if the brain is home
+    // Check if the brain is home
     const ws = new WebSocket('ws://localhost:8000/ws');
-    ws.onopen = () => setStatus('connected');
+    ws.onopen = () => {
+      setStatus('connected');
+      // grab device info once connected
+      fetch('http://localhost:8000/ping')
+        .then(r => r.json())
+        .then(d => setDeviceLabel(d.gpu || d.device?.toUpperCase() || 'CPU'))
+        .catch(() => setDeviceLabel('Local'));
+    };
     ws.onerror = ws.onclose = () => setStatus('error');
     return () => ws.close();
   }, []);
@@ -93,7 +101,7 @@ export default function ConnectionStatus() {
 
               {/* GPU info - more subtle, but still readable */}
               <div className="text-gray-400 text-xs font-light tracking-wide">
-                RTX 5070 • Blackwell • {status === 'connected' ? '11 GB VRAM' : 'Waiting...'}
+                {status === 'connected' ? deviceLabel : 'Waiting...'}
               </div>
             </div>
 
