@@ -130,7 +130,7 @@ The system also includes:
    git clone https://github.com/moonrunnerkc/rlfusion-orchestrator.git
    cd rlfusion-orchestrator
 
-   python -m venv venv
+   python3 -m venv venv
    source venv/bin/activate  # On Windows: venv\Scripts\activate
    pip install -r backend/requirements.txt
    ```
