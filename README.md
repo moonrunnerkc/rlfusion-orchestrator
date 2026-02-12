@@ -40,48 +40,29 @@ This system wasn't built to look impressive. It was built to stay stable and san
 ## Architecture
 
 ```mermaid
-flowchart TB
-    subgraph Input
-        Q[User Query]
+graph TD
+    User[User Query] --> Router{RL Router}
+
+    subgraph "Retrieval Layer (Weighted by RL)"
+        Router -->|Weight A| RAG[RAG + CSWR]
+        Router -->|Weight B| CAG[CAG Cache]
+        Router -->|Weight C| Graph[Graph Reasoning]
+        Router -->|Weight D| Web[Web Search]
     end
 
-    subgraph Retrieval["Retrieval Paths"]
-        RAG["RAG + CSWR\n(Stability-Filtered Vectors)"]
-        CAG["CAG\n(Exact Cache)"]
-        GRAPH["Graph\n(Multi-Hop via NetworkX)"]
-        WEB["Web Search\n(Optional, Off by Default)"]
+    RAG & CAG & Graph & Web --> Fusion[Fusion Engine]
+
+    subgraph "Safety & Evaluation"
+        Fusion --> OOD[OOD Detection]
+        OOD --> Attack[Attack Screen]
+        Attack --> LLM[Llama 3.1 Generation]
+        LLM --> Critique[Critique & Safety]
     end
 
-    subgraph RL["RL Policy (CQL)"]
-        POLICY["Offline CQL Policy\n(d3rlpy)"]
-        WEIGHTS["Dynamic Fusion Weights\nRAG | CAG | Graph | Web"]
-    end
+    Critique -->|Pass| Final[Final Response]
+    Critique -->|Fail| RAG
 
-    subgraph Safety["Safety & Quality"]
-        OOD["OOD Detection\n(Mahalanobis)"]
-        CRITIQUE["Critique Layer\n(Self-Evaluation)"]
-        ATTACK["Attack Detection\n(Prompt Injection / Jailbreak)"]
-    end
-
-    subgraph Generation
-        LLM["Ollama LLM\n(Llama3.1 8B)"]
-        PROACTIVE["Proactive Reasoning\n(Next-Step Suggestions)"]
-    end
-
-    subgraph Output
-        RESP[Response + Citations + Fusion Weights]
-    end
-
-    Q --> RAG & CAG & GRAPH & WEB
-    Q --> POLICY
-    POLICY --> WEIGHTS
-    RAG & CAG & GRAPH & WEB --> WEIGHTS
-    WEIGHTS --> OOD
-    OOD --> ATTACK
-    ATTACK --> LLM
-    LLM --> CRITIQUE
-    CRITIQUE --> PROACTIVE
-    PROACTIVE --> RESP
+    Final -->|Logs| OfflineRL[Offline RL Policy Update]
 ```
 
 ### Data Flow Summary
@@ -141,17 +122,29 @@ The system also includes:
 
 ### Setup
 
-```bash
-git clone https://github.com/moonrunnerkc/rlfusion-orchestrator.git
-cd rlfusion-orchestrator
+1. **Clone and prepare**
 
-python -m venv venv
-source venv/bin/activate
-pip install -r backend/requirements.txt
+   ```bash
+   git clone https://github.com/moonrunnerkc/rlfusion-orchestrator.git
+   cd rlfusion-orchestrator
 
-cp .env.example .env
-./scripts/init_db.sh
-```
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   pip install -r backend/requirements.txt
+   ```
+
+2. **Initialize environment**
+
+   ```bash
+   cp .env.example .env
+   ./scripts/init_db.sh
+   ```
+
+3. **Pull the required model**
+
+   ```bash
+   ollama pull llama3.1:8b-instruct-q4_0
+   ```
 
 ### Run the Backend
 
@@ -321,4 +314,4 @@ See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## License
 
-[MIT](LICENSE) — Copyright (c) 2025 Bradley R. Kinnard
+[MIT](LICENSE) — Copyright (c) 2025-2026 Bradley R. Kinnard
