@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import types
+import uuid
 import warnings
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -57,6 +58,7 @@ else:
     logger.info("Running on CPU")
 
 _rl_policy = None
+_boot_id: str = ""
 
 
 class CQLPolicyWrapper:
@@ -84,7 +86,8 @@ class CQLPolicyWrapper:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _rl_policy
+    global _rl_policy, _boot_id
+    _boot_id = uuid.uuid4().hex[:12]
 
     # ── Ollama health check ──────────────────────────────────
     ollama_host = cfg["llm"]["host"]
@@ -485,7 +488,28 @@ async def ping(request: Request) -> Dict[str, Any]:
         "model": cfg["llm"]["model"],
         "policy": "CQL" if Path(cfg["rl"]["policy_path"]).exists() else "heuristic",
         "policy_exists": Path(cfg["rl"]["policy_path"]).exists(),
+        "boot_id": _boot_id,
     }
+
+
+@app.delete("/api/reset")
+@limiter.limit("5/minute")
+async def reset_state(request: Request) -> Dict[str, Any]:
+    """Wipe all transient state: cache, episodes, replay, conversations."""
+    import sqlite3
+    db_path = PROJECT_ROOT / cfg["paths"]["db"]
+    if not db_path.exists():
+        return {"status": "no database"}
+    conn = sqlite3.connect(str(db_path))
+    for table in ("cache", "episodes", "replay", "conversations"):
+        conn.execute(f"DELETE FROM {table}")
+    conn.commit()
+    conn.close()
+    # clear in-memory conversation state
+    from backend.core.memory import ConversationMemory
+    ConversationMemory.clear_all()
+    logger.info("Full state reset via /api/reset")
+    return {"status": "reset", "tables_cleared": ["cache", "episodes", "replay", "conversations"]}
 
 
 if __name__ == "__main__":

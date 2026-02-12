@@ -194,6 +194,11 @@ class ConversationMemory:
             if session_id in self._sessions:
                 del self._sessions[session_id]
 
+    @classmethod
+    def clear_all(cls) -> None:
+        """Nuke every in-memory session. Used by /api/reset."""
+        conversation_memory._sessions.clear()
+
 
 # Global instance
 conversation_memory = ConversationMemory()

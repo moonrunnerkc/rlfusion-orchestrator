@@ -119,16 +119,27 @@ export default function App() {
   });
   const ws = useRef<WebSocket | null>(null);
 
-  // Fetch system info from backend on mount
+  // Fetch system info from backend on mount — clear stale chats on new server boot
   useEffect(() => {
     fetch('http://localhost:8000/ping')
       .then(res => res.json())
-      .then(data => setSystemInfo({
-        gpu: data.gpu || null,
-        model: data.model || '—',
-        policy: data.policy || '—',
-        device: data.device || 'cpu',
-      }))
+      .then(data => {
+        setSystemInfo({
+          gpu: data.gpu || null,
+          model: data.model || '—',
+          policy: data.policy || '—',
+          device: data.device || 'cpu',
+        });
+        // If the server rebooted, wipe client-side state so it feels fresh
+        const prevBoot = localStorage.getItem('rlfusion_boot_id');
+        if (data.boot_id && prevBoot !== data.boot_id) {
+          localStorage.setItem('rlfusion_boot_id', data.boot_id);
+          localStorage.removeItem('rlfusion_chats');
+          setChats([]);
+          setCurrentChatId(null);
+          setMessages([]);
+        }
+      })
       .catch(() => {});
   }, []);
 
