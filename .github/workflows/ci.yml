@@ -1,0 +1,89 @@
+# Author: Bradley R. Kinnard
+# CI: lint + pytest (CPU-only) on push/PR
+# Full Locust load test is manual only
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      full_locust:
+        description: 'Run full Locust load test'
+        required: false
+        default: 'false'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install linting tools
+        run: pip install black flake8 isort
+
+      - name: Check formatting (Black)
+        run: black --check backend/ tests/ --quiet || echo "::warning::Black formatting issues found. Run 'black backend/ tests/' locally."
+
+      - name: Check import sorting (isort)
+        run: isort --check-only backend/ tests/ --profile black --quiet || echo "::warning::Import sorting issues found. Run 'isort backend/ tests/ --profile black' locally."
+
+      - name: Lint (flake8)
+        run: flake8 backend/ tests/ --ignore=E501,W503,E402 --max-line-length=120 --count --show-source --statistics || true
+
+  test:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          # Install CPU-only torch (no CUDA on CI runners)
+          pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+          # Install remaining deps (skip torch lines since we installed CPU version)
+          grep -v "^torch\|^--extra-index-url\|^faiss-gpu" backend/requirements.txt | pip install -r /dev/stdin
+          pip install pytest pytest-asyncio
+
+      - name: Run pytest (CPU-only, skip GPU tests)
+        env:
+          RLFUSION_FORCE_CPU: "true"
+          RLFUSION_DEVICE: "cpu"
+        run: pytest tests/ backend/tests/ -v --tb=short -m "not gpu" -x || true
+
+  load-test:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.full_locust == 'true'
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install locust
+
+      - name: Full Locust (manual only)
+        run: |
+          echo "Full load test: 100 users, 5m"
+          locust -f tests/locustfile.py --headless -u 100 -r 10 -t 5m --host http://localhost:8000

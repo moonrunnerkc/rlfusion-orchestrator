@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+# tests/run_all_and_post.py
+# Author: Bradley R. Kinnard
+#
+# Run all 6 test suites, save results as JSON + markdown summary.
+# Prints a single-line summary that engineers can't argue with.
+
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from tests.test_suites import run_all_suites
+from datetime import datetime
+from pathlib import Path
+import json
+
+
+def format_markdown_summary(results: dict) -> str:
+    """
+    Generate a beautiful markdown summary from master report results.
+    No fluff, just the facts.
+    """
+    timestamp = results.get("timestamp", datetime.now().isoformat())
+    total_suites = results.get("total_suites", 6)
+    passed_suites = results.get("passed_suites", 0)
+    failed_suites = results.get("failed_suites", 0)
+    pass_rate = results.get("pass_rate", 0.0)
+    overall_passed = results.get("overall_passed", False)
+    elapsed = results.get("total_elapsed_seconds", 0)
+
+    suites = results.get("suites", {})
+
+    # Extract key metrics from individual suites
+    anticipation = suites.get("proactive", {}).get("anticipation_rate", 0.0)
+    avg_latency = 0
+    latency_count = 0
+    ethics_safety = suites.get("ethics_and_bias", {}).get("safety_score", 0.0)
+
+    for suite_name, suite_data in suites.items():
+        if "latency_ms" in suite_data and suite_data["latency_ms"]:
+            avg_latency += suite_data["latency_ms"]
+            latency_count += 1
+
+    avg_latency = avg_latency / latency_count if latency_count > 0 else 0
+
+    md = f"""# RLFO Test Suite Results
+
+**Generated:** {timestamp}
+**Status:** {'✅ PASS' if overall_passed else '❌ FAIL'}
+
+---
+
+## Summary
+
+- **Total Suites:** {total_suites}
+- **Passed:** {passed_suites} ✅
+- **Failed:** {failed_suites} ❌
+- **Pass Rate:** {pass_rate * 100:.1f}%
+- **Total Runtime:** {elapsed:.1f}s
+
+---
+
+## Key Metrics
+
+| Metric | Value | Status |
+|--------|-------|--------|
+| Anticipation Rate | {anticipation * 100:.1f}% | {'✅' if anticipation > 0.6 else '❌'} |
+| Avg Latency | {avg_latency:.0f}ms | {'✅' if avg_latency < 3000 else '⚠️'} |
+| Ethics/Safety | {ethics_safety:.2f} | {'✅' if ethics_safety > 0.8 else '❌'} |
+
+---
+
+## Suite Results
+
+"""
+
+    for suite_name, suite_data in suites.items():
+        if isinstance(suite_data, dict) and "passed" in suite_data:
+            status = "✅ PASS" if suite_data.get("passed", False) else "❌ FAIL"
+            iterations = suite_data.get("iterations", "N/A")
+            elapsed_suite = suite_data.get("elapsed_seconds", 0)
+
+            md += f"### {suite_name.upper()}\n\n"
+            md += f"- **Status:** {status}\n"
+            md += f"- **Iterations:** {iterations}\n"
+            md += f"- **Runtime:** {elapsed_suite:.1f}s\n"
+
+            # Suite-specific key metrics
+            if suite_name == "hallucination":
+                resistance = suite_data.get("hallucination_resistance", 0)
+                reward = suite_data.get("estimated_avg_reward", 0)
+                md += f"- **Resistance:** {resistance:.3f}\n"
+                md += f"- **Avg Reward:** {reward:.3f} (target <0.3)\n"
+
+            elif suite_name == "proactive":
+                anticipation_rate = suite_data.get("anticipation_rate", 0)
+                proactive_score = suite_data.get("proactive_score", 0)
+                md += f"- **Anticipation Rate:** {anticipation_rate:.3f}\n"
+                md += f"- **Proactive Score:** {proactive_score:.3f}\n"
+
+            elif suite_name == "adversarial":
+                robustness = suite_data.get("robustness_score", 0)
+                jailbreak = suite_data.get("jailbreak_resistance", 0)
+                md += f"- **Robustness:** {robustness:.3f}\n"
+                md += f"- **Jailbreak Resistance:** {jailbreak:.3f}\n"
+
+            elif suite_name == "evolution":
+                drift_resistance = suite_data.get("drift_resistance", 0)
+                adaptation = suite_data.get("adaptation_score", 0)
+                md += f"- **Drift Resistance:** {drift_resistance:.3f}\n"
+                md += f"- **Adaptation Score:** {adaptation:.3f}\n"
+
+            elif suite_name == "extensibility":
+                integration = suite_data.get("integration_score", 0)
+                weight_stability = suite_data.get("weight_stability", 0)
+                md += f"- **Integration Score:** {integration:.3f}\n"
+                md += f"- **Weight Stability:** {weight_stability:.3f}\n"
+
+            elif suite_name == "ethics_and_bias":
+                safety = suite_data.get("safety_score", 0)
+                fairness = suite_data.get("overall_fairness", 0)
+                md += f"- **Safety Score:** {safety:.3f}\n"
+                md += f"- **Overall Fairness:** {fairness:.3f}\n"
+
+            md += "\n"
+
+    md += "---\n\n"
+    md += "**Master Thresholds:**\n\n"
+    thresholds = results.get("master_thresholds", {})
+    for key, value in thresholds.items():
+        md += f"- `{key}`: {value}\n"
+
+    md += "\n---\n\n"
+    md += f"*Generated by RLFO test harness at {timestamp}*\n"
+
+    return md
+
+
+def generate_one_liner(results: dict) -> str:
+    """
+    Single line summary that engineers can't argue with.
+    Format: "RLFO v1.0 – All 6 hardened suites passed – anticipation 94.2%, latency 1120ms, ethics 0.99"
+    """
+    passed_suites = results.get("passed_suites", 0)
+    total_suites = results.get("total_suites", 6)
+    overall_passed = results.get("overall_passed", False)
+
+    suites = results.get("suites", {})
+
+    # Extract key metrics
+    anticipation = suites.get("proactive", {}).get("anticipation_rate", 0.0) * 100
+
+    avg_latency = 0
+    latency_count = 0
+    for suite_name, suite_data in suites.items():
+        if isinstance(suite_data, dict) and "latency_ms" in suite_data and suite_data["latency_ms"]:
+            avg_latency += suite_data["latency_ms"]
+            latency_count += 1
+    avg_latency = avg_latency / latency_count if latency_count > 0 else 0
+
+    ethics_safety = suites.get("ethics_and_bias", {}).get("safety_score", 0.0)
+
+    status = f"{passed_suites}/{total_suites} suites passed" if not overall_passed else f"All {total_suites} hardened suites passed"
+
+    return f"RLFO v1.0 – {status} – anticipation {anticipation:.1f}%, latency {avg_latency:.0f}ms, ethics {ethics_safety:.2f}"
+
+
+def main():
+    """
+    Run all suites, save results, print summary.
+    """
+    print("=" * 70)
+    print("RLFO MASTER TEST HARNESS")
+    print("=" * 70)
+    print()
+
+    # Run all suites with default iterations
+    results = run_all_suites(iterations=200)
+
+    # Save JSON report
+    results_dir = Path("tests/results")
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    json_path = results_dir / f"master_report_{timestamp}.json"
+
+    with open(json_path, 'w') as f:
+        json.dump(results, f, indent=2)
+
+    print(f"\n📄 JSON report saved: {json_path}")
+
+    # Generate and save markdown summary
+    markdown = format_markdown_summary(results)
+    md_path = results_dir / f"summary_{timestamp}.md"
+
+    with open(md_path, 'w') as f:
+        f.write(markdown)
+
+    print(f"📄 Markdown summary saved: {md_path}")
+
+    # Print the one-liner
+    print()
+    print("=" * 70)
+    one_liner = generate_one_liner(results)
+    print(one_liner)
+    print("=" * 70)
+
+    # Exit with appropriate code
+    exit_code = 0 if results.get("overall_passed", False) else 1
+    sys.exit(exit_code)
+
+
+if __name__ == "__main__":
+    main()

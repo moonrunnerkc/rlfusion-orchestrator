@@ -1,0 +1,69 @@
+llm:
+  model: llama3.1:8b-instruct-q4_0
+  host: http://localhost:11434
+  temperature: 0.72
+  max_tokens: 4096
+embedding:
+  model: all-MiniLM-L6-v2
+  device: cuda
+rl:
+  policy_path: models/rl_policy_cql.d3
+  timesteps: 10000
+  learning_rate: 0.0003
+  batch_size: 64
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+paths:
+  db: db/rlfo_cache.db
+  index: indexes/rag_index.faiss
+  ontology: data/ontology.json
+  docs: data/docs
+  synthetic_episodes: data/synthetic_episodes
+fusion:
+  default_weights:
+    rag: 0.2
+    cag: 0.2
+    graph: 0.6
+  temperature: 1.0
+critique:
+  reward_scale: 1.0
+  proactive_threshold: 0.75
+  critique_temperature: 0.2
+  proactive_reward_bonus: 0.25
+web:
+  enabled: false
+  search_type: all
+  max_results: 3
+  search_timeout: 10
+cswr:
+  enabled: true
+  top_k: 20
+  pack_token_budget: 1800
+  min_csw_score: 0.25
+  answerability_threshold: 0.55
+  stability_threshold: 0.7
+  vector_weight: 0.4
+  local_stability_weight: 0.3
+  question_fit_weight: 0.2
+  drift_penalty_weight: 0.1
+cswr_quantiles:
+  tech:
+    stability_threshold: 0.65
+    q25: 0.65
+    q50: 0.78
+    q75: 0.88
+    samples: 0
+  code:
+    stability_threshold: 0.55
+    q25: 0.55
+    q50: 0.72
+    q75: 0.85
+    samples: 0
+  general:
+    stability_threshold: 0.7
+    q25: 0.7
+    q50: 0.8
+    q75: 0.9
+    samples: 0
+device: cuda

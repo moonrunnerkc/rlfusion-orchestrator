@@ -1,0 +1,15 @@
+[tool.pytest.ini_options]
+markers = [
+    "gpu: mark test as requiring a CUDA GPU (skipped in CI)",
+    "slow: mark test as slow-running (>30s)",
+    "integration: mark test as requiring external services (Ollama, Redis)",
+]
+testpaths = ["tests", "backend/tests"]
+addopts = "-v --tb=short"
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+
+[tool.isort]
+profile = "black"

@@ -1,0 +1,39 @@
+# Author: Bradley R. Kinnard
+# RLFusion environment - pinned for reproducibility
+# Usage: conda env create -f environment.yml
+
+name: rlfusion
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.11
+  - pytorch=2.3.0
+  - pytorch-cuda=12.1
+  - faiss-cpu=1.8.0
+  - numpy<2.0
+  - scipy
+  - scikit-learn
+  - networkx
+  - pip
+  - pip:
+    - fastapi>=0.109.0
+    - uvicorn[standard]
+    - slowapi
+    - pydantic>=2.0
+    - pydantic-settings
+    - ollama
+    - httpx
+    - beautifulsoup4
+    - PyPDF2
+    - sentence-transformers
+    - stable-baselines3
+    - gymnasium
+    - d3rlpy
+    - tiktoken
+    - pyyaml
+    - pytest
+    - locust

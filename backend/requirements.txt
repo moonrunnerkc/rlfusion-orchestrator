@@ -1,0 +1,52 @@
+# backend/requirements.txt
+# Locked November 30, 2025 - RTX 50-series Blackwell compatible
+# NOTE: FAISS requires numpy<2, so we're pinned to 1.26.4
+# Compatibility shim in main.py handles numpy._core for stable-baselines3
+
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+python-multipart==0.0.9
+
+# PyTorch CUDA 12.8 - RTX 50-series Blackwell requires cu128
+torch==2.9.1+cu128
+torchaudio==2.9.1+cu128
+torchvision==0.24.1+cu128
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+# GPU-accelerated vector search - REQUIRES numpy<2
+faiss-gpu-cu12==1.12.0
+
+# High-quality sentence embeddings
+sentence-transformers==3.1.1
+
+# RL stack - stable-baselines3 2.3.2 is compatible with numpy 1.26.4
+stable-baselines3==2.3.2
+gymnasium==0.29.1
+
+# Core dependencies - numpy pinned to 1.26.4 for FAISS compatibility
+numpy==1.26.4  # CRITICAL: Do NOT upgrade to 2.x (breaks FAISS)
+cloudpickle==3.0.0  # Required for stable-baselines3 model serialization
+networkx==3.3  # Python 3.10 compatible (3.5+ requires Python 3.11+)
+PyYAML==6.0.2
+ollama==0.3.3
+tqdm==4.66.5
+python-dotenv==1.0.1
+typing_extensions==4.12.2
+PyPDF2==3.0.1  # PDF text extraction for RAG indexing
+
+# Web scraping and search
+duckduckgo-search==6.3.7  # Free search engine (no API key needed)
+beautifulsoup4==4.12.3     # HTML parsing
+httpx==0.27.2              # Fast async HTTP client
+
+# Additional dependencies (November 30, 2025)
+d3rlpy==2.6.0              # Offline RL algorithms
+scipy==1.13.1              # Scientific computing
+scikit-learn==1.5.2        # ML utilities
+nltk==3.9.1                # Natural language toolkit
+structlog==24.4.0          # Structured logging
+slowapi==0.1.9             # Rate limiting for FastAPI
+locust==2.31.8             # Load testing
+faiss-cpu==1.9.0           # CPU fallback for FAISS (GPU issues)
+tensorboard==2.18.0        # Training visualization
