@@ -129,8 +129,11 @@ def strip_critique_block(response: str) -> str:
     for pattern in _SOURCE_TAG_PATTERNS:
         text = re.sub(pattern, '', text)
 
-    # remove "Critique" header and everything after
-    for marker in [r'\*{0,2}Critique\*{0,2}:?\s*.*$', r'#{1,3}\s*Critique.*$']:
+    # remove "Critique" or "Self-Critique" header and everything after
+    for marker in [r'\*{0,2}Self[- ]?Critique\*{0,2}:?\s*.*$',
+                   r'\*{0,2}Critique\*{0,2}:?\s*.*$',
+                   r'#{1,3}\s*(?:Self[- ]?)?Critique.*$',
+                   r'\nSelf-\s*$']:
         text = re.sub(marker, '', text, flags=re.IGNORECASE | re.DOTALL)
 
     # remove standalone score lines

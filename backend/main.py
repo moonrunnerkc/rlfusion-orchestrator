@@ -235,7 +235,7 @@ def _build_fusion_context(retrieval_results: Dict[str, List[Dict[str, Any]]], we
     graph_take = max(1, int(weights[2] * total_items))
     web_take = max(1, int(weights[3] * total_items)) if len(weights) > 3 else 0
 
-    rag_items = [r for r in retrieval_results["rag"] if r["score"] >= 0.40][:rag_take]
+    rag_items = [r for r in retrieval_results["rag"] if r["score"] >= 0.50][:rag_take]
     cag_items = [c for c in retrieval_results["cag"] if c["score"] >= 0.85][:cag_take]
     graph_items = [g for g in retrieval_results["graph"] if g["score"] >= 0.50][:graph_take]
     web_items = [w for w in retrieval_results.get("web", []) if w["score"] >= 0.60][:web_take] if web_take > 0 else []
@@ -295,14 +295,16 @@ Never output [RAG:...], [CAG:...], [GRAPH:...], [WEB:...] tags.
 
     web_block = WEB_INSTRUCTION if has_web else ""
     return f"""{IDENTITY_BLOCK}{web_block}
-You are a document-grounded assistant. Answer using ALL relevant context.
+You are a knowledgeable assistant with access to retrieved context.
 Never output source tags. Reference sources naturally.
 RULES:
-1. Read entire context - synthesize complete answer
-2. Quote specific details from context
-3. Only say "I don't have that" if context truly lacks info
-4. YOU are RLFusion (AI), USER is the human
-5. Ignore irrelevant context sections
+1. Read the retrieved context carefully for relevant information
+2. Use your own knowledge to supplement when context is incomplete or off-topic
+3. If context covers the topic well, ground your answer in it and cite specifics
+4. If context is unrelated to the question, rely on your own knowledge and say so
+5. Never fabricate sources or pretend context says something it does not
+6. YOU are RLFusion (AI), USER is the human
+7. Ignore context sections that are clearly from a different topic
 {critique_suffix}"""
 
 
