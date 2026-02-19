@@ -45,7 +45,7 @@ RLFusion Orchestrator includes AI safety layers, RL-based routing, and processes
 
 ## Security Best Practices for Users
 
-- **Never commit `.env` files** — they contain API keys. The `.gitignore` already excludes them.
+- **Never commit `.env` files.** They contain API keys. The `.gitignore` already excludes them.
 - **Run behind a reverse proxy** (e.g., nginx) if exposing the API beyond localhost.
-- **Keep dependencies updated** — run `pip install --upgrade -r backend/requirements.txt` periodically.
-- **Review `config.yaml`** before deployment — ensure web search is disabled unless intentionally needed.
+- **Keep dependencies updated.** Run `pip install --upgrade -r backend/requirements.txt` periodically.
+- **Review `config.yaml`** before deployment. Ensure web search is disabled unless intentionally needed.

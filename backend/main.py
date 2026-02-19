@@ -28,12 +28,17 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from backend.config import cfg, PROJECT_ROOT
-from backend.core.critique import critique, log_episode_to_replay_buffer, get_critique_instruction, strip_critique_block
+from backend.core.critique import critique, log_episode_to_replay_buffer, get_critique_instruction, strip_critique_block, check_safety
 from backend.core.fusion import fuse_context
 from backend.core.memory import expand_query_with_context, record_turn, get_context_for_prompt, clear_memory
 from backend.core.profile import detect_and_save_memory, get_user_profile
 from backend.core.retrievers import get_rag_index, retrieve
 from backend.core.utils import embed_text
+
+# Max upload size per file (10 MB)
+_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+# Max query length (characters) to prevent prompt stuffing
+_MAX_QUERY_LEN = 4000
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(name)s | %(message)s')
 logger = logging.getLogger(__name__)
@@ -307,8 +312,25 @@ def _generate_user_prompt(mode: str, query: str, fused_context: str, context_par
 @app.post("/chat")
 @limiter.limit("10/minute")
 async def chat_endpoint(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
-    query = body.get("query", "")
+    query = body.get("query", "").strip()
     mode = body.get("mode", "chat")
+
+    if not query:
+        return {"response": "Please provide a query.", "fusion_weights": {"rag": 0, "cag": 0, "graph": 0}, "reward": 0.0}
+    if len(query) > _MAX_QUERY_LEN:
+        return {"response": f"Query too long ({len(query)} chars, max {_MAX_QUERY_LEN}).", "fusion_weights": {"rag": 0, "cag": 0, "graph": 0}, "reward": 0.0}
+
+    # Safety gate - same as /ws path
+    safe, safety_reason = check_safety(query)
+    if not safe:
+        logger.warning("Query blocked by safety filter: %s", safety_reason)
+        return {
+            "response": "I can't help with that request. " + safety_reason,
+            "fusion_weights": {"rag": 0, "cag": 0, "graph": 0},
+            "reward": 0.0,
+            "blocked": True,
+            "safety_reason": safety_reason,
+        }
 
     get_rag_index()
     rl_weights = _compute_rl_fusion_weights(query, _rl_policy)
@@ -366,6 +388,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 await websocket.close()
                 return
 
+            query = query.strip()
+            if not query:
+                await websocket.send_json({"type": "done", "response": "Please provide a query."})
+                continue
+            if len(query) > _MAX_QUERY_LEN:
+                await websocket.send_json({"type": "done", "response": f"Query too long ({len(query)} chars, max {_MAX_QUERY_LEN})."})
+                continue
+
             await websocket.send_json({"type": "start"})
 
             # Expand query with conversation context
@@ -379,6 +409,20 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 preview = memory_content[:100] + "..." if len(memory_content) > 100 else memory_content
                 await websocket.send_json({"type": "token", "token": f"✅ **Remembered:**\n\n> {preview}"})
                 await websocket.send_json({"type": "done"})
+                continue
+
+            # Safety gate — block unsafe queries before retrieval
+            safe, safety_reason = check_safety(query)
+            if not safe:
+                logger.warning("Query blocked by safety filter: %s", safety_reason)
+                await websocket.send_json({
+                    "type": "done",
+                    "response": "I can't help with that request. " + safety_reason,
+                    "fusion_weights": {"rag": 0, "cag": 0, "graph": 0},
+                    "reward": 0.0,
+                    "blocked": True,
+                    "safety_reason": safety_reason,
+                })
                 continue
 
             record_turn(session_id, "user", query)
@@ -517,11 +561,18 @@ async def upload_documents(request: Request) -> Dict[str, Any]:
         if ext not in allowed:
             skipped.append(f.filename)
             continue
-        dest = docs_path / f.filename
         content = await f.read()
+        if len(content) > _MAX_UPLOAD_BYTES:
+            skipped.append(f"{f.filename} (>{_MAX_UPLOAD_BYTES // (1024*1024)}MB)")
+            continue
+        dest = docs_path / Path(f.filename).name  # strip path components
+        # double-check: reject filenames with traversal attempts
+        if '..' in dest.name or dest.name.startswith('.'):
+            skipped.append(f"{f.filename} (invalid filename)")
+            continue
         dest.write_bytes(content)
         saved.append(f.filename)
-        logger.info(f"Uploaded: {f.filename} ({len(content)} bytes)")
+        logger.info("Uploaded: %s (%d bytes)", f.filename, len(content))
 
     return {
         "status": "uploaded",
@@ -574,13 +625,15 @@ async def reset_state(request: Request) -> Dict[str, Any]:
     if not db_path.exists():
         return {"status": "no database"}
     conn = sqlite3.connect(str(db_path))
-    for table in ("cache", "episodes", "replay", "conversations"):
-        conn.execute(f"DELETE FROM {table}")
+    _RESET_TABLES = ("cache", "episodes", "replay", "conversations")
+    for table in _RESET_TABLES:
+        # table names are hardcoded constants above, not user input
+        conn.execute(f"DELETE FROM {table}")  # nosec: B608
     conn.commit()
     conn.close()
     # clear in-memory conversation state
-    from backend.core.memory import ConversationMemory
-    ConversationMemory.clear_all()
+    from backend.core.memory import conversation_memory
+    conversation_memory.clear_all_sessions()
     logger.info("Full state reset via /api/reset")
     return {"status": "reset", "tables_cleared": ["cache", "episodes", "replay", "conversations"]}
 

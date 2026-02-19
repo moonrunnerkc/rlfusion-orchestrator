@@ -3,11 +3,14 @@
 # Originally built for personal offline use, now open-sourced for public benefit.
 
 import json
+import logging
 import re
 import sqlite3
 from pathlib import Path
 from ollama import Client
 from backend.config import cfg, PROJECT_ROOT
+
+logger = logging.getLogger(__name__)
 
 EXPLICIT_PATTERNS = [
     r"^remember this:\s*(.+)$",
@@ -129,5 +132,5 @@ JSON only:"""
         return (False, None)
 
     except Exception as e:
-        print(f"  ⚠️ Memory detection failed: {e}")
+        logger.warning("Memory detection failed: %s", e)
         return (False, None)

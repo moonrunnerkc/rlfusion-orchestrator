@@ -112,9 +112,32 @@ You might find these related topics helpful:
             "reward": float(reward), "query": self.current_query, "response": response, "critique": critique_result,
         }
 
-        recent = self.conversation_history[-3:]
-        padded = recent + [""] * (3 - len(recent))
-        observation = np.concatenate([embed_text(q) for q in padded]).astype(np.float32)
+        # Rebuild a 396-dim observation matching reset() shape:
+        # 384 embed + 3 top_sim + 1 avg_cswr + 1 cache_hit + 1 graph_degree + 1 query_len + 5 query_type
+        embed = self.query_embedding
+        rag_scores = [r.get("score", 0) for r in self.retrieval_results.get("rag", [])[:3]]
+        top3_sim = rag_scores + [0.0] * (3 - len(rag_scores))
+        cswr = [r.get("csw_score", r.get("score", 0)) for r in self.retrieval_results.get("rag", [])[:3]]
+        avg_cswr = [float(np.mean(cswr)) if cswr else 0.0]
+        cache_hit = [1.0 if self.retrieval_results.get("cag", []) else 0.0]
+        graph_degree = [len(self.retrieval_results.get("graph", [])) / 10.0]
+        query_len = [len(self.current_query.split()) / 50.0]
+
+        q_lower = self.current_query.lower()
+        query_type = [0.0] * 5
+        if any(w in q_lower for w in ["what is", "who is", "when", "where"]):
+            query_type[0] = 1.0
+        elif any(w in q_lower for w in ["how to", "how do", "steps"]):
+            query_type[1] = 1.0
+        elif any(w in q_lower for w in ["why", "explain", "concept"]):
+            query_type[2] = 1.0
+        elif any(w in q_lower for w in ["compare", "difference", "vs"]):
+            query_type[3] = 1.0
+        else:
+            query_type[4] = 1.0
+
+        features = np.array(top3_sim + avg_cswr + cache_hit + graph_degree + query_len + query_type, dtype=np.float32)
+        observation = np.concatenate([embed, features]).astype(np.float32)
         return observation, float(reward), True, False, info
 
     def render(self) -> None:

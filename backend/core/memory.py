@@ -2,12 +2,17 @@
 # memory.py - conversation memory with entity tracking and query expansion
 # Originally built for personal offline use, now open-sourced for public benefit.
 
+import logging
 import re
+import sqlite3
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
+from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Set, Tuple
+
+logger = logging.getLogger(__name__)
 
 # Entity patterns - business, person, location, product
 ENTITY_PATTERNS = [
@@ -194,10 +199,10 @@ class ConversationMemory:
             if session_id in self._sessions:
                 del self._sessions[session_id]
 
-    @classmethod
-    def clear_all(cls) -> None:
+    def clear_all_sessions(self) -> None:
         """Nuke every in-memory session. Used by /api/reset."""
-        conversation_memory._sessions.clear()
+        with self._lock:
+            self._sessions.clear()
 
 
 # Global instance
@@ -208,8 +213,32 @@ def expand_query_with_context(session_id: str, query: str) -> Tuple[str, Dict[st
     return conversation_memory.expand_query(session_id, query)
 
 
+def _get_db_path() -> Path:
+    """Resolve db path from config, with lazy import to avoid circular deps."""
+    from backend.config import cfg, PROJECT_ROOT
+    return PROJECT_ROOT / cfg["paths"]["db"]
+
+
+def _persist_turn(session_id: str, role: str, content: str) -> None:
+    """Write a conversation turn to the SQLite conversations table."""
+    try:
+        db_path = _get_db_path()
+        if not db_path.exists():
+            return
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "INSERT INTO conversations (session_id, role, content) VALUES (?, ?, ?)",
+            (session_id, role, content[:4000]),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.debug("Failed to persist conversation turn: %s", e)
+
+
 def record_turn(session_id: str, role: str, content: str) -> None:
     conversation_memory.add_turn(session_id, role, content)
+    _persist_turn(session_id, role, content)
 
 
 def get_context_for_prompt(session_id: str) -> str:

@@ -2,11 +2,14 @@
 # critique.py - inline self-critique + episode logging for RL training
 # Originally built for personal offline use, now open-sourced for public benefit.
 
+import logging
 import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 from backend.config import cfg, PROJECT_ROOT
+
+logger = logging.getLogger(__name__)
 
 # Inline critique instruction - appended to system prompt for single-pass scoring
 INLINE_CRITIQUE_INSTRUCTION = """
@@ -58,7 +61,7 @@ def count_citations(response: str) -> dict:
     citations = _CITATION_RE.findall(response)
     sentences = [s.strip() for s in re.split(r'[.!?]+', response) if len(s.strip()) > 20]
     coverage = len(citations) / max(len(sentences), 1)
-    print(f"[Citations] Found {len(citations)} citations across {len(sentences)} sentences (coverage={coverage:.2f})")
+    logger.debug("Citations: %d across %d sentences (coverage=%.2f)", len(citations), len(sentences), coverage)
     return {
         "total_citations": len(citations),
         "unique_sources": len(set(citations)),
@@ -148,7 +151,7 @@ def strip_critique_block(response: str) -> str:
 def compute_reward(query: str, fused_context: str, response: str) -> float:
     try:
         return float(critique(query, fused_context, response)["reward"])
-    except:
+    except Exception:
         return 0.75
 
 
@@ -194,15 +197,15 @@ def log_episode_to_replay_buffer(episode: dict) -> bool:
                 cache_score = max(0.90, reward)
                 conn.execute("INSERT OR REPLACE INTO cache (key, value, score) VALUES (?, ?, ?)",
                            (query_key, response_val, cache_score))
-                print(f"  💾 High-quality episode cached in CAG (reward={reward:.2f} → cached as {cache_score:.2f})")
+                logger.info("High-quality episode cached in CAG (reward=%.2f, cached as %.2f)", reward, cache_score)
 
         conn.commit()
         conn.close()
-        print(f"✅ Episode #{episode_id} logged to DB | reward={reward:.2f} | query='{episode.get('query', '')[:50]}...'")
+        logger.info("Episode #%d logged | reward=%.2f | query='%s...'", episode_id, reward, episode.get('query', '')[:50])
         return True
 
     except Exception as e:
-        print(f"❌ Failed to log episode: {e}")
+        logger.error("Failed to log episode: %s", e)
         return False
 
 
@@ -224,7 +227,7 @@ Request: {query}"""
         )
 
         if "UNSAFE" in response["message"]["content"].upper():
-            print(f"[Safety] ⚠️ UNSAFE: '{query[:50]}...'")
+            logger.warning("Safety check flagged UNSAFE: '%s...'", query[:50])
             return (False, "Query flagged as unsafe")
         return (True, "Safe")
 
@@ -253,5 +256,5 @@ def check_faithfulness(claim: str, chunks: list) -> tuple:
         supported = "SUPPORTED" in result and "NOT" not in result
         return (supported, 0.9 if supported else 0.1)
 
-    except:
+    except Exception:
         return (False, 0.5)

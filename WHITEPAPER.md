@@ -7,13 +7,13 @@ December 2025
 
 ## Abstract
 
-Current retrieval-augmented generation (RAG) systems use static weighting to combine retrieval sources. When the query distribution shifts or the source quality varies, these fixed weights produce unpredictable outputs. This paper describes RLFusion Orchestrator, a system that replaces static fusion with an offline reinforcement learning policy trained via Conservative Q-Learning (CQL). The system routes queries across four retrieval paths — stability-filtered vector search, an exact-match cache, a knowledge graph, and optional web search — and learns a weighting function from logged interaction data. A stability filter (CSWR) removes low-confidence chunks before fusion, and a self-critique mechanism generates reward signals without human annotation. The system runs entirely on consumer hardware using Llama 3.1 8B through Ollama. Evaluation across six stress-test suites (3,000 total iterations) shows 100% suite pass rate, 0.97 weight stability, 1.0 drift resistance, and 0.65 jailbreak resistance.
+Current retrieval-augmented generation (RAG) systems use static weighting to combine retrieval sources. When the query distribution shifts or the source quality varies, these fixed weights produce unpredictable outputs. This paper describes RLFusion Orchestrator, a system that replaces static fusion with an offline reinforcement learning policy trained via Conservative Q-Learning (CQL). The system routes queries across four retrieval paths - stability-filtered vector search, an exact-match cache, a knowledge graph, and optional web search - and learns a weighting function from logged interaction data. A stability filter (CSWR) removes low-confidence chunks before fusion, and a self-critique mechanism generates reward signals without human annotation. The system runs entirely on consumer hardware using Llama 3.1 8B through Ollama. Evaluation across six stress-test suites (3,000 total iterations) shows 100% suite pass rate, 0.97 weight stability, 1.0 drift resistance, and 0.65 jailbreak resistance.
 
 ---
 
 ## 1. Problem Statement
 
-Retrieval-augmented generation has a fundamental stability problem. The standard approach — embed a query, pull the top-k nearest chunks, stuff them into a prompt — works fine until it doesn't. The failure modes are well-documented:
+Retrieval-augmented generation has a fundamental stability problem. The standard approach - embed a query, pull the top-k nearest chunks, stuff them into a prompt - works fine until it doesn't. The failure modes are well-documented:
 
 - **Noisy chunks** that score high on vector similarity but contain contradictory or tangential information.
 - **Context pollution** where irrelevant retrievals bias the generated response.
@@ -21,7 +21,7 @@ Retrieval-augmented generation has a fundamental stability problem. The standard
 
 Most systems address these by tuning hyperparameters manually or adding a reranker on top of the retrieval stack. Both approaches are reactive. They fix individual failure cases rather than adapting the retrieval strategy itself.
 
-The harder problem is multi-source fusion. When a system has access to multiple retrieval paths — vector search, a cache, a knowledge graph, web search — someone has to decide how much to trust each one for a given query. Static weights break down immediately. A factoid question should lean on the cache. A multi-hop reasoning question should lean on the graph. A question about recent events needs the web. No fixed ratio works across all of these.
+The harder problem is multi-source fusion. When a system has access to multiple retrieval paths - vector search, a cache, a knowledge graph, web search - someone has to decide how much to trust each one for a given query. Static weights break down immediately. A factoid question should lean on the cache. A multi-hop reasoning question should lean on the graph. A question about recent events needs the web. No fixed ratio works across all of these.
 
 RLFusion was built to solve this specific problem: **learn a query-conditioned weighting function from usage data, without requiring online interaction or human labeling.**
 
@@ -33,12 +33,12 @@ RLFusion was built to solve this specific problem: **learn a query-conditioned w
 
 The system operates as a pipeline with six stages:
 
-1. **Query decomposition** — an LLM call classifies the query's intent, expected answer shape, key entities, and sensitivity level.
-2. **Parallel retrieval** — four independent retrieval paths execute concurrently.
-3. **Stability filtering (CSWR)** — vector search results are scored for local stability, question fit, and drift, then filtered.
-4. **RL-based fusion** — a CQL policy maps query embeddings to retrieval weights.
-5. **Safety screening** — OOD detection (Mahalanobis distance) and attack detection run before generation.
-6. **Generation with self-critique** — the LLM generates a response and simultaneously produces a structured self-evaluation with reward scores.
+1. **Query decomposition** - an LLM call classifies the query's intent, expected answer shape, key entities, and sensitivity level.
+2. **Parallel retrieval** - four independent retrieval paths execute concurrently.
+3. **Stability filtering (CSWR)** - vector search results are scored for local stability, question fit, and drift, then filtered.
+4. **RL-based fusion** - a CQL policy maps query embeddings to retrieval weights.
+5. **Safety screening** - OOD detection (Mahalanobis distance) and attack detection run before generation.
+6. **Generation with self-critique** - the LLM generates a response and simultaneously produces a structured self-evaluation with reward scores.
 
 The backend is a FastAPI application. The frontend is a React SPA that displays fusion weights in real time. The system communicates via WebSocket for streaming responses.
 
@@ -67,13 +67,13 @@ Before retrieval, the query is analyzed by the LLM to produce a structured profi
 }
 ```
 
-This profile feeds directly into the CSWR scoring function (Section 3), where it controls the question-fit component. A heuristic fallback handles cases where the LLM fails to return valid JSON — intent is inferred from keyword patterns, entities from capitalization rules.
+This profile feeds directly into the CSWR scoring function (Section 3), where it controls the question-fit component. A heuristic fallback handles cases where the LLM fails to return valid JSON - intent is inferred from keyword patterns, entities from capitalization rules.
 
 ---
 
 ## 3. Chunk Stability Weighted Retrieval (CSWR)
 
-CSWR is the mechanism that distinguishes this system's vector search from standard top-k retrieval. The problem it solves: FAISS returns chunks ranked by vector distance, but distance alone says nothing about whether a chunk is *stable* — whether it sits in a coherent neighborhood of the document, whether it actually addresses the question, and whether it drifts away from surrounding context.
+CSWR is the mechanism that distinguishes this system's vector search from standard top-k retrieval. The problem it solves: FAISS returns chunks ranked by vector distance, but distance alone says nothing about whether a chunk is *stable* - whether it sits in a coherent neighborhood of the document, whether it actually addresses the question, and whether it drifts away from surrounding context.
 
 ### 3.1 Scoring Components
 
@@ -90,7 +90,7 @@ Default weights: $w_v = 0.4$, $w_s = 0.3$, $w_f = 0.2$, $w_d = 0.1$.
 **Question fit** ($S_{\text{fit}}$): Measures how well a chunk matches the decomposed query profile. Computed from three sub-signals:
 - Entity coverage: fraction of `key_entities` from the query profile found in the chunk text (weight 0.4).
 - Fact coverage: fraction of `required_facts` found (weight 0.3).
-- Shape match: whether structural indicators in the text match the expected answer shape — e.g., numbered lists for "list" queries, `def`/`class` keywords for "code" queries (weight 0.2 + 0.1 bonus).
+- Shape match: whether structural indicators in the text match the expected answer shape - e.g., numbered lists for "list" queries, `def`/`class` keywords for "code" queries (weight 0.2 + 0.1 bonus).
 
 **Drift penalty** ($S_{\text{drift}}$): Penalizes chunks that sit in unstable neighborhoods. When a chunk's average neighbor similarity drops below 0.5, a penalty proportional to the deficit is applied. Fully isolated chunks (both neighbors below 0.5) receive a 1.5x severity multiplier.
 
@@ -108,7 +108,7 @@ These quantiles can be recalibrated from logged episodes using `compute_domain_q
 
 After scoring and filtering, chunks are packed into context windows using a budget-aware algorithm. A center chunk drives the pack; adjacent chunks are pulled in if they meet stability thresholds (≥ 0.65 for main content, CSW ≥ 0.4 for supporting content). The total token budget defaults to 1,800 tokens per pack, and up to four packs are selected per query.
 
-Each pack is then checked for *answerability* — the LLM is asked whether the packed context can answer the user's question, with a binary yes/no and a confidence score. Packs below the answerability threshold (default 0.55) are dropped. If all packs fail, the highest-scoring pack is retained as a fallback.
+Each pack is then checked for *answerability* - the LLM is asked whether the packed context can answer the user's question, with a binary yes/no and a confidence score. Packs below the answerability threshold (default 0.55) are dropped. If all packs fail, the highest-scoring pack is retained as a fallback.
 
 ---
 
@@ -116,13 +116,13 @@ Each pack is then checked for *answerability* — the LLM is asked whether the p
 
 ### 4.1 Why Offline RL
 
-Online RL is impractical here. Each "step" in this system involves an LLM call, retrieval across multiple backends, and a user-facing response. Exploration in production — deliberately trying bad retrieval weight combinations to learn — is unacceptable.
+Online RL is impractical here. Each "step" in this system involves an LLM call, retrieval across multiple backends, and a user-facing response. Exploration in production - deliberately trying bad retrieval weight combinations to learn - is unacceptable.
 
 Offline RL sidesteps this. The policy learns from logged interactions: queries, the weights that were applied, the fused context, and the reward signal from the critique layer. No live exploration is needed.
 
 ### 4.2 Conservative Q-Learning (CQL)
 
-The system uses CQL (Kumar et al., 2020) via the d3rlpy library. CQL addresses the distributional shift problem in offline RL — the tendency of Q-learning to overestimate the value of state-action pairs that are underrepresented in the training data. It does this by adding a conservative regularization term that penalizes Q-values for out-of-distribution actions.
+The system uses CQL (Kumar et al., 2020) via the d3rlpy library. CQL addresses the distributional shift problem in offline RL - the tendency of Q-learning to overestimate the value of state-action pairs that are underrepresented in the training data. It does this by adding a conservative regularization term that penalizes Q-values for out-of-distribution actions.
 
 Configuration:
 - Actor and critic learning rates: $3 \times 10^{-4}$
@@ -189,10 +189,10 @@ Ledoit-Wolf shrinkage is used instead of raw covariance because the embedding sp
 
 Rather than using a separate evaluator model, the system appends a structured self-critique instruction to the generation prompt. The LLM scores its own output on four axes:
 
-- **Factual accuracy** (0.00–1.00)
-- **Proactivity** (0.00–1.00)
-- **Helpfulness** (0.00–1.00)
-- **Citation coverage** (0.00–1.00, computed separately from inline citation counts)
+- **Factual accuracy** (0.00-1.00)
+- **Proactivity** (0.00-1.00)
+- **Helpfulness** (0.00-1.00)
+- **Citation coverage** (0.00-1.00, computed separately from inline citation counts)
 
 The critique block is parsed from the response via regex, the scores are extracted, and the critique text is stripped before the response reaches the user. The final reward is either the explicit "Final reward" score or the mean of the three sub-scores.
 
@@ -262,9 +262,9 @@ Peak memory usage: 1,386 MB (hallucination suite).
 
 ### 7.2 Discussion
 
-**Jailbreak resistance at 0.65** is the weakest metric. This is expected — the safety classifier relies on the same 8B parameter LLM that the attacker is trying to manipulate. A dedicated safety model or a prompt-engineering approach with negative examples would likely improve this, but at the cost of additional latency.
+**Jailbreak resistance at 0.65** is the weakest metric. This is expected - the safety classifier relies on the same 8B parameter LLM that the attacker is trying to manipulate. A dedicated safety model or a prompt-engineering approach with negative examples would likely improve this, but at the cost of additional latency.
 
-**Latency around 10–11 seconds per query** reflects the cost of running a local 8B model for both query decomposition and response generation. This is not competitive with cloud-based systems, but the design goal was privacy and stability, not speed. Upgrading to a faster quantization format or a smaller model would reduce latency linearly.
+**Latency around 10-11 seconds per query** reflects the cost of running a local 8B model for both query decomposition and response generation. This is not competitive with cloud-based systems, but the design goal was privacy and stability, not speed. Upgrading to a faster quantization format or a smaller model would reduce latency linearly.
 
 **Weight stability at 0.97** indicates the CQL policy produces consistent routing decisions across repeated evaluations of the same query. The 3% instability comes from the softmax temperature and the stochastic elements in retrieval scoring, not from policy variance.
 
@@ -280,13 +280,13 @@ BGE-small-en-v1.5 (BAAI) was chosen over the originally planned all-MiniLM-L6-v2
 
 The system uses a single SQLite database (`db/rlfo_cache.db`) with three tables:
 
-- **`cache`** — key-value store for CAG. Keys are query strings, values are cached responses, scores are confidence levels.
-- **`episodes`** — replay buffer for RL training. Stores query, response, reward, individual path weights, fused context, and proactive suggestions.
-- **`user_profile`** — persistent user facts, keyed by a hash-based identifier, categorized by type (preferences, identity, work, personality, general).
+- **`cache`** - key-value store for CAG. Keys are query strings, values are cached responses, scores are confidence levels.
+- **`episodes`** - replay buffer for RL training. Stores query, response, reward, individual path weights, fused context, and proactive suggestions.
+- **`user_profile`** - persistent user facts, keyed by a hash-based identifier, categorized by type (preferences, identity, work, personality, general).
 
 ### 8.3 Hot-Reload Configuration
 
-The `config.yaml` file can be modified at runtime through the `/api/config` PATCH endpoint. Currently, only the web search toggle is exposed through this interface. The config is loaded into memory at startup and mutated in place — there is no config-watching or polling mechanism.
+The `config.yaml` file can be modified at runtime through the `/api/config` PATCH endpoint. Currently, only the web search toggle is exposed through this interface. The config is loaded into memory at startup and mutated in place - there is no config-watching or polling mechanism.
 
 ### 8.4 CQL Policy Wrapper
 
@@ -304,11 +304,11 @@ This reduces import time and memory footprint compared to loading the full CQL a
 
 **Single-user design.** The system was built for personal use. Multi-user deployment would require session isolation, auth, and per-user replay buffers. The current architecture stores all episodes and profile data in a shared SQLite file.
 
-**LLM-dependent reward signal.** The self-critique reward comes from the same model that generates the response. This creates a self-reinforcing loop — the model will rarely rate its own output as terrible. The reward signal is useful for relative comparisons across different weight configurations, but it should not be treated as a ground-truth quality measure.
+**LLM-dependent reward signal.** The self-critique reward comes from the same model that generates the response. This creates a self-reinforcing loop - the model will rarely rate its own output as terrible. The reward signal is useful for relative comparisons across different weight configurations, but it should not be treated as a ground-truth quality measure.
 
 **No online adaptation.** The CQL policy is trained offline and deployed as a static artifact. The replay buffer grows continuously as the system is used, but policy updates require manually rerunning the training script. Periodic retraining (e.g., weekly) would be a straightforward extension.
 
-**Latency floor.** Every query requires at least two LLM calls (decomposition and generation) plus embedding computation and retrieval. On an 8B model with Q4 quantization, this puts the minimum latency around 8–10 seconds. There is no batching or speculative decoding.
+**Latency floor.** Every query requires at least two LLM calls (decomposition and generation) plus embedding computation and retrieval. On an 8B model with Q4 quantization, this puts the minimum latency around 8-10 seconds. There is no batching or speculative decoding.
 
 **FAISS flat index.** The vector index uses `IndexFlatL2`, which performs exact search. This is fine for document collections under ~100k chunks but will not scale to millions without switching to an approximate index (IVF, HNSW).
 
@@ -318,9 +318,9 @@ This reduces import time and memory footprint compared to loading the full CQL a
 
 **RAG** (Lewis et al., 2020) established the pattern of retrieval-augmented generation. RLFusion builds on this by adding stability filtering and learned weighting, addressing the "garbage in, garbage out" problem that affects naive RAG.
 
-**RLHF** (Ouyang et al., 2022) uses online RL with human feedback. RLFusion's approach is cheaper — it uses automated self-critique as a reward proxy and trains offline, avoiding the cost and complexity of human annotation pipelines.
+**RLHF** (Ouyang et al., 2022) uses online RL with human feedback. RLFusion's approach is cheaper - it uses automated self-critique as a reward proxy and trains offline, avoiding the cost and complexity of human annotation pipelines.
 
-**CQL** (Kumar et al., 2020) provides the theoretical foundation for the offline RL component. The conservative regularizer is what prevents the policy from learning to exploit out-of-distribution actions — critical when the replay buffer is small and non-exhaustive.
+**CQL** (Kumar et al., 2020) provides the theoretical foundation for the offline RL component. The conservative regularizer is what prevents the policy from learning to exploit out-of-distribution actions - critical when the replay buffer is small and non-exhaustive.
 
 **Self-Reflection in LLMs** (Shinn et al., 2023; Madaan et al., 2023) explores the idea of LLMs evaluating their own outputs. RLFusion's critique layer is a simplified version of this, using structured scoring templates rather than free-form reflection.
 

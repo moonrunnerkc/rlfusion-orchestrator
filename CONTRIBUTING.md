@@ -72,7 +72,7 @@ pytest tests/ -v --tb=short -m "gpu"
 
 - **Python formatter:** [Black](https://github.com/psf/black) with default settings (line length 88).
 - **Import sorting:** [isort](https://pycqa.github.io/isort/) with Black-compatible profile.
-- **Linting:** [flake8](https://flake8.pycqa.org/) — ignore E501 (line length is handled by Black).
+- **Linting:** [flake8](https://flake8.pycqa.org/). Ignore E501 (line length is handled by Black).
 - **Type hints:** Encouraged for all new functions and public APIs.
 - **Docstrings:** Required for all public functions and classes. Use Google-style docstrings.
 
@@ -93,14 +93,14 @@ flake8 backend/ tests/ --ignore=E501,W503
 5. Open a PR with:
    - A clear description of what the change does and why.
    - References to any related issues.
-6. A maintainer will review your PR. Expect feedback — this is collaborative, not adversarial.
+6. A maintainer will review your PR. Expect feedback. This is collaborative, not adversarial.
 
 ## Commit Messages
 
 Use clear, imperative-mood commit messages:
 
 ```
-Add CSWR entropy threshold configuration
+Add CSWR stability threshold configuration
 Fix OOD detection false positives on short queries
 Remove unused CAG cache invalidation logic
 ```
@@ -109,16 +109,16 @@ Remove unused CAG cache invalidation logic
 
 ```
 backend/
-  main.py          — FastAPI entry point
-  config.py        — Configuration loader
-  config.yaml      — Default configuration
-  core/            — Core retrieval, fusion, critique logic
-  rl/              — Reinforcement learning training scripts
+  main.py          # FastAPI entry point
+  config.py        # Configuration loader
+  config.yaml      # Default configuration
+  core/            # Core retrieval, fusion, critique logic
+  rl/              # Reinforcement learning training scripts
 frontend/
-  src/             — React UI components
-models/            — Trained RL policy artifacts
-scripts/           — Utility scripts (DB init, compatibility fixes)
-tests/             — Test suites (API, GPU, load testing)
+  src/             # React UI components
+models/            # Trained RL policy artifacts
+scripts/           # Utility scripts (DB init, compatibility fixes)
+tests/             # Test suites (API, GPU, load testing)
 ```
 
 ## License

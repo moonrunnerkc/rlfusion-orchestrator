@@ -3,9 +3,12 @@
 # Originally built for personal offline use, now open-sourced for public benefit.
 
 import json
+import logging
 import re
 from ollama import Client
 from backend.config import cfg
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are a query analyzer. Output ONLY valid JSON with these exact keys:
 {
@@ -49,7 +52,7 @@ def decompose_query(query: str, mode: str = "chat") -> dict:
         }
 
     except Exception as e:
-        print(f"⚠️ LLM decomposition failed ({e}), using heuristic fallback")
+        logger.warning("LLM decomposition failed (%s), using heuristic fallback", e)
         return _heuristic_decompose(query)
 
 

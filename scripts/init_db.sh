@@ -50,6 +50,12 @@ CREATE TABLE IF NOT EXISTS conversations (
     content TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS user_profile (
+    fact_key TEXT PRIMARY KEY,
+    fact_value TEXT,
+    category TEXT
+);
 EOF
 
 echo "✅ Database initialized at: $DB_PATH"

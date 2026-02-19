@@ -114,7 +114,8 @@ def tavily_search(query: str) -> tuple[str, str]:
             content = r.get('content', '')
             parts.append(f"**{title}**\n{url}\n{content}\n")
         return "\n".join(parts), "success"
-    except:
+    except Exception as e:
+        logger.warning("Tavily search failed: %s", e)
         return "", "error"
 
 
@@ -202,17 +203,17 @@ def cosine_sim(a, b):
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
 
 
-def compute_stability(chunk: dict, all_chunks: list) -> float:
+def compute_stability(chunk: dict, all_chunks: list, embeddings: dict) -> float:
     idx = next((i for i, c in enumerate(all_chunks) if c["id"] == chunk["id"]), -1)
     if idx == -1 or len(all_chunks) < 2:
         return 0.5
 
-    emb = embed_text(chunk["text"])
+    emb = embeddings[chunk["id"]]
     sims = []
     if idx > 0:
-        sims.append(cosine_sim(emb, embed_text(all_chunks[idx-1]["text"])))
+        sims.append(cosine_sim(emb, embeddings[all_chunks[idx-1]["id"]]))
     if idx < len(all_chunks) - 1:
-        sims.append(cosine_sim(emb, embed_text(all_chunks[idx+1]["text"])))
+        sims.append(cosine_sim(emb, embeddings[all_chunks[idx+1]["id"]]))
 
     if not sims:
         return 0.5
@@ -259,17 +260,17 @@ def compute_fit(chunk: dict, profile: dict) -> float:
     return min(1.0, score)
 
 
-def compute_drift(chunk: dict, all_chunks: list) -> float:
+def compute_drift(chunk: dict, all_chunks: list, embeddings: dict) -> float:
     idx = next((i for i, c in enumerate(all_chunks) if c["id"] == chunk["id"]), -1)
     if idx == -1 or len(all_chunks) < 3:
         return 0.0
 
-    emb = embed_text(chunk["text"])
+    emb = embeddings[chunk["id"]]
     sims = []
     if idx > 0:
-        sims.append(cosine_sim(emb, embed_text(all_chunks[idx-1]["text"])))
+        sims.append(cosine_sim(emb, embeddings[all_chunks[idx-1]["id"]]))
     if idx < len(all_chunks) - 1:
-        sims.append(cosine_sim(emb, embed_text(all_chunks[idx+1]["text"])))
+        sims.append(cosine_sim(emb, embeddings[all_chunks[idx+1]["id"]]))
 
     if not sims:
         return 0.0
@@ -290,10 +291,18 @@ def score_chunks(chunks: list, profile: dict, cswr_cfg: dict) -> list:
     fw = cswr_cfg.get("question_fit_weight", 0.2)
     dw = cswr_cfg.get("drift_penalty_weight", 0.1)
 
+    # batch-embed all chunk texts once (was O(n*k) individual calls)
+    texts = [c["text"] for c in chunks]
+    if texts:
+        emb_matrix = embed_batch(texts)
+        embeddings = {c["id"]: emb_matrix[i] for i, c in enumerate(chunks)}
+    else:
+        embeddings = {}
+
     for c in chunks:
-        c["local_stability"] = compute_stability(c, chunks)
+        c["local_stability"] = compute_stability(c, chunks, embeddings)
         c["question_fit"] = compute_fit(c, profile)
-        c["drift_penalty"] = compute_drift(c, chunks)
+        c["drift_penalty"] = compute_drift(c, chunks, embeddings)
 
         if c["local_stability"] < thresh:
             c["drift_penalty"] -= (thresh - c["local_stability"]) * 0.5
@@ -308,7 +317,7 @@ def count_tokens(text: str) -> int:
     try:
         import tiktoken
         return len(tiktoken.get_encoding("cl100k_base").encode(text))
-    except:
+    except ImportError:
         return len(text) // 4
 
 
@@ -380,7 +389,8 @@ def check_answerable(pack: dict, profile: dict) -> tuple:
         verdict = parts[0] if parts else "NO"
         conf = float(parts[1]) if len(parts) > 1 else 0.5
         return (verdict.startswith("YES"), max(0.0, min(1.0, conf)))
-    except:
+    except Exception as e:
+        logger.debug("Answerability check fell back to heuristic: %s", e)
         csw = pack.get("pack_csw_score", 0.0)
         if csw >= 0.45: return (True, 0.7)
         if csw >= 0.35: return (True, 0.5)
@@ -513,7 +523,7 @@ def _get_db_path() -> Path:
 
 
 def retrieve_cag(query: str, threshold: float = 0.75) -> list:
-    """Retrieve from the cached answer graph (CAG)."""
+    """Retrieve from the cached answer graph (CAG). Uses embedding cache for semantic matching."""
     db_path = _get_db_path()
     logger.debug(f"[CAG] Searching ({len(query)} chars, threshold={threshold})")
 
@@ -542,15 +552,18 @@ def retrieve_cag(query: str, threshold: float = 0.75) -> list:
 
         q_emb = embed_text(q)
         cur.execute("SELECT key, value, score FROM cache")
-        best, best_sim = None, 0.0
-        for k, v, s in cur.fetchall():
-            sim = cosine_sim(q_emb, embed_text(k))
-            if sim > best_sim and sim >= 0.85:
-                best_sim, best = sim, (v, s)
-
-        if best:
-            logger.debug(f"[CAG] SEMANTIC HIT: sim={best_sim:.2f}")
-            return [{"text": best[0], "source": "cag", "score": best[1]}]
+        rows = cur.fetchall()
+        if rows:
+            # batch-embed all keys at once instead of O(n) single calls
+            keys = [r[0] for r in rows]
+            key_embs = embed_batch(keys)
+            sims = key_embs @ q_emb  # dot products (normalized vectors)
+            best_idx = int(np.argmax(sims))
+            best_sim = float(sims[best_idx])
+            if best_sim >= 0.85:
+                _, v, s = rows[best_idx]
+                logger.debug(f"[CAG] SEMANTIC HIT: sim={best_sim:.2f}")
+                return [{"text": v, "source": "cag", "score": s}]
 
         logger.debug("[CAG] NO HIT")
         return []
@@ -564,11 +577,19 @@ def _get_ontology_path() -> Path:
     return PROJECT_ROOT / ont_rel
 
 
-def retrieve_graph(query: str, max_hops: int = 2) -> List[Dict[str, Any]]:
-    """Retrieve related entities from the knowledge graph."""
+# Graph + embedding cache: avoids reloading JSON and re-embedding on every query
+_graph_cache: Dict[str, Any] = {"graph": None, "node_embeddings": {}, "mtime": 0.0}
+
+
+def _load_graph() -> nx.DiGraph:
+    """Load or return cached ontology graph. Re-reads only if file changed."""
     path = _get_ontology_path()
     if not path.exists():
-        return []
+        return nx.DiGraph()
+
+    mtime = path.stat().st_mtime
+    if _graph_cache["graph"] is not None and _graph_cache["mtime"] == mtime:
+        return _graph_cache["graph"]
 
     try:
         data = json.loads(path.read_text())
@@ -577,22 +598,38 @@ def retrieve_graph(query: str, max_hops: int = 2) -> List[Dict[str, Any]]:
             G.add_node(n["id"], **n)
         for e in data.get("edges", []):
             G.add_edge(e["from"], e["to"], **{k: v for k, v in e.items() if k not in ["from", "to"]})
-    except:
-        return []
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        logger.warning("Failed to load ontology graph: %s", e)
+        return nx.DiGraph()
 
+    # pre-embed all node texts once
+    node_embeddings = {}
+    for node in G.nodes():
+        nd = G.nodes[node]
+        txt = nd.get("description", "") or nd.get("label", str(node))
+        if txt:
+            node_embeddings[node] = embed_text(txt)
+
+    _graph_cache["graph"] = G
+    _graph_cache["node_embeddings"] = node_embeddings
+    _graph_cache["mtime"] = mtime
+    logger.info("Graph loaded and %d node embeddings cached", len(node_embeddings))
+    return G
+
+
+def retrieve_graph(query: str, max_hops: int = 2) -> List[Dict[str, Any]]:
+    """Retrieve related entities from the knowledge graph. Uses cached node embeddings."""
+    G = _load_graph()
     if not G.number_of_nodes():
         return []
 
     q_emb = embed_text(query)
     best_node, best_score = None, -1.0
 
-    for node in G.nodes():
-        nd = G.nodes[node]
-        txt = nd.get('description', '') or nd.get('label', str(node))
-        if txt:
-            sim = cosine_sim(q_emb, embed_text(txt))
-            if sim > best_score:
-                best_score, best_node = sim, node
+    for node, node_emb in _graph_cache["node_embeddings"].items():
+        sim = cosine_sim(q_emb, node_emb)
+        if sim > best_score:
+            best_score, best_node = sim, node
 
     if not best_node:
         return []

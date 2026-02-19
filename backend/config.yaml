@@ -4,7 +4,7 @@ llm:
   temperature: 0.72
   max_tokens: 4096
 embedding:
-  model: all-MiniLM-L6-v2
+  model: BAAI/bge-small-en-v1.5
   device: cuda
 rl:
   policy_path: models/rl_policy_cql.d3

@@ -6,7 +6,7 @@ A local-first system I built after getting fed up with assistants drifting, forg
 **LinkedIn:** https://www.linkedin.com/in/brad-kinnard/
 
 **License:** [MIT](LICENSE)
-**Whitepaper:** [WHITEPAPER.md](WHITEPAPER.md) — full technical write-up covering CSWR, CQL routing, self-critique rewards, and benchmark results.
+**Whitepaper:** [WHITEPAPER.md](WHITEPAPER.md) - full technical write-up covering CSWR, CQL routing, self-critique rewards, and benchmark results.
 
 If you use this work in your own project, research, or write-up, please cite this repo and my LinkedIn above.
 
@@ -71,16 +71,16 @@ graph TD
 
 ### Data Flow Summary
 
-1. **Query enters** — routed to all four retrieval paths simultaneously.
+1. **Query enters** and is routed to all four retrieval paths simultaneously.
 2. **CQL policy** evaluates the query embedding and outputs fusion weights (how much to trust each path).
-3. **CSWR** filters RAG results using entropy scoring, embedding variance, and contradiction checks — anything below 0.7 stability is removed.
+3. **CSWR** filters RAG results using neighbor cosine similarity (local stability), question-fit scoring, and drift penalty. Chunks below the domain-specific stability threshold (0.7 general, 0.65 tech, 0.55 code) are down-weighted.
 4. **Fusion** merges results weighted by the CQL policy output.
-5. **OOD detection** (Mahalanobis) flags out-of-distribution queries before they can destabilize the response.
-6. **Attack detection** screens for prompt injection and jailbreak attempts.
+5. **OOD detection** (Mahalanobis with Ledoit-Wolf shrinkage) flags out-of-distribution queries before they can destabilize the response.
+6. **Safety gate** screens for prompt injection and jailbreak attempts using keyword and pattern matching.
 7. **LLM generates** a response grounded in the fused context.
-8. **Critique layer** self-evaluates the response for quality and safety.
+8. **Critique layer** self-evaluates the response for factual accuracy, helpfulness, and citation coverage.
 9. **Proactive reasoning** suggests follow-up steps when useful.
-10. **Response** is delivered with full transparency — fusion weights, reward scores, and citations visible in the UI.
+10. **Response** is delivered with full transparency: fusion weights, reward scores, and citations visible in the UI.
 
 ---
 
@@ -90,11 +90,11 @@ RLFusion runs four retrieval paths that each fill a different role.
 
 ### RAG + CSWR
 
-Standard RAG pulls garbage. CSWR filters it using entropy scoring, embedding variance, and basic contradiction checks. Anything below 0.7 stability gets removed or down-weighted. This cuts hallucinations in a noticeable way.
+Standard RAG pulls garbage. CSWR filters it by scoring each chunk on three axes: local stability (cosine similarity to neighboring chunks), question fit (entity and intent overlap with the query profile), and drift penalty (detects topic shifts that break coherence). Chunks below the domain-specific stability threshold get removed or down-weighted. This cuts hallucinations in a noticeable way.
 
 ### CAG
 
-A fast, explicit cache for information I want preserved exactly. No interpretation. No drift. Just "store this and don't screw it up".
+A fast, explicit cache for information I want preserved exactly. No interpretation. No drift. Just "store this and don't screw it up". Semantic matching uses batch-embedded keys for sub-50ms lookups even with hundreds of cached entries.
 
 ### Graph
 
@@ -155,7 +155,7 @@ The system also includes:
    Drop `.txt`, `.md`, or `.pdf` files into the `data/docs/` directory. These are what the RAG retrieval path searches against. Subdirectories are scanned recursively.
 
    ```bash
-   # example — copy your notes, manuals, research papers, anything
+   # example: copy your notes, manuals, research papers, anything
    cp ~/my-notes/*.md  data/docs/
    cp ~/papers/*.pdf   data/docs/
    ```
@@ -202,7 +202,7 @@ python backend/rl/train_rl.py
 
 RLFusion ships with a pre-trained CQL policy that provides reasonable defaults out of the box, but it genuinely improves with use.
 
-The system learns from every interaction. Each query you send gets scored by the critique layer, and those scores feed back into the RL policy that controls how retrieval sources are weighted. For the first **100–500 interactions**, the system is still calibrating — responses will be decent but the routing won't be personalized to your usage patterns yet.
+The system learns from every interaction. Each query you send gets scored by the critique layer, and those scores feed back into the RL policy that controls how retrieval sources are weighted. For the first **100 to 500 interactions**, the system is still calibrating. Responses will be decent but the routing won't be personalized to your usage patterns yet.
 
 After that warm-up window:
 
@@ -211,7 +211,7 @@ After that warm-up window:
 - Proactive suggestions become more relevant to your workflow
 - The critique layer has enough signal to meaningfully differentiate good from bad responses
 
-This is by design. The policy updates slowly and conservatively to avoid behavior swings. You won't notice a sudden shift — it just gradually gets better at knowing which retrieval path to trust for different types of questions.
+This is by design. The policy updates slowly and conservatively to avoid behavior swings. You won't notice a sudden shift. It just gradually gets better at knowing which retrieval path to trust for different types of questions.
 
 If you want to accelerate the warm-up, you can batch-seed episodes:
 
@@ -233,7 +233,7 @@ All configurable environment variables are documented in `.env.example`:
 | `RLFUSION_FORCE_CPU` | No | `false` | Set to `true` to force CPU mode even if CUDA is available. |
 | `OLLAMA_HOST` | No | `http://localhost:11434` | Ollama server URL. Change if Ollama runs on a different host/port. |
 
-Additional configuration is in `backend/config.yaml` — see the [Configuration](#configuration) section below.
+Additional configuration is in `backend/config.yaml`. See the [Configuration](#configuration) section below.
 
 ---
 
@@ -241,7 +241,7 @@ Additional configuration is in `backend/config.yaml` — see the [Configuration]
 
 ### CSWR
 
-Chunk Stability Weighted Retrieval. Uses entropy, variance, and contradiction checks to keep unstable chunks out of the pipeline.
+Chunk Stability Weighted Retrieval. Scores each chunk on local stability (neighbor embedding similarity), question fit (entity and intent matching), and drift penalty (cosine drop between adjacent chunks). Keeps unstable or off-topic chunks out of the pipeline.
 
 ### RL Routing (CQL)
 
@@ -249,7 +249,7 @@ The offline CQL policy evaluates reliability and adjusts path weights slowly and
 
 ### Safety and OOD
 
-A lightweight classifier handles dangerous queries. Mahalanobis scoring flags unusual input before it destabilizes the response.
+A pattern-based safety gate screens queries for injection attempts, jailbreaks, and harmful content before retrieval even starts. Mahalanobis scoring (with Ledoit-Wolf shrinkage) flags unusual input before it destabilizes the response.
 
 ### Proactive Layer
 
@@ -269,14 +269,14 @@ llm:
   max_tokens: 4096
 
 embedding:
-  model: all-MiniLM-L6-v2
-  device: cpu           # "cpu" or "cuda"
+  model: BAAI/bge-small-en-v1.5
+  device: cuda          # "cpu" or "cuda"
 
 rl:
   policy_path: models/rl_policy_cql.d3
 
 web:
-  enabled: false        # Enable to allow web search (requires TAVILY_API_KEY)
+  enabled: false        # set true + TAVILY_API_KEY to allow web search
   max_results: 3
   search_timeout: 10
 ```
@@ -287,21 +287,21 @@ web:
 
 ```
 backend/
-  main.py              — FastAPI entry point
-  config.py            — Configuration loader
-  config.yaml          — Default configuration
-  core/                — Core retrieval, fusion, critique logic
-  rl/                  — Reinforcement learning training scripts
+  main.py              # FastAPI entry point
+  config.py            # Configuration loader
+  config.yaml          # Default configuration
+  core/                # Core retrieval, fusion, critique logic
+  rl/                  # Reinforcement learning training scripts
 frontend/
-  src/                 — React UI (Vite + Tailwind)
+  src/                 # React UI (Vite + Tailwind)
 models/
-  rl_policy_cql.d3     — Pre-trained CQL policy (~3.3 MB)
+  rl_policy_cql.d3     # Pre-trained CQL policy (~3.3 MB)
 scripts/
-  init_db.sh           — Database initialization
+  init_db.sh           # Database initialization
   compatibility/
-    fix_blackwell.sh   — NVIDIA Blackwell (RTX 50-series) CUDA fix
-tests/                 — Test suites (API, GPU, load testing)
-training/              — Training orchestration scripts
+    fix_blackwell.sh   # NVIDIA Blackwell (RTX 50-series) CUDA fix
+tests/                 # Test suites (API, GPU, load testing)
+training/              # Training orchestration scripts
 ```
 
 ### Hardware Compatibility
@@ -342,7 +342,7 @@ Ran on an RTX 5070 with Llama3.1 8B. Six full suites. All passed.
 | `WS` | `/ws` | WebSocket endpoint for streaming chat with real-time fusion weights. |
 | `GET` | `/api/config` | Get current configuration (web search status, etc.). |
 | `PATCH` | `/api/config` | Update configuration at runtime (e.g., toggle web search). |
-| `GET` | `/ping` | Health check — returns GPU status and policy availability. |
+| `GET` | `/ping` | Health check. Returns GPU status and policy availability. |
 | `POST` | `/api/upload` | Upload `.txt`, `.md`, `.pdf` files to `data/docs/` (multipart form). |
 | `POST` | `/api/reindex` | Rebuild the RAG index from documents in `data/docs/`. |
 | `DELETE` | `/api/reset` | Wipe all transient state (cache, episodes, replay, conversations). |
@@ -365,4 +365,4 @@ See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## License
 
-[MIT](LICENSE) — Copyright (c) 2025-2026 Bradley R. Kinnard
+[MIT](LICENSE) - Copyright (c) 2025-2026 Bradley R. Kinnard

@@ -47,7 +47,7 @@ an individual is officially representing the community in public spaces.
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the project maintainer at:
 
-**Bradley R. Kinnard** — via [LinkedIn](https://www.linkedin.com/in/brad-kinnard/)
+**Bradley R. Kinnard** - via [LinkedIn](https://www.linkedin.com/in/brad-kinnard/)
 
 All complaints will be reviewed and investigated promptly and fairly.
 

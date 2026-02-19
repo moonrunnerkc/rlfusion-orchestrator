@@ -3,12 +3,15 @@
 # Originally built for personal offline use, now open-sourced for public benefit.
 
 import hashlib
+import logging
 import os
 from pathlib import Path
 from typing import List
 import numpy as np
 import yaml
 from sentence_transformers import SentenceTransformer
+
+logger = logging.getLogger(__name__)
 
 # Load device from config, fallback to env var, then to cuda if available
 def _get_device() -> str:
@@ -20,7 +23,7 @@ def _get_device() -> str:
         with open(cfg_path) as f:
             cfg = yaml.safe_load(f)
         return cfg.get("embedding", {}).get("device", "cuda")
-    except:
+    except Exception:
         return "cuda"
 
 _device = _get_device()
@@ -78,13 +81,13 @@ _ood_cache = {"mean": None, "precision": None, "fitted": False}
 
 def fit_ood_detector(embeddings: np.ndarray) -> None:
     from sklearn.covariance import LedoitWolf
-    print(f"[OOD] Fitting on {embeddings.shape[0]} samples...")
+    logger.info("Fitting OOD detector on %d samples", embeddings.shape[0])
     _ood_cache["mean"] = np.mean(embeddings, axis=0)
     lw = LedoitWolf()
     lw.fit(embeddings)
     _ood_cache["precision"] = lw.precision_
     _ood_cache["fitted"] = True
-    print(f"[OOD] Fitted. Shrinkage: {lw.shrinkage_:.4f}")
+    logger.info("OOD detector fitted. Shrinkage: %.4f", lw.shrinkage_)
 
 
 def mahalanobis_distance(embedding: np.ndarray) -> float:
@@ -100,7 +103,7 @@ def is_ood(embedding: np.ndarray, threshold: float = 50.0) -> tuple:
         return (False, -1.0)
     ood = dist > threshold
     if ood:
-        print(f"[OOD] Flagged! Distance: {dist:.2f} > {threshold}")
+        logger.warning("OOD flagged! Distance: %.2f > %.2f", dist, threshold)
     return (ood, dist)
 
 

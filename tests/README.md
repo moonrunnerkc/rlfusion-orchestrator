@@ -12,9 +12,9 @@ Complete implementation of 6 test suites for RLFusion Orchestrator:
 **Queries:** Ambiguous, unanswerable, or conflicting queries designed to stress retrieval
 
 **Metrics:**
-- `accuracy` — overall correctness (0-1)
-- `hallucination_score` — inverse of accuracy (lower is better)
-- `error_rate` — fraction of failed requests
+- `accuracy`: overall correctness (0-1)
+- `hallucination_score`: inverse of accuracy (lower is better)
+- `error_rate`: fraction of failed requests
 - `latency_ms`, `latency_p50`, `latency_p95`
 
 ### 2. Proactive Suite
@@ -23,9 +23,9 @@ Complete implementation of 6 test suites for RLFusion Orchestrator:
 **Queries:** Multi-hop chains, conversational contexts with follow-up indicators
 
 **Metrics:**
-- `accuracy` — overall correctness
-- `anticipation_rate` — fraction of queries triggering proactive suggestions (0-1)
-- `proactive_score` — combined accuracy + anticipation
+- `accuracy`: overall correctness
+- `anticipation_rate`: fraction of queries triggering proactive suggestions (0-1)
+- `proactive_score`: combined accuracy + anticipation
 - `latency_ms`, `latency_p50`, `latency_p95`
 
 ### 3. Adversarial Suite
@@ -34,9 +34,9 @@ Complete implementation of 6 test suites for RLFusion Orchestrator:
 **Queries:** SQL injection, XSS, command injection, spam, prompt leakage attempts
 
 **Metrics:**
-- `accuracy` — overall correctness under attack
-- `error_rate` — fraction of failed requests
-- `robustness_score` — inverse of error rate (higher is better)
+- `accuracy`: overall correctness under attack
+- `error_rate`: fraction of failed requests
+- `robustness_score`: inverse of error rate (higher is better)
 - `latency_ms`, `latency_p50`, `latency_p95`
 
 ### 4. Evolution Suite
@@ -45,9 +45,9 @@ Complete implementation of 6 test suites for RLFusion Orchestrator:
 **Queries:** Temporal changes, domain shifts, emerging concepts
 
 **Metrics:**
-- `accuracy` — overall correctness
-- `drift_resistance` — stability under noise
-- `adaptation_score` — combined accuracy + drift resistance
+- `accuracy`: overall correctness
+- `drift_resistance`: stability under noise
+- `adaptation_score`: combined accuracy + drift resistance
 - `latency_ms`, `latency_p50`, `latency_p95`
 
 ### 5. Extensibility Suite (HARDENED)
@@ -56,9 +56,9 @@ Complete implementation of 6 test suites for RLFusion Orchestrator:
 **Queries:** Multi-source retrieval, module extension scenarios, coordination challenges
 
 **Metrics:**
-- `accuracy` — overall correctness
-- `integration_score` — coordination quality (penalizes high latency)
-- `modularity_score` — inverse of error rate
+- `accuracy`: overall correctness
+- `integration_score`: coordination quality (penalizes high latency)
+- `modularity_score`: inverse of error rate
 - `latency_ms`, `latency_p50`, `latency_p95`
 
 ### 6. Ethics Suite (HARDENED)
@@ -67,9 +67,9 @@ Complete implementation of 6 test suites for RLFusion Orchestrator:
 **Queries:** Harmful request probes, bias detection, privacy boundaries
 
 **Metrics:**
-- `accuracy` — overall correctness
-- `safety_score` — ethical compliance (0-1)
-- `bias_score` — consistency and fairness (0-1)
+- `accuracy`: overall correctness
+- `safety_score`: ethical compliance (0-1)
+- `bias_score`: consistency and fairness (0-1)
 - `latency_ms`, `latency_p50`, `latency_p95`
 
 ## Usage
@@ -147,8 +147,8 @@ def run_test_suite(suite_name: str, iterations: int = 100) -> dict:
 
 ## Dependencies
 
-- `tests.sim_env.run_benchmark` — parallel query executor with metrics
-- `json`, `os`, `datetime`, `time` — stdlib
+- `tests.sim_env.run_benchmark`: parallel query executor with metrics
+- `json`, `os`, `datetime`, `time`: stdlib
 - No additional packages required beyond those in `requirements.txt`
 
 ## Notes
