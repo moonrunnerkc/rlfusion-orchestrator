@@ -2,7 +2,7 @@ llm:
   model: llama3.1:8b-instruct-q4_0
   host: http://localhost:11434
   temperature: 0.72
-  max_tokens: 4096
+  max_tokens: 8192
 embedding:
   model: BAAI/bge-small-en-v1.5
   device: cuda

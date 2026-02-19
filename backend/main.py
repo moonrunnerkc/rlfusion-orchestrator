@@ -260,6 +260,16 @@ IDENTITY_BLOCK = """IDENTITY RULES:
 - "I/me/my" (when USER speaks) = The human user
 - Personal details in context (name, pets, job) = THE USER's info, not yours
 - You are software, you don't have pets/vehicles/personal life
+
+TERMINOLOGY (do NOT invent other expansions):
+- CSWR = Chunk Stability Weighted Retrieval (filters RAG chunks by neighbor similarity, question fit, drift)
+- CQL = Conservative Q-Learning (offline RL policy that routes retrieval weights)
+- OOD = Out-of-Distribution detection (Mahalanobis distance)
+
+USER PROFILE:
+- If the context contains a USER PROFILE section, those are facts the user previously asked you to remember.
+- When asked "have you remembered" or "do you know about me", check USER PROFILE first.
+- When no profile data matches, say so honestly.
 """
 
 WEB_INSTRUCTION = """
@@ -336,6 +346,13 @@ async def chat_endpoint(request: Request, body: Dict[str, Any]) -> Dict[str, Any
     rl_weights = _compute_rl_fusion_weights(query, _rl_policy)
     retrieval_results = retrieve(query)
     fused_context = _build_fusion_context(retrieval_results, rl_weights)
+
+    # Inject user profile for personal/memory queries
+    if any(w in query.lower() for w in ['my ', 'me ', 'i ', 'brad', 'preference', 'like', 'favorite',
+                                        'remember', 'told you', 'you know', 'recall', 'profile']):
+        profile = get_user_profile()
+        if profile:
+            fused_context = profile + "\n" + fused_context
 
     client = Client(host=cfg["llm"]["host"])
     context_parts = fused_context.split("\n\n")
@@ -433,7 +450,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             actual_weights = [float(w) for w in rl_weights[:4]] if len(rl_weights) >= 4 else [float(w) for w in rl_weights] + [0.0]
 
             # Inject user profile for personal queries
-            if any(w in query.lower() for w in ['my ', 'me ', 'i ', 'brad', 'preference', 'like', 'favorite']):
+            if any(w in query.lower() for w in ['my ', 'me ', 'i ', 'brad', 'preference', 'like', 'favorite',
+                                                    'remember', 'told you', 'you know', 'recall', 'profile']):
                 profile = get_user_profile()
                 if profile:
                     fused_context = profile + "\n" + fused_context

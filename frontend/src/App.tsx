@@ -410,6 +410,18 @@ export default function App() {
       if (data.type === 'done') {
         console.log('Received done message:', JSON.stringify(data, null, 2));
         setIsLoading(false);
+
+        // Replace streamed text with cleaned response (strips critique block)
+        if (data.response) {
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?.role === 'rlfusion') {
+              return [...prev.slice(0, -1), { ...last, text: data.response }];
+            }
+            return prev;
+          });
+        }
+
         if (data.fusion_weights) {
           console.log('Updating weights to:', JSON.stringify(data.fusion_weights, null, 2));
           setWeights(data.fusion_weights);

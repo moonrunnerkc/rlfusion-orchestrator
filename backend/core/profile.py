@@ -13,12 +13,13 @@ from backend.config import cfg, PROJECT_ROOT
 logger = logging.getLogger(__name__)
 
 EXPLICIT_PATTERNS = [
-    r"^remember this:\s*(.+)$",
-    r"^remember that:\s*(.+)$",
-    r"^put this in memory:\s*(.+)$",
-    r"^save to memory:\s*(.+)$",
-    r"^store this:\s*(.+)$",
-    r"^memory:\s*(.+)$"
+    r"^remember this:?\s*(.+)$",
+    r"^remember that:?\s+(.+)$",
+    r"^put this in memory:?\s*(.+)$",
+    r"^save to memory:?\s*(.+)$",
+    r"^store this:?\s*(.+)$",
+    r"^memory:?\s*(.+)$",
+    r"^remember:?\s+(.+)$",
 ]
 
 QUESTION_PATTERNS = [
