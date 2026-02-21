@@ -2,11 +2,13 @@
 # main.py - FastAPI backend for RLFusion multi-source retrieval with RL fusion
 # Originally built for personal offline use, now open-sourced for public benefit.
 
+import asyncio
 import json
 import logging
 import os
 import re
 import sys
+import time as _time_mod
 import types
 import uuid
 import warnings
@@ -22,7 +24,11 @@ import torch
 import yaml
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from ollama import Client
+from prometheus_client import (
+    Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST,
+)
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -34,6 +40,7 @@ from backend.core.memory import expand_query_with_context, record_turn, get_cont
 from backend.core.profile import detect_and_save_memory, get_user_profile
 from backend.core.retrievers import get_rag_index, retrieve
 from backend.core.utils import embed_text
+from backend.agents.orchestrator import Orchestrator, apply_markdown_formatting
 
 # Max upload size per file (10 MB)
 _MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -43,6 +50,46 @@ _MAX_QUERY_LEN = 4000
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(name)s | %(message)s')
 logger = logging.getLogger(__name__)
 limiter = Limiter(key_func=get_remote_address)
+
+# ── Prometheus metrics ────────────────────────────────────────────────────
+QUERY_LATENCY = Histogram(
+    "rlfusion_query_latency_seconds",
+    "End-to-end query processing latency",
+    buckets=(0.5, 1, 2, 5, 10, 20, 30, 60),
+)
+RETRIEVAL_PATH_USAGE = Counter(
+    "rlfusion_retrieval_path_total",
+    "Number of times each retrieval path returned results",
+    ["path"],
+)
+FUSION_WEIGHT_DIST = Histogram(
+    "rlfusion_fusion_weight",
+    "Distribution of fusion weights per retrieval path",
+    ["path"],
+    buckets=(0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
+)
+SAFETY_GATE_TRIGGERS = Counter(
+    "rlfusion_safety_gate_triggers_total",
+    "Number of queries blocked by safety gate",
+)
+REPLAY_BUFFER_SIZE = Gauge(
+    "rlfusion_replay_buffer_size",
+    "Number of episodes in the replay buffer",
+)
+CRITIQUE_REWARD = Histogram(
+    "rlfusion_critique_reward",
+    "Distribution of critique reward scores",
+    buckets=(0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
+)
+REQUESTS_TOTAL = Counter(
+    "rlfusion_http_requests_total",
+    "Total HTTP requests by endpoint and method",
+    ["endpoint", "method"],
+)
+WS_CONNECTIONS = Gauge(
+    "rlfusion_ws_connections_active",
+    "Number of active WebSocket connections",
+)
 
 # numpy._core shim for stable-baselines3
 if not hasattr(np, '_core'):
@@ -64,6 +111,7 @@ else:
 
 _rl_policy = None
 _boot_id: str = ""
+_orchestrator: Orchestrator | None = None
 
 
 class CQLPolicyWrapper:
@@ -166,6 +214,11 @@ async def lifespan(app: FastAPI):
     logger.info(f"LLM: {cfg['llm']['model']}")
     logger.info(f"RL Policy: {policy_status}")
     logger.info(f"Web Search: {web_status}")
+
+    # Initialize multi-agent orchestrator (Phase 1)
+    global _orchestrator
+    _orchestrator = Orchestrator(rl_policy=_rl_policy)
+    logger.info("Orchestrator: multi-agent pipeline active (LangGraph)")
     logger.info("=" * 64)
     yield
     logger.info("Shutting down RLFusion Orchestrator")
@@ -175,6 +228,46 @@ app = FastAPI(title="RLFusion Orchestrator", version="0.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.middleware("http")
+async def correlation_id_middleware(request: Request, call_next: object) -> Response:
+    """Inject correlation ID into every request for structured log tracing."""
+    corr_header = cfg.get("monitoring", {}).get("correlation_id_header", "X-Correlation-ID")
+    corr_id = request.headers.get(corr_header, uuid.uuid4().hex[:12])
+    request.state.correlation_id = corr_id
+
+    endpoint = request.url.path
+    method = request.method
+    REQUESTS_TOTAL.labels(endpoint=endpoint, method=method).inc()
+
+    t0 = _time_mod.perf_counter()
+    response = await call_next(request)
+    elapsed = _time_mod.perf_counter() - t0
+
+    response.headers[corr_header] = corr_id
+    logger.info(
+        "request.complete",
+        extra={"corr_id": corr_id, "path": endpoint, "method": method, "status": response.status_code, "took_ms": round(elapsed * 1000, 1)},
+    )
+    return response
+
+
+@app.get("/metrics")
+async def prometheus_metrics() -> Response:
+    """Expose Prometheus metrics for scraping."""
+    # update replay buffer gauge on each scrape
+    try:
+        import sqlite3
+        db_path = PROJECT_ROOT / cfg["paths"]["db"]
+        if db_path.exists():
+            conn = sqlite3.connect(str(db_path))
+            row = conn.execute("SELECT COUNT(*) FROM replay").fetchone()
+            REPLAY_BUFFER_SIZE.set(row[0] if row else 0)
+            conn.close()
+    except Exception:
+        pass  # db might not exist yet
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 def _apply_markdown_formatting(text: str) -> str:
@@ -332,57 +425,36 @@ async def chat_endpoint(request: Request, body: Dict[str, Any]) -> Dict[str, Any
     if len(query) > _MAX_QUERY_LEN:
         return {"response": f"Query too long ({len(query)} chars, max {_MAX_QUERY_LEN}).", "fusion_weights": {"rag": 0, "cag": 0, "graph": 0}, "reward": 0.0}
 
-    # Safety gate - same as /ws path
-    safe, safety_reason = check_safety(query)
-    if not safe:
-        logger.warning("Query blocked by safety filter: %s", safety_reason)
-        return {
-            "response": "I can't help with that request. " + safety_reason,
-            "fusion_weights": {"rag": 0, "cag": 0, "graph": 0},
-            "reward": 0.0,
-            "blocked": True,
-            "safety_reason": safety_reason,
-        }
+    # Multi-agent orchestration (Phase 1)
+    t_start = _time_mod.perf_counter()
+    result = _orchestrator.run(query=query, mode=mode, session_id="chat")
+    QUERY_LATENCY.observe(_time_mod.perf_counter() - t_start)
 
-    get_rag_index()
-    rl_weights = _compute_rl_fusion_weights(query, _rl_policy)
-    retrieval_results = retrieve(query)
-    fused_context = _build_fusion_context(retrieval_results, rl_weights)
+    # record fusion weight distribution
+    fw = result["fusion_weights"]
+    for path_name in ("rag", "cag", "graph"):
+        FUSION_WEIGHT_DIST.labels(path=path_name).observe(fw.get(path_name, 0))
+    CRITIQUE_REWARD.observe(result["reward"])
 
-    # Inject user profile for personal/memory queries
-    if any(w in query.lower() for w in ['my ', 'me ', 'i ', 'brad', 'preference', 'like', 'favorite',
-                                        'remember', 'told you', 'you know', 'recall', 'profile']):
-        profile = get_user_profile()
-        if profile:
-            fused_context = profile + "\n" + fused_context
+    if result["blocked"]:
+        SAFETY_GATE_TRIGGERS.inc()
 
-    client = Client(host=cfg["llm"]["host"])
-    context_parts = fused_context.split("\n\n")
-
-    response_obj = client.chat(
-        model=cfg["llm"]["model"],
-        messages=[
-            {"role": "system", "content": _generate_system_prompt(mode, context_parts)},
-            {"role": "user", "content": _generate_user_prompt(mode, query, fused_context, context_parts)}
-        ],
-        options={"temperature": 0.3}
-    )
-
-    generated = _apply_markdown_formatting(response_obj["message"]["content"])
-    critique_result = critique(query, fused_context, generated)
-    clean_response = strip_critique_block(generated)
-
-    return {
-        "response": clean_response,
-        "fusion_weights": {"rag": float(rl_weights[0]), "cag": float(rl_weights[1]), "graph": float(rl_weights[2])},
-        "reward": critique_result["reward"],
-        "proactive_suggestions": critique_result.get("proactive_suggestions", [])
+    response: Dict[str, Any] = {
+        "response": result["response"],
+        "fusion_weights": result["fusion_weights"],
+        "reward": result["reward"],
+        "proactive_suggestions": result["proactive_suggestions"],
     }
+    if result["blocked"]:
+        response["blocked"] = True
+        response["safety_reason"] = result["safety_reason"]
+    return response
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    WS_CONNECTIONS.inc()
     session_id = str(id(websocket))
 
     try:
@@ -417,104 +489,217 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
             await websocket.send_json({"type": "start"})
 
-            # Expand query with conversation context
-            expanded_query, expansion_meta = expand_query_with_context(session_id, query)
-            if expansion_meta["expanded"]:
-                logger.info(f"[MEMORY] Query expanded ({len(query)} → {len(expanded_query)} chars)")
+            # ---- Granular agent pipeline with per-step status updates ----
+            # Each blocking agent call runs in a thread so WS frames flush
+            # between steps, giving the frontend real-time status transitions.
 
-            # Check for memory storage request
-            is_memory_request, memory_content = detect_and_save_memory(query)
-            if is_memory_request:
-                preview = memory_content[:100] + "..." if len(memory_content) > 100 else memory_content
-                await websocket.send_json({"type": "token", "token": f"✅ **Remembered:**\n\n> {preview}"})
+            # Step 0: Preprocess (memory expansion, complexity classification)
+            pre = await asyncio.to_thread(_orchestrator.step_preprocess, query, session_id)
+            expanded_query = pre["expanded_query"]
+            query_expanded = pre["query_expanded"]
+            complexity = pre["complexity"]
+
+            # Memory request: short-circuit before any agents run
+            if pre["is_memory_request"]:
+                await websocket.send_json({"type": "pipeline", "agents": [
+                    {"name": "safety", "status": "skipped", "detail": "Memory request"},
+                    {"name": "retrieval", "status": "skipped", "detail": ""},
+                    {"name": "fusion", "status": "skipped", "detail": ""},
+                    {"name": "generation", "status": "skipped", "detail": ""},
+                    {"name": "critique", "status": "skipped", "detail": ""},
+                ]})
+                preview = str(pre["memory_content"])[:100]
+                if len(str(pre["memory_content"])) > 100:
+                    preview += "..."
+                await websocket.send_json({"type": "token", "token": f"\u2705 **Remembered:**\n\n> {preview}"})
                 await websocket.send_json({"type": "done"})
                 continue
 
-            # Safety gate — block unsafe queries before retrieval
-            safe, safety_reason = check_safety(query)
-            if not safe:
-                logger.warning("Query blocked by safety filter: %s", safety_reason)
+            # Step 1: Safety gate
+            await websocket.send_json({"type": "pipeline", "agents": [
+                {"name": "safety", "status": "running", "detail": "Scanning attack patterns + OOD check"},
+                {"name": "retrieval", "status": "pending", "detail": ""},
+                {"name": "fusion", "status": "pending", "detail": ""},
+                {"name": "generation", "status": "pending", "detail": ""},
+                {"name": "critique", "status": "pending", "detail": ""},
+            ]})
+            safety_result = await asyncio.to_thread(_orchestrator.step_safety, query, complexity)
+
+            if safety_result.get("blocked", False):
+                SAFETY_GATE_TRIGGERS.inc()
+                block_reason = safety_result.get("safety_reason", "Unknown")
+                logger.warning("Query blocked by safety filter: %s", block_reason)
+                await websocket.send_json({"type": "pipeline", "agents": [
+                    {"name": "safety", "status": "blocked", "detail": f"Blocked: {block_reason[:60]}"},
+                    {"name": "retrieval", "status": "skipped", "detail": ""},
+                    {"name": "fusion", "status": "skipped", "detail": ""},
+                    {"name": "generation", "status": "skipped", "detail": ""},
+                    {"name": "critique", "status": "skipped", "detail": ""},
+                ]})
                 await websocket.send_json({
                     "type": "done",
-                    "response": "I can't help with that request. " + safety_reason,
+                    "response": "I can't help with that request. " + block_reason,
                     "fusion_weights": {"rag": 0, "cag": 0, "graph": 0},
                     "reward": 0.0,
                     "blocked": True,
-                    "safety_reason": safety_reason,
+                    "safety_reason": block_reason,
                 })
                 continue
 
+            safety_detail = f"Passed ({complexity} query)"
+
+            # Step 2: Retrieval
+            await websocket.send_json({"type": "pipeline", "agents": [
+                {"name": "safety", "status": "done", "detail": safety_detail},
+                {"name": "retrieval", "status": "running", "detail": f"Querying all paths (depth: {complexity})"},
+                {"name": "fusion", "status": "pending", "detail": ""},
+                {"name": "generation", "status": "pending", "detail": ""},
+                {"name": "critique", "status": "pending", "detail": ""},
+            ]})
+            retrieval_result = await asyncio.to_thread(
+                _orchestrator.step_retrieval,
+                query=query,
+                expanded_query=expanded_query,
+                query_expanded=query_expanded,
+                complexity=complexity,
+            )
+
+            # summarize retrieval results for the detail text
+            rr = retrieval_result.get("retrieval_results", {})
+            rag_n = len(rr.get("rag", []))
+            cag_n = len(rr.get("cag", []))
+            graph_n = len(rr.get("graph", []))
+            web_n = len(rr.get("web", []))
+            retrieval_detail = f"{rag_n} RAG, {cag_n} CAG, {graph_n} Graph, {web_n} Web"
+
+            # record retrieval path usage
+            for path_label, count in [("rag", rag_n), ("cag", cag_n), ("graph", graph_n), ("web", web_n)]:
+                if count > 0:
+                    RETRIEVAL_PATH_USAGE.labels(path=path_label).inc()
+
+            # Step 3: Fusion
+            await websocket.send_json({"type": "pipeline", "agents": [
+                {"name": "safety", "status": "done", "detail": safety_detail},
+                {"name": "retrieval", "status": "done", "detail": retrieval_detail},
+                {"name": "fusion", "status": "running", "detail": "Computing RL policy weights"},
+                {"name": "generation", "status": "pending", "detail": ""},
+                {"name": "critique", "status": "pending", "detail": ""},
+            ]})
+            fusion_result = await asyncio.to_thread(
+                _orchestrator.step_fusion,
+                query=query,
+                expanded_query=expanded_query,
+                retrieval_results=retrieval_result.get("retrieval_results", {}),
+            )
+
+            # Build prompts (fast, no status update needed)
+            actual_weights = fusion_result.get("actual_weights", [0.25, 0.25, 0.25, 0.25])
+            web_status = retrieval_result.get("web_status", "disabled")
+            fused_context = fusion_result.get("fused_context", "")
+
+            # summarize fusion weights for detail text
+            w = actual_weights
+            fusion_detail = f"RAG {w[0]*100:.0f}% CAG {w[1]*100:.0f}% Graph {w[2]*100:.0f}%"
+            if len(w) > 3 and w[3] > 0.01:
+                fusion_detail += f" Web {w[3]*100:.0f}%"
+
+            prepared = _orchestrator.build_prompts(
+                query=query,
+                mode=mode,
+                session_id=session_id,
+                fused_context=fused_context,
+                actual_weights=actual_weights,
+                web_status=web_status,
+                expanded_query=expanded_query,
+                query_expanded=query_expanded,
+            )
+
             record_turn(session_id, "user", query)
-            rl_weights = _compute_rl_fusion_weights(expanded_query, _rl_policy)
-            retrieval_results = retrieve(expanded_query, top_k=10)
-            web_status = retrieval_results.get("web_status", "disabled")
-            fused_context = _build_fusion_context(retrieval_results, rl_weights)
-            actual_weights = [float(w) for w in rl_weights[:4]] if len(rl_weights) >= 4 else [float(w) for w in rl_weights] + [0.0]
+            # update fused_context from build_prompts (may include profile/conv context)
+            fused_context = prepared["fused_context"]
+            ctx_len = len(fused_context)
+            logger.info("Context length: %d chars", ctx_len)
 
-            # Inject user profile for personal queries
-            if any(w in query.lower() for w in ['my ', 'me ', 'i ', 'brad', 'preference', 'like', 'favorite',
-                                                    'remember', 'told you', 'you know', 'recall', 'profile']):
-                profile = get_user_profile()
-                if profile:
-                    fused_context = profile + "\n" + fused_context
-
-            # Inject conversation context
-            conv_context = get_context_for_prompt(session_id)
-            if conv_context:
-                fused_context = conv_context + "\n\n" + fused_context
-
-            context_parts = fused_context.split("\n\n")
-            system_prompt = _generate_system_prompt(mode, context_parts)
-            prompt = _generate_user_prompt(mode, query, fused_context, context_parts)
-            logger.info(f"Context length: {len(fused_context)} chars")
+            # Step 4: LLM Generation
+            model_name = cfg["llm"]["model"]
+            await websocket.send_json({"type": "pipeline", "agents": [
+                {"name": "safety", "status": "done", "detail": safety_detail},
+                {"name": "retrieval", "status": "done", "detail": retrieval_detail},
+                {"name": "fusion", "status": "done", "detail": fusion_detail},
+                {"name": "generation", "status": "running", "detail": f"Streaming {model_name} ({ctx_len} chars context)"},
+                {"name": "critique", "status": "pending", "detail": ""},
+            ]})
 
             client = Client(host=cfg["llm"]["host"])
             full_response = ""
+            token_count = 0
 
             for chunk in client.chat(
-                model=cfg["llm"]["model"],
-                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}],
+                model=model_name,
+                messages=[{"role": "system", "content": prepared["system_prompt"]}, {"role": "user", "content": prepared["user_prompt"]}],
                 options={"temperature": 0.1, "num_ctx": 8192},
                 stream=True
             ):
                 if 'message' in chunk and 'content' in chunk['message']:
                     text_chunk = chunk['message']['content']
                     full_response += text_chunk
-                    await websocket.send_json({"chunk": text_chunk, "weights": actual_weights, "reward": 0.85})
+                    token_count += 1
+                    await websocket.send_json({"chunk": text_chunk, "weights": actual_weights, "reward": 0.0})
 
-            full_response = _apply_markdown_formatting(full_response)
+            gen_detail = f"{token_count} tokens via {model_name}"
 
-            critique_result = critique(query, fused_context, full_response)
-            clean_response = strip_critique_block(full_response)
+            # Step 5: Critique
+            await websocket.send_json({"type": "pipeline", "agents": [
+                {"name": "safety", "status": "done", "detail": safety_detail},
+                {"name": "retrieval", "status": "done", "detail": retrieval_detail},
+                {"name": "fusion", "status": "done", "detail": fusion_detail},
+                {"name": "generation", "status": "done", "detail": gen_detail},
+                {"name": "critique", "status": "running", "detail": "Scoring response + logging episode"},
+            ]})
 
-            # Add web search notice if API key is missing (after stripping critique)
-            if web_status == "no_api_key":
-                logger.warning("⚠️ Adding web search API key notice to response")
-                web_notice = "\n\n---\n⚠️ **Web search is enabled but no API key is configured.** To enable web search, set `TAVILY_API_KEY` in your `.env` file. Get a free key at [tavily.com](https://tavily.com)."
-                clean_response += web_notice
+            result = await asyncio.to_thread(
+                _orchestrator.finalize,
+                query=query,
+                llm_response=full_response,
+                fused_context=fused_context,
+                actual_weights=actual_weights,
+                web_status=web_status,
+            )
 
-            record_turn(session_id, "assistant", clean_response)
+            critique_reward = result["reward"]
+            CRITIQUE_REWARD.observe(critique_reward)
+            # record fusion weight distribution
+            for wpath in ("rag", "cag", "graph"):
+                FUSION_WEIGHT_DIST.labels(path=wpath).observe(result["fusion_weights"].get(wpath, 0))
+            n_suggestions = len(result["proactive_suggestions"])
+            critique_detail = f"Reward: {critique_reward:.2f}"
+            if n_suggestions > 0:
+                critique_detail += f", {n_suggestions} suggestion{'s' if n_suggestions != 1 else ''}"
 
-            log_episode_to_replay_buffer({
-                "query": query, "response": clean_response,
-                "weights": {"rag": actual_weights[0], "cag": actual_weights[1], "graph": actual_weights[2]},
-                "reward": critique_result["reward"],
-                "proactive_suggestions": critique_result.get("proactive_suggestions", []),
-                "fused_context": fused_context
-            })
+            # All agents complete
+            await websocket.send_json({"type": "pipeline", "agents": [
+                {"name": "safety", "status": "done", "detail": safety_detail},
+                {"name": "retrieval", "status": "done", "detail": retrieval_detail},
+                {"name": "fusion", "status": "done", "detail": fusion_detail},
+                {"name": "generation", "status": "done", "detail": gen_detail},
+                {"name": "critique", "status": "done", "detail": critique_detail},
+            ]})
+
+            record_turn(session_id, "assistant", result["response"])
 
             await websocket.send_json({
-                "type": "done", "response": clean_response,
-                "fusion_weights": {"rag": actual_weights[0], "cag": actual_weights[1], "graph": actual_weights[2]},
-                "reward": critique_result["reward"],
-                "proactive": critique_result.get("proactive_suggestions", [""])[0] if critique_result.get("proactive_suggestions") else "",
-                "proactive_suggestions": critique_result.get("proactive_suggestions", []),
-                "query_expanded": expansion_meta["expanded"],
-                "expanded_query": expanded_query if expansion_meta["expanded"] else None,
-                "web_status": web_status
+                "type": "done", "response": result["response"],
+                "fusion_weights": result["fusion_weights"],
+                "reward": result["reward"],
+                "proactive": result["proactive_suggestions"][0] if result["proactive_suggestions"] else "",
+                "proactive_suggestions": result["proactive_suggestions"],
+                "query_expanded": query_expanded,
+                "expanded_query": expanded_query if query_expanded else None,
+                "web_status": web_status,
             })
 
     except WebSocketDisconnect:
+        WS_CONNECTIONS.dec()
         logger.info("WebSocket client disconnected")
 
 
@@ -572,7 +757,7 @@ async def upload_documents(request: Request) -> Dict[str, Any]:
     docs_path.mkdir(parents=True, exist_ok=True)
 
     saved, skipped = [], []
-    allowed = {".txt", ".md", ".pdf"}
+    allowed = {".txt", ".md", ".pdf", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"}
 
     for f in files:
         if not hasattr(f, 'filename'):
@@ -611,12 +796,15 @@ async def reindex_documents(request: Request) -> Dict[str, Any]:
     import time
 
     docs_path = _get_docs_path()
-    supported = list(docs_path.rglob("*.txt")) + list(docs_path.rglob("*.md")) + list(docs_path.rglob("*.pdf"))
+    supported = (list(docs_path.rglob("*.txt")) + list(docs_path.rglob("*.md"))
+                  + list(docs_path.rglob("*.pdf")))
+    image_files = [f for ext in ("*.png", "*.jpg", "*.jpeg", "*.webp", "*.bmp", "*.tiff")
+                   for f in docs_path.rglob(ext)]
 
-    if not supported:
+    if not supported and not image_files:
         return {
             "status": "empty",
-            "message": "No documents found. Add .txt, .md, or .pdf files to data/docs/ and try again.",
+            "message": "No documents found. Add .txt, .md, .pdf, or image files to data/docs/ and try again.",
             "docs_path": str(docs_path),
         }
 
@@ -627,11 +815,22 @@ async def reindex_documents(request: Request) -> Dict[str, Any]:
     meta_path = _get_metadata_path()
     chunk_count = len(json.loads(meta_path.read_text())) if meta_path.exists() else 0
 
-    logger.info(f"Reindex complete: {len(supported)} files, {chunk_count} chunks, {elapsed}s")
+    # report image index stats if multimodal is enabled
+    image_count = 0
+    img_meta = PROJECT_ROOT / "indexes" / "image_metadata.json"
+    if img_meta.exists():
+        image_count = len(json.loads(img_meta.read_text()))
+
+    total_files = len(supported) + len(image_files)
+    logger.info(
+        "Reindex complete: %d text files, %d images, %d chunks, %.2fs",
+        len(supported), len(image_files), chunk_count, elapsed,
+    )
     return {
         "status": "reindexed",
-        "files_processed": len(supported),
+        "files_processed": total_files,
         "chunks_indexed": chunk_count,
+        "images_indexed": image_count,
         "elapsed_seconds": elapsed,
     }
 
@@ -656,6 +855,80 @@ async def reset_state(request: Request) -> Dict[str, Any]:
     conversation_memory.clear_all_sessions()
     logger.info("Full state reset via /api/reset")
     return {"status": "reset", "tables_cleared": ["cache", "episodes", "replay", "conversations"]}
+
+
+@app.post("/api/fine-tune")
+@limiter.limit("1/hour")
+async def fine_tune_endpoint(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Kick off LoRA fine-tuning on high-reward replay episodes. Admin-only."""
+    from backend.rl.fine_tune import SFTJobConfig, default_config, run_sft
+
+    # admin auth: require RLFUSION_ADMIN_KEY as Bearer token
+    admin_key = os.environ.get("RLFUSION_ADMIN_KEY", "")
+    auth_header = request.headers.get("Authorization", "")
+    if not admin_key or auth_header != f"Bearer {admin_key}":
+        return {
+            "status": "unauthorized",
+            "message": "Set RLFUSION_ADMIN_KEY env var and pass as Bearer token.",
+        }
+
+    # build config from request body, falling back to defaults
+    defaults = default_config()
+    job_config = SFTJobConfig(
+        base_model=body.get("base_model", defaults["base_model"]),
+        lora_rank=int(body.get("lora_rank", defaults["lora_rank"])),
+        lora_alpha=int(body.get("lora_alpha", defaults["lora_alpha"])),
+        lora_dropout=float(body.get("lora_dropout", defaults["lora_dropout"])),
+        learning_rate=float(body.get("learning_rate", defaults["learning_rate"])),
+        num_epochs=int(body.get("num_epochs", defaults["num_epochs"])),
+        batch_size=int(body.get("batch_size", defaults["batch_size"])),
+        max_seq_length=int(body.get("max_seq_length", defaults["max_seq_length"])),
+        min_reward=float(body.get("min_reward", defaults["min_reward"])),
+        max_episodes=int(body.get("max_episodes", defaults["max_episodes"])),
+        val_split=float(body.get("val_split", defaults["val_split"])),
+        output_dir=str(body.get("output_dir", defaults["output_dir"])),
+    )
+
+    # run training (blocking; heavy workload)
+    result = await asyncio.to_thread(run_sft, job_config)
+    corr_id = uuid.uuid4().hex[:8]
+    logger.info("Fine-tune job %s: status=%s episodes=%d", corr_id, result["status"], result["episodes_used"])
+    return {**result, "job_id": corr_id}
+
+
+@app.get("/api/images/{image_path:path}")
+async def serve_image(image_path: str) -> Any:
+    """Serve images from data/images/ for multimodal retrieval results.
+
+    Path traversal is blocked: only files under data/images/ are served.
+    """
+    from fastapi.responses import FileResponse
+
+    # reject traversal attempts
+    if ".." in image_path or image_path.startswith("/"):
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"error": "Invalid path"}, status_code=400)
+
+    full_path = PROJECT_ROOT / "data" / "images" / image_path
+    resolved = full_path.resolve()
+    allowed_root = (PROJECT_ROOT / "data" / "images").resolve()
+
+    if not str(resolved).startswith(str(allowed_root)):
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"error": "Path outside allowed directory"}, status_code=403)
+
+    if not resolved.exists() or not resolved.is_file():
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"error": "Image not found"}, status_code=404)
+
+    suffix = resolved.suffix.lower().lstrip(".")
+    mime_map = {
+        "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+        "webp": "image/webp", "bmp": "image/bmp", "tiff": "image/tiff",
+        "svg": "image/svg+xml",
+    }
+    media_type = mime_map.get(suffix, "application/octet-stream")
+    return FileResponse(str(resolved), media_type=media_type)
 
 
 if __name__ == "__main__":

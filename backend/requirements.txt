@@ -32,11 +32,25 @@ stable-baselines3==2.3.2
 gymnasium==0.29.1
 d3rlpy>=2.6.0              # offline CQL training
 
+# ── Advanced RL (Phase 4) ───────────────────────────────
+trl>=0.12,<1               # DPO trainer utilities
+
+# ── Model Fine-Tuning (Phase 6) ────────────────────────
+peft>=0.13,<1              # LoRA adapters for SFT
+
+# ── Multi-Modal (Phase 7) ──────────────────────────────
+transformers>=4.47,<5      # CLIP processor + model
+Pillow>=11.0,<13           # image loading/processing
+PyMuPDF>=1.25,<2           # PDF image extraction (fitz)
+
 # ── Core deps ───────────────────────────────────────────
 numpy>=1.26.4
 cloudpickle>=3.0.0
 networkx>=3.3
 PyYAML==6.0.2
+
+# ── Multi-agent orchestration (Phase 1) ─────────────────
+langgraph>=0.2,<1
 ollama==0.3.3
 tqdm==4.66.5
 python-dotenv==1.0.1
@@ -45,9 +59,18 @@ PyPDF2==3.0.1              # PDF text extraction for RAG indexing
 scipy>=1.13.1
 scikit-learn>=1.5.2        # Ledoit-Wolf OOD detector
 
+# ── GraphRAG / hybrid retrieval (Phase 2) ───────────────
+qdrant-client>=1.12,<2     # in-memory entity vector + payload search
+leidenalg>=0.10,<1         # Leiden community detection
+igraph>=0.11,<1            # graph backend for leidenalg
+
 # ── HTTP / web search ───────────────────────────────────
 httpx==0.27.2
 beautifulsoup4==4.12.3
+
+# ── Monitoring & Evaluation (Phase 9) ───────────────────
+prometheus-client>=0.21,<1 # Prometheus metrics endpoint
+datasets>=3.2,<4           # benchmark dataset loading (HotpotQA, TruthfulQA)
 
 # ── Dev / test (only needed when running test suites) ───
 psutil>=5.9                # sim_env.py GPU/memory stats

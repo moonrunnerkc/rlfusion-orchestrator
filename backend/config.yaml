@@ -1,5 +1,5 @@
 llm:
-  model: llama3.1:8b-instruct-q4_0
+  model: dolphin-llama3:8b
   host: http://localhost:11434
   temperature: 0.72
   max_tokens: 8192
@@ -14,6 +14,27 @@ rl:
   gamma: 0.99
   gae_lambda: 0.95
   clip_range: 0.2
+  ppo:
+    batch_size: 50
+    clip_range: 0.2
+    ent_coef: 0.01
+    gae_lambda: 0.95
+    n_epochs: 10
+    warm_start_threshold: 50
+  dpo:
+    beta: 0.1
+    min_preference_pairs: 500
+    reward_margin: 0.1
+    learning_rate: 0.0001
+  adaptive_warmup:
+    cql_until: 50
+    ppo_until: 500
+    dpo_after: 500
+  grpo:
+    enabled: false
+    group_size: 4
+    iterations: 100
+    learning_rate: 0.0001
 paths:
   db: db/rlfo_cache.db
   index: indexes/rag_index.faiss
@@ -66,4 +87,73 @@ cswr_quantiles:
     q50: 0.8
     q75: 0.9
     samples: 0
+graph:
+  enabled: true
+  entity_graph_path: data/entity_graph.json
+  entity_similarity_threshold: 0.92
+  max_hops: 2
+  co_occurrence_bonus: 0.15
+  coherence_penalty: 0.10
+  path_distance_decay: 0.8
+  min_entity_length: 3
+reasoning:
+  beam_width: 3
+  prune_threshold: 0.3
+  max_refinement_passes: 1
+  faithfulness_on_hot_path: true
+  faithfulness_sensitivity_gate: 0.7
+  faithfulness_cache_ttl_secs: 300
+  log_exploration_tree: true
+fine_tuning:
+  enabled: false
+  base_model: meta-llama/Llama-3.1-8B
+  lora_rank: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  learning_rate: 0.0002
+  num_epochs: 3
+  batch_size: 4
+  max_seq_length: 2048
+  min_reward_threshold: 0.8
+  max_training_episodes: 5000
+  val_split: 0.1
+  output_dir: models/fine_tuned
+  export_gguf: true
+model_router:
+  enabled: true
+  general_model: dolphin-llama3:8b
+  auto_fallback: true
+  models: []
+multimodal:
+  enabled: true
+  clip_model: openai/clip-vit-base-patch32
+  vision_model: llava
+  caption_max_tokens: 200
+  supported_formats: [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"]
+  max_image_size_mb: 10
+  clip_score_threshold: 0.15
+tools:
+  enabled: true
+  max_calls_per_tool: 10
+  rate_limit_window_secs: 60
+  code_executor_timeout_secs: 10
+  api_bridge_timeout_secs: 15
+scheduling:
+  max_concurrent: 4
+  safety_preempt: true
+federated:
+  clip_norm: 1.0
+  noise_scale: 0.01
+  min_contributors: 2
+  storage_dir: data/federated
+edge:
+  auto_quantize: true
+  prefer_cpu_fallback: false
+  arm_optimized: false
+monitoring:
+  prometheus_enabled: true
+  correlation_id_header: X-Correlation-ID
+  regression_threshold: 0.05
+  benchmark_results_dir: tests/results
+  metrics_history_max: 10000
 device: cuda

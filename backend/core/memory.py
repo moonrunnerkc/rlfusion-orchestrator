@@ -28,9 +28,22 @@ ENTITY_PATTERNS = [
 # Pronouns that need resolution
 ANAPHORA_PATTERNS = [
     r"\b(it|its|it's)\b", r"\b(they|them|their|theirs)\b",
-    r"\b(he|him|his|she|her|hers)\b", r"\b(this|that|these|those)\b",
+    r"\b(he|him|his|she|her|hers)\b",
     r"\bthe\s+(restaurant|place|business|person|thing|product|item)\b",
 ]
+
+# "this/that/these/those" only count as anaphora when they stand alone as
+# pronouns, NOT when followed by a noun ("this project", "that algorithm").
+_DEMONSTRATIVE_WITH_NOUN_RE = re.compile(
+    r"\b(?:this|that|these|those)\s+"
+    r"(?:project|system|algorithm|model|approach|method|feature|tool|issue|error|"
+    r"file|module|function|class|query|request|response|config|code|data|table|"
+    r"way|thing|idea|concept|problem|solution|pattern|framework|library|process|"
+    r"pipeline|step|test|script|server|service|endpoint|component|page|section|"
+    r"version|option|setup|build|task|job|rule|setting|field|type|port|device|"
+    r"one|part|case|point|area|topic|stuff|kind|sort|time|place)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -101,17 +114,32 @@ class ConversationMemory:
         return topics
 
     def needs_expansion(self, query: str) -> bool:
+        """Check if query has unresolved anaphora that warrant expansion.
+
+        Skips expansion when demonstratives (this/that/these/those) are
+        followed by a concrete noun, since the referent is right there.
+        """
         query_lower = query.lower()
+
+        # "this project", "that algorithm" etc. are self-contained
+        if _DEMONSTRATIVE_WITH_NOUN_RE.search(query_lower):
+            return False
+
         for pattern in ANAPHORA_PATTERNS:
             if re.search(pattern, query_lower):
                 return True
-        return len(query.split()) <= 4
+
+        # only flag very short queries (3 words or fewer)
+        return len(query.split()) <= 3
 
     def expand_query(self, session_id: str, query: str) -> Tuple[str, Dict[str, Any]]:
         state = self.get_or_create_session(session_id)
         metadata = {"original_query": query, "expanded": False, "entities_used": [], "context_added": ""}
 
-        if not self.needs_expansion(query) or (not state.active_entities and not state.topic_stack):
+        # skip expansion if: query is self-contained, no context exists,
+        # or session has zero prior turns (nothing to expand from)
+        has_prior_turns = len(state.turns) >= 1
+        if not self.needs_expansion(query) or (not state.active_entities and not state.topic_stack) or not has_prior_turns:
             return query, metadata
 
         query_lower = query.lower()

@@ -1,10 +1,14 @@
 # Author: Bradley R. Kinnard
 # Dockerfile - RLFusion Orchestrator backend
 # Supports both CPU and GPU via docker-compose profiles.
+# Multi-arch: builds for linux/amd64 and linux/arm64 (Jetson, M-series, Snapdragon).
 
 FROM python:3.10-slim
 
 WORKDIR /app
+
+# Detect architecture at build time for conditional deps
+ARG TARGETARCH
 
 # System deps for faiss, numpy, sqlite
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -15,9 +19,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY backend/requirements.txt backend/requirements.txt
 
 # Install CPU-only torch first (GPU users mount nvidia runtime via compose)
-RUN pip install --no-cache-dir \
-    torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu && \
-    pip install --no-cache-dir faiss-cpu && \
+# ARM64 gets torch from the default index (wheels available for aarch64)
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+        pip install --no-cache-dir torch torchvision torchaudio && \
+        pip install --no-cache-dir faiss-cpu; \
+    else \
+        pip install --no-cache-dir \
+            torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu && \
+        pip install --no-cache-dir faiss-cpu; \
+    fi && \
     pip install --no-cache-dir -r backend/requirements.txt \
     --extra-index-url https://download.pytorch.org/whl/cpu \
     --no-deps torch torchvision torchaudio faiss-gpu-cu12 || true

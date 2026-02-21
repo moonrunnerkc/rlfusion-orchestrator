@@ -14,8 +14,11 @@ import networkx as nx
 import httpx
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import TYPE_CHECKING, List, Dict, Any
 from backend.core.utils import embed_text, embed_batch, ensure_path, deterministic_id
+
+if TYPE_CHECKING:
+    from backend.core.graph_engine import GraphEngine
 from backend.core.decomposer import decompose_query
 from backend.config import cfg, PROJECT_ROOT, get_web_api_key
 
@@ -161,7 +164,8 @@ def build_rag_index() -> faiss.IndexFlatL2:
         faiss.write_index(cpu_index, str(index_path))
         return cpu_index
 
-    files = list(docs_path.rglob("*.txt")) + list(docs_path.rglob("*.md")) + list(docs_path.rglob("*.pdf"))
+    files = (list(docs_path.rglob("*.txt")) + list(docs_path.rglob("*.md"))
+             + list(docs_path.rglob("*.pdf")))
     all_chunks = []
 
     for fpath in files:
@@ -186,6 +190,25 @@ def build_rag_index() -> faiss.IndexFlatL2:
     _get_metadata_path().write_text(json.dumps(
         [{"text": c["text"], "source": c["source"]} for c in all_chunks], indent=2))
     logger.info(f"Built RAG index with {len(all_chunks)} chunks")
+
+    # Phase 2: build entity graph from the same chunks
+    if cfg.get("graph", {}).get("enabled", True):
+        try:
+            entity_count = build_entity_graph(all_chunks)
+            logger.info("Entity graph built with %d entities during RAG indexing", entity_count)
+        except (ImportError, RuntimeError) as exc:
+            logger.warning("Entity graph build skipped: %s", exc)
+
+    # Phase 7: build multimodal image index from same docs
+    if cfg.get("multimodal", {}).get("enabled", False):
+        try:
+            from backend.core.multimodal import build_multimodal_index
+            img_count = build_multimodal_index(docs_path)
+            if img_count > 0:
+                logger.info("Image index built with %d images during RAG indexing", img_count)
+        except (ImportError, RuntimeError) as exc:
+            logger.warning("Image index build skipped: %s", exc)
+
     return cpu_index
 
 
@@ -222,7 +245,7 @@ def compute_stability(chunk: dict, all_chunks: list, embeddings: dict) -> float:
     return min(1.0, max(0.0, avg - penalty))
 
 
-def compute_fit(chunk: dict, profile: dict) -> float:
+def compute_fit(chunk: dict, profile: dict, graph_context: dict[str, float] | None = None) -> float:
     text = chunk["text"].lower()
     score = 0.0
 
@@ -256,6 +279,12 @@ def compute_fit(chunk: dict, profile: dict) -> float:
     }
     if any(i in text for i in shape_ind.get(profile.get("expected_shape", ""), [])):
         score += 0.1
+
+    # Phase 2: graph-aware scoring bonuses/penalties
+    if graph_context is not None:
+        score += graph_context.get("co_occurrence_bonus", 0.0)
+        score -= graph_context.get("coherence_penalty", 0.0)
+        score += graph_context.get("path_distance_weight", 0.0)
 
     return min(1.0, score)
 
@@ -299,9 +328,13 @@ def score_chunks(chunks: list, profile: dict, cswr_cfg: dict) -> list:
     else:
         embeddings = {}
 
+    # Phase 2: compute graph-aware scoring context per chunk
+    graph_contexts = _compute_graph_contexts(chunks, profile)
+
     for c in chunks:
         c["local_stability"] = compute_stability(c, chunks, embeddings)
-        c["question_fit"] = compute_fit(c, profile)
+        gc = graph_contexts.get(c["id"])
+        c["question_fit"] = compute_fit(c, profile, graph_context=gc)
         c["drift_penalty"] = compute_drift(c, chunks, embeddings)
 
         if c["local_stability"] < thresh:
@@ -580,6 +613,122 @@ def _get_ontology_path() -> Path:
 # Graph + embedding cache: avoids reloading JSON and re-embedding on every query
 _graph_cache: Dict[str, Any] = {"graph": None, "node_embeddings": {}, "mtime": 0.0}
 
+# Phase 2: GraphEngine lazy singleton
+_graph_engine_cache: dict[str, "GraphEngine | bool | None"] = {"engine": None, "attempted": False}
+
+
+def _get_graph_engine() -> "GraphEngine | None":
+    """Lazily initialize the GraphEngine singleton. Returns None if unavailable."""
+    if _graph_engine_cache["attempted"]:
+        return _graph_engine_cache["engine"]  # type: ignore[return-value]
+    _graph_engine_cache["attempted"] = True
+    try:
+        from backend.core.graph_engine import GraphEngine as _GE
+        engine = _GE()
+        _graph_engine_cache["engine"] = engine
+        return engine
+    except ImportError:
+        logger.debug("GraphEngine dependencies not available; graph retrieval degraded")
+        return None
+
+
+def _compute_graph_contexts(chunks: list[dict[str, object]], profile: dict[str, object]) -> dict[str, dict[str, float]]:
+    """Compute graph-aware scoring context per chunk. Returns empty if graph unavailable."""
+    engine = _get_graph_engine()
+    if engine is None or engine.node_count == 0:
+        return {}
+    query_text = str(profile.get("query_text", ""))
+    if not query_text:
+        return {}
+    contexts: dict[str, dict[str, float]] = {}
+    for c in chunks:
+        scores = engine.compute_chunk_graph_scores(str(c["text"]), query_text)
+        contexts[str(c["id"])] = {
+            "co_occurrence_bonus": float(scores.get("co_occurrence_bonus", 0.0)),
+            "coherence_penalty": float(scores.get("coherence_penalty", 0.0)),
+            "path_distance_weight": float(scores.get("path_distance_weight", 0.0)),
+        }
+    return contexts
+
+
+def resolve_entities(entities: list[dict[str, str | list[str]]]) -> list[dict[str, str | list[str]]]:
+    """Deduplicate entities by embedding similarity. Delegates to GraphEngine."""
+    from backend.core.graph_engine import GraphEngine as _GE
+    engine = _get_graph_engine()
+    if engine is None:
+        engine = _GE()
+        _graph_engine_cache["engine"] = engine
+        _graph_engine_cache["attempted"] = True
+    return engine.resolve_entities(entities)  # type: ignore[arg-type]
+
+
+def build_entity_graph(chunks: list[dict[str, str]] | None = None) -> int:
+    """Construct knowledge graph from document chunks. Uses FAISS metadata as fallback.
+
+    Resets the cached engine, builds from chunks, persists to disk.
+    Returns the number of entities added.
+    """
+    from backend.core.graph_engine import GraphEngine as _GE
+
+    # fresh engine for a clean rebuild
+    engine = _GE()
+    engine.clear()
+    _graph_engine_cache["engine"] = engine
+    _graph_engine_cache["attempted"] = True
+
+    if chunks is None:
+        meta_path = _get_metadata_path()
+        if meta_path.exists():
+            chunks = json.loads(meta_path.read_text())
+
+    if not chunks:
+        return 0
+
+    count = engine.build_from_chunks(chunks)
+    engine.save()
+    return count
+
+
+def community_summarize(query: str, top_k: int = 3) -> list[dict[str, str | float]]:
+    """Retrieve community-level summaries most relevant to the query.
+
+    Embeds the query, scores each community by avg member similarity,
+    returns the top-k community summaries as retrieval results.
+    """
+    engine = _get_graph_engine()
+    if engine is None or engine.node_count == 0:
+        return []
+
+    q_emb = embed_text(query)
+    community_scores: list[tuple[int, float]] = []
+
+    for comm_id, members in engine.communities.items():
+        if not members:
+            continue
+        # avg similarity of community members to query
+        sims: list[float] = []
+        for nid in members[:10]:
+            if nid in engine._entity_embeddings:
+                sims.append(float(np.dot(q_emb, engine._entity_embeddings[nid])))
+        if sims:
+            community_scores.append((comm_id, sum(sims) / len(sims)))
+
+    community_scores.sort(key=lambda x: x[1], reverse=True)
+
+    results: list[dict[str, str | float]] = []
+    for comm_id, score in community_scores[:top_k]:
+        info = engine.get_community_summary(comm_id)
+        results.append({
+            "text": f"Community {comm_id}: {info['summary']}",
+            "score": score,
+            "source": "graph_community",
+            "id": f"community_{comm_id}",
+            "member_count": info["member_count"],
+            "entities": ", ".join(info["representative_entities"]),
+        })
+
+    return results
+
 
 def _load_graph() -> nx.DiGraph:
     """Load or return cached ontology graph. Re-reads only if file changed."""
@@ -618,7 +767,15 @@ def _load_graph() -> nx.DiGraph:
 
 
 def retrieve_graph(query: str, max_hops: int = 2) -> List[Dict[str, Any]]:
-    """Retrieve related entities from the knowledge graph. Uses cached node embeddings."""
+    """Retrieve from knowledge graph. Uses GraphEngine (Phase 2) with Qdrant hybrid
+    search when available, falls back to legacy ontology traversal."""
+    # Phase 2: use GraphEngine for richer retrieval
+    engine = _get_graph_engine()
+    if engine is not None and engine.node_count > 0:
+        results = engine.hybrid_search(query, top_k=5)
+        return [dict(r) for r in results]
+
+    # legacy fallback: static ontology graph
     G = _load_graph()
     if not G.number_of_nodes():
         return []
@@ -683,15 +840,26 @@ def retrieve(query: str, rag_weight: float = 1.0, cag_weight: float = 1.0,
     else:
         web = []
 
+    # Phase 7: multimodal image retrieval
+    images: list[dict[str, object]] = []
+    if cfg.get("multimodal", {}).get("enabled", False):
+        try:
+            from backend.core.multimodal import retrieve_images
+            images = retrieve_images(query, top_k=top_k)  # type: ignore[assignment]
+        except (ImportError, RuntimeError) as exc:
+            logger.debug("Image retrieval skipped: %s", exc)
+
     for r in rag: r["score"] *= rag_weight; r["retriever"] = "rag"
     for r in cag: r["score"] *= cag_weight; r["retriever"] = "cag"
     for r in graph: r["score"] *= graph_weight; r["retriever"] = "graph"
     for r in web: r["score"] *= web_weight; r["retriever"] = "web"
+    for r in images: r["retriever"] = "image"  # type: ignore[index]
 
     for lst in [rag, cag, graph, web]:
         lst.sort(key=lambda x: x["score"], reverse=True)
 
     return {
         "rag": rag[:top_k], "cag": cag[:top_k], "graph": graph[:top_k], "web": web[:top_k],
+        "images": images[:top_k],
         "web_status": web_status
     }

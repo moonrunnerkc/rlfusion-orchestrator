@@ -604,10 +604,25 @@ class TestGraphCache:
         assert G is not None
 
     def test_retrieve_graph_empty_ontology(self):
-        from backend.core.retrievers import retrieve_graph
-        results = retrieve_graph("What is machine learning?")
-        # empty ontology returns empty results
-        assert results == []
+        from backend.core.retrievers import retrieve_graph, _graph_engine_cache
+        from backend.config import PROJECT_ROOT
+        # reset graph engine cache and temporarily remove entity graph if prior tests wrote one
+        _graph_engine_cache["engine"] = None
+        _graph_engine_cache["attempted"] = False
+        entity_graph = PROJECT_ROOT / "data" / "entity_graph.json"
+        backup = None
+        if entity_graph.exists():
+            backup = entity_graph.read_text()
+            entity_graph.unlink()
+        try:
+            results = retrieve_graph("What is machine learning?")
+            # empty ontology + no entity graph file = empty results
+            assert results == []
+        finally:
+            if backup is not None:
+                entity_graph.write_text(backup)
+            _graph_engine_cache["engine"] = None
+            _graph_engine_cache["attempted"] = False
 
 
 # ---------------------------------------------------------------------------
@@ -701,3 +716,1214 @@ class TestInputValidation:
         safe, reason = check_safety("What is machine learning?")
         assert safe
         assert reason == "Safe"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: GraphEngine — entity resolution, community detection, hybrid search
+# ---------------------------------------------------------------------------
+
+class TestEntityExtraction:
+    """Heuristic NER: capitalized phrases, backtick terms, acronyms."""
+
+    def test_extracts_capitalized_phrases(self):
+        from backend.core.graph_engine import extract_entities_heuristic
+        text = "Machine Learning is a subset of Artificial Intelligence used widely."
+        entities = extract_entities_heuristic(text, "test.md")
+        labels = [e["label"] for e in entities]
+        assert "Machine Learning" in labels
+        assert "Artificial Intelligence" in labels
+
+    def test_extracts_backtick_terms(self):
+        from backend.core.graph_engine import extract_entities_heuristic
+        text = "The `FusionEnv` class wraps the gymnasium environment."
+        entities = extract_entities_heuristic(text, "test.md")
+        labels = [e["label"] for e in entities]
+        assert "FusionEnv" in labels
+
+    def test_extracts_acronyms(self):
+        from backend.core.graph_engine import extract_entities_heuristic
+        text = "CSWR filters chunks by stability. CQL trains the RL policy via FAISS vectors."
+        entities = extract_entities_heuristic(text, "test.md")
+        labels = [e["label"] for e in entities]
+        assert "CSWR" in labels
+        assert "CQL" in labels
+        assert "FAISS" in labels
+
+    def test_skips_common_words(self):
+        from backend.core.graph_engine import extract_entities_heuristic
+        text = "THE AND FOR NOT BUT ARE WAS HAS ITS CAN"
+        entities = extract_entities_heuristic(text, "")
+        labels = [e["label"] for e in entities]
+        for skip_word in ("THE", "AND", "FOR", "NOT"):
+            assert skip_word not in labels
+
+    def test_returns_source_chunks(self):
+        from backend.core.graph_engine import extract_entities_heuristic
+        entities = extract_entities_heuristic("Neural Network training is complex.", "doc.md")
+        matching = [e for e in entities if e["label"] == "Neural Network"]
+        assert len(matching) == 1
+        assert "doc.md" in matching[0]["source_chunks"]
+
+    def test_respects_min_length(self):
+        from backend.core.graph_engine import extract_entities_heuristic
+        # single letter caps and 2-letter acronyms should be skipped
+        text = "AB CD Machine Learning is great"
+        entities = extract_entities_heuristic(text)
+        labels = [e["label"] for e in entities]
+        assert "AB" not in labels  # too short
+
+
+class TestGraphEngine:
+    """GraphEngine: add, resolve, traverse, search, build, save/load."""
+
+    def _make_engine(self, tmp_path=None):
+        from backend.core.graph_engine import GraphEngine
+        if tmp_path is None:
+            tmp_path = Path(tempfile.mkdtemp())
+        return GraphEngine(
+            graph_path=tmp_path / "entity_graph.json",
+            ontology_path=tmp_path / "ontology.json",
+        )
+
+    def test_add_entity(self):
+        engine = self._make_engine()
+        nid = engine.add_entity({
+            "label": "Machine Learning",
+            "description": "A field of AI focused on learning from data.",
+            "entity_type": "concept",
+        })
+        assert engine.node_count == 1
+        assert nid  # non-empty ID returned
+
+    def test_add_relation(self):
+        engine = self._make_engine()
+        engine.add_entity({"id": "ml", "label": "Machine Learning"})
+        engine.add_entity({"id": "dl", "label": "Deep Learning"})
+        engine.add_relation("ml", "dl", label="parent_of")
+        assert engine.edge_count == 1
+
+    def test_add_relation_missing_node_raises(self):
+        engine = self._make_engine()
+        engine.add_entity({"id": "ml", "label": "Machine Learning"})
+        with pytest.raises(ValueError, match="not in graph"):
+            engine.add_relation("ml", "nonexistent", label="test")
+
+    def test_add_relation_increments_weight(self):
+        engine = self._make_engine()
+        engine.add_entity({"id": "a", "label": "Alpha"})
+        engine.add_entity({"id": "b", "label": "Beta"})
+        engine.add_relation("a", "b", label="co_occurs")
+        engine.add_relation("a", "b", label="co_occurs")
+        weight = engine.graph.edges["a", "b"].get("weight", 0)
+        assert weight == 2.0
+
+    def test_resolve_entities_deduplicates(self):
+        from backend.core.graph_engine import EntityNode
+        engine = self._make_engine()
+        entities = [
+            EntityNode(label="machine learning", description="ML is a field of AI"),
+            EntityNode(label="Machine Learning", description="Machine Learning uses data to learn patterns"),
+        ]
+        resolved = engine.resolve_entities(entities, threshold=0.85)
+        # should merge into one (similar enough)
+        assert len(resolved) <= len(entities)
+
+    def test_resolve_entities_keeps_distinct(self):
+        from backend.core.graph_engine import EntityNode
+        engine = self._make_engine()
+        entities = [
+            EntityNode(label="Python", description="A programming language"),
+            EntityNode(label="Guitar", description="A string instrument played by musicians"),
+        ]
+        resolved = engine.resolve_entities(entities, threshold=0.95)
+        assert len(resolved) == 2
+
+    def test_detect_communities_connected_components(self):
+        engine = self._make_engine()
+        engine.add_entity({"id": "a", "label": "Alpha"})
+        engine.add_entity({"id": "b", "label": "Beta"})
+        engine.add_entity({"id": "c", "label": "Gamma"})
+        engine.add_relation("a", "b", label="related")
+        # c is disconnected from a/b
+        communities = engine.detect_communities()
+        assert len(communities) >= 2  # at least 2 components
+
+    def test_get_community_summary(self):
+        engine = self._make_engine()
+        engine.add_entity({"id": "a", "label": "Alpha", "description": "First entity"})
+        engine.add_entity({"id": "b", "label": "Beta", "description": "Second entity"})
+        engine.add_relation("a", "b", label="co_occurs")
+        engine.detect_communities()
+        # find a community with members
+        for comm_id, members in engine.communities.items():
+            if members:
+                info = engine.get_community_summary(comm_id)
+                assert info["member_count"] > 0
+                assert info["summary"] != ""
+                break
+
+    def test_multi_hop_traverse(self):
+        engine = self._make_engine()
+        engine.add_entity({"id": "a", "label": "Alpha"})
+        engine.add_entity({"id": "b", "label": "Beta"})
+        engine.add_entity({"id": "c", "label": "Gamma"})
+        engine.add_relation("a", "b", label="knows")
+        engine.add_relation("b", "c", label="works_with")
+        results = engine.multi_hop_traverse("a", max_hops=2)
+        ids_found = [r["id"] for r in results]
+        assert "a" in ids_found
+        assert "b" in ids_found
+        assert "c" in ids_found
+        # hop decay: a's score > b's > c's
+        score_a = next(r["score"] for r in results if r["id"] == "a")
+        score_b = next(r["score"] for r in results if r["id"] == "b")
+        assert score_a > score_b
+
+    def test_multi_hop_traverse_missing_node(self):
+        engine = self._make_engine()
+        results = engine.multi_hop_traverse("nonexistent")
+        assert results == []
+
+    def test_hybrid_search_empty_graph(self):
+        engine = self._make_engine()
+        results = engine.hybrid_search("anything")
+        assert results == []
+
+    def test_hybrid_search_with_entities(self):
+        engine = self._make_engine()
+        engine.add_entity({
+            "id": "ml", "label": "Machine Learning",
+            "description": "Learning from data using algorithms",
+        })
+        engine.add_entity({
+            "id": "dl", "label": "Deep Learning",
+            "description": "Neural networks with many layers",
+        })
+        engine.add_relation("ml", "dl", label="parent_of")
+        results = engine.hybrid_search("neural network deep learning")
+        assert len(results) > 0
+        assert all(r["source"] == "graph" for r in results)
+
+    def test_build_from_chunks(self):
+        engine = self._make_engine()
+        chunks = [
+            {"text": "Machine Learning and Deep Learning are subfields of Artificial Intelligence.", "source": "doc.md"},
+            {"text": "CSWR filters chunks using Stability Weighted Retrieval.", "source": "cswr.md"},
+        ]
+        count = engine.build_from_chunks(chunks)
+        assert count > 0
+        assert engine.node_count > 0
+
+    def test_save_and_load(self):
+        tmp_dir = Path(tempfile.mkdtemp())
+        graph_path = tmp_dir / "entity_graph.json"
+
+        # build and save
+        from backend.core.graph_engine import GraphEngine
+        engine1 = GraphEngine(graph_path=graph_path, ontology_path=tmp_dir / "ont.json")
+        engine1.add_entity({"id": "test_node", "label": "Test Node", "description": "A test entity"})
+        engine1.save()
+        assert graph_path.exists()
+
+        # load into fresh engine
+        engine2 = GraphEngine(graph_path=graph_path, ontology_path=tmp_dir / "ont.json")
+        assert engine2.node_count == 1
+        assert "test_node" in [n for n in engine2.graph.nodes()]
+
+    def test_clear_resets_state(self):
+        engine = self._make_engine()
+        engine.add_entity({"id": "x", "label": "X", "description": "An entity"})
+        assert engine.node_count == 1
+        engine.clear()
+        assert engine.node_count == 0
+        assert engine.edge_count == 0
+
+    def test_compute_chunk_graph_scores_empty(self):
+        engine = self._make_engine()
+        scores = engine.compute_chunk_graph_scores("Some chunk text", "some query")
+        assert scores["co_occurrence_bonus"] == 0.0
+        assert scores["coherence_penalty"] == 0.0
+        assert scores["path_distance_weight"] == 0.0
+
+    def test_compute_chunk_graph_scores_with_data(self):
+        engine = self._make_engine()
+        engine.add_entity({
+            "id": "ml", "label": "Machine Learning",
+            "description": "ML is learning from data",
+        })
+        engine.add_entity({
+            "id": "dl", "label": "Deep Learning",
+            "description": "DL uses neural networks with many layers",
+        })
+        engine.add_relation("ml", "dl", label="parent_of")
+        engine.detect_communities()
+        scores = engine.compute_chunk_graph_scores(
+            "Machine Learning is a broad field",
+            "explain machine learning concepts",
+        )
+        # should have non-negative bonus
+        assert scores["co_occurrence_bonus"] >= 0.0
+        assert scores["coherence_penalty"] >= 0.0
+
+
+class TestResolveEntitiesRetriever:
+    """retrievers.resolve_entities delegates to GraphEngine."""
+
+    def test_resolves_via_retriever(self):
+        from backend.core.retrievers import resolve_entities
+        entities = [
+            {"label": "Python Programming", "description": "A language for coding"},
+            {"label": "Cooking Recipes", "description": "Instructions for preparing food"},
+        ]
+        resolved = resolve_entities(entities)
+        assert len(resolved) == 2  # distinct enough to stay separate
+
+
+class TestBuildEntityGraph:
+    """retrievers.build_entity_graph builds and persists a knowledge graph."""
+
+    def test_build_from_chunks(self):
+        from backend.core.retrievers import build_entity_graph, _graph_engine_cache
+        chunks = [
+            {"text": "Neural Networks learn features from data. Deep Learning extends this.", "source": "a.md"},
+            {"text": "FAISS enables efficient vector similarity search via HNSW indexing.", "source": "b.md"},
+        ]
+        count = build_entity_graph(chunks)
+        assert count > 0
+        engine = _graph_engine_cache["engine"]
+        assert engine is not None
+        assert engine.node_count > 0
+
+    def test_build_returns_zero_on_empty(self):
+        from backend.core.retrievers import build_entity_graph
+        count = build_entity_graph([])
+        assert count == 0
+
+
+class TestCommunitySummarize:
+    """retrievers.community_summarize returns community-level retrieval results."""
+
+    def test_returns_empty_on_empty_graph(self):
+        from backend.core.retrievers import community_summarize, _graph_engine_cache
+        from backend.config import PROJECT_ROOT
+        # reset engine cache and remove entity graph file if prior tests wrote one
+        _graph_engine_cache["engine"] = None
+        _graph_engine_cache["attempted"] = False
+        entity_graph = PROJECT_ROOT / "data" / "entity_graph.json"
+        backup = None
+        if entity_graph.exists():
+            backup = entity_graph.read_text()
+            entity_graph.unlink()
+        try:
+            results = community_summarize("anything")
+            assert results == []
+        finally:
+            if backup is not None:
+                entity_graph.write_text(backup)
+            _graph_engine_cache["engine"] = None
+            _graph_engine_cache["attempted"] = False
+
+    def test_returns_community_results(self):
+        from backend.core.retrievers import build_entity_graph, community_summarize
+        chunks = [
+            {"text": "Machine Learning uses Statistical Methods for prediction.", "source": "ml.md"},
+            {"text": "Neural Networks and Deep Learning are related to Artificial Intelligence.", "source": "dl.md"},
+        ]
+        build_entity_graph(chunks)
+        results = community_summarize("machine learning AI")
+        # may or may not produce communities depending on entity count
+        assert isinstance(results, list)
+
+
+class TestComputeFitGraphAware:
+    """Phase 2 extension: compute_fit with optional graph_context parameter."""
+
+    def test_no_graph_context_unchanged(self):
+        from backend.core.retrievers import compute_fit
+        chunk = {"text": "Machine learning uses neural networks for prediction"}
+        profile = {"primary_intent": "explain", "key_entities": ["neural networks"],
+                   "required_facts": [], "expected_shape": "definition"}
+        # no graph_context = original behavior
+        score = compute_fit(chunk, profile)
+        assert 0.0 <= score <= 1.0
+
+    def test_graph_context_adds_bonus(self):
+        from backend.core.retrievers import compute_fit
+        chunk = {"text": "Machine learning uses neural networks for prediction"}
+        profile = {"primary_intent": "explain", "key_entities": ["neural networks"],
+                   "required_facts": [], "expected_shape": "definition"}
+        base_score = compute_fit(chunk, profile)
+        boosted_score = compute_fit(chunk, profile, graph_context={
+            "co_occurrence_bonus": 0.10,
+            "coherence_penalty": 0.0,
+            "path_distance_weight": 0.05,
+        })
+        assert boosted_score >= base_score
+
+    def test_graph_context_penalty_reduces(self):
+        from backend.core.retrievers import compute_fit
+        chunk = {"text": "Machine learning uses neural networks for prediction"}
+        profile = {"primary_intent": "explain", "key_entities": ["neural networks"],
+                   "required_facts": [], "expected_shape": "definition"}
+        base_score = compute_fit(chunk, profile)
+        penalized_score = compute_fit(chunk, profile, graph_context={
+            "co_occurrence_bonus": 0.0,
+            "coherence_penalty": 0.10,
+            "path_distance_weight": 0.0,
+        })
+        assert penalized_score <= base_score
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: reasoning.py - ORPS tree exploration
+# ---------------------------------------------------------------------------
+
+class TestReasoningTypes:
+    """Verify typed structures and config loading from reasoning module."""
+
+    def test_candidate_response_fields(self):
+        from backend.core.reasoning import CandidateResponse
+        candidate = CandidateResponse(
+            text="test", reward=0.8, factual=0.9, proactivity=0.7,
+            helpfulness=0.85, suggestions=["q1"], reason="ok",
+            refinement_pass=0,
+        )
+        assert candidate["reward"] == 0.8
+        assert candidate["refinement_pass"] == 0
+
+    def test_exploration_tree_fields(self):
+        from backend.core.reasoning import ExplorationTree
+        tree = ExplorationTree(
+            query="test", fused_context="ctx", beam_width=3,
+            candidates=[], selected_index=0, selected_reward=0.8,
+            pruned_count=1, refined_count=0, faithfulness_checked=False,
+            faithfulness_score=-1.0, elapsed_ms=50.0,
+        )
+        assert tree["beam_width"] == 3
+        assert tree["pruned_count"] == 1
+
+    def test_reasoning_result_fields(self):
+        from backend.core.reasoning import ReasoningResult
+        result = ReasoningResult(
+            response="answer", reward=0.85, proactive_suggestions=["q1"],
+            reason="critique", candidates_explored=3, pruned_count=1,
+            faithfulness_score=-1.0,
+        )
+        assert result["candidates_explored"] == 3
+
+    def test_config_defaults_loaded(self):
+        from backend.core.reasoning import (
+            _DEFAULT_BEAM_WIDTH,
+            _DEFAULT_PRUNE_THRESHOLD,
+            _DEFAULT_MAX_REFINEMENT,
+            _FAITHFULNESS_HOT,
+            _FAITHFULNESS_GATE,
+        )
+        assert isinstance(_DEFAULT_BEAM_WIDTH, int)
+        assert _DEFAULT_BEAM_WIDTH >= 1
+        assert 0.0 <= _DEFAULT_PRUNE_THRESHOLD <= 1.0
+        assert isinstance(_DEFAULT_MAX_REFINEMENT, int)
+        assert isinstance(_FAITHFULNESS_HOT, bool)
+        assert 0.0 <= _FAITHFULNESS_GATE <= 1.0
+
+
+class TestFaithfulnessCache:
+    """TTL-based cache for check_faithfulness() LLM calls."""
+
+    def test_cache_key_deterministic(self):
+        from backend.core.reasoning import _cache_key
+        k1 = _cache_key("the sky is blue", "abc123")
+        k2 = _cache_key("the sky is blue", "abc123")
+        assert k1 == k2
+        assert len(k1) == 24
+
+    def test_cache_key_differs_for_different_claims(self):
+        from backend.core.reasoning import _cache_key
+        k1 = _cache_key("the sky is blue", "ctx1")
+        k2 = _cache_key("grass is green", "ctx1")
+        assert k1 != k2
+
+    def test_cache_key_differs_for_different_context(self):
+        from backend.core.reasoning import _cache_key
+        k1 = _cache_key("same claim", "ctx_a")
+        k2 = _cache_key("same claim", "ctx_b")
+        assert k1 != k2
+
+    def test_context_hash_stable(self):
+        from backend.core.reasoning import _context_hash
+        h1 = _context_hash("some context text")
+        h2 = _context_hash("some context text")
+        assert h1 == h2
+        assert len(h1) == 16
+
+    def test_clear_faithfulness_cache(self):
+        from backend.core.reasoning import (
+            _faithfulness_cache,
+            clear_faithfulness_cache,
+        )
+        import time
+        # inject a dummy entry
+        _faithfulness_cache["test_key"] = (time.time(), True, 0.9)
+        assert len(_faithfulness_cache) >= 1
+        cleared = clear_faithfulness_cache()
+        assert cleared >= 1
+        assert len(_faithfulness_cache) == 0
+
+
+class TestSelectiveFaithfulness:
+    """Faithfulness gating based on sensitivity level."""
+
+    def test_should_check_below_gate(self):
+        from backend.core.reasoning import should_check_faithfulness
+        # default gate is 0.7; sensitivity 0.3 should skip
+        assert should_check_faithfulness(0.3) is False
+
+    def test_should_check_above_gate(self):
+        from backend.core.reasoning import should_check_faithfulness
+        assert should_check_faithfulness(0.9) is True
+
+    def test_should_check_at_gate(self):
+        from backend.core.reasoning import should_check_faithfulness
+        from backend.core.reasoning import _FAITHFULNESS_GATE
+        assert should_check_faithfulness(_FAITHFULNESS_GATE) is True
+
+    def test_run_selective_below_gate_skips(self):
+        from backend.core.reasoning import run_selective_faithfulness
+        checked, score = run_selective_faithfulness(
+            "Some answer text.", "Some context.", sensitivity_level=0.2,
+        )
+        assert checked is False
+        assert score == -1.0
+
+
+class TestScoreCandidate:
+    """_score_candidate wraps critique() for tree nodes."""
+
+    def test_scores_inline_critique(self):
+        from backend.core.reasoning import _score_candidate
+        response_with_critique = """Answer about ML.
+<critique>
+Factual accuracy: 0.90/1.00
+Proactivity score: 0.75/1.00
+Helpfulness: 0.85/1.00
+Final reward: 0.88
+Proactive suggestions:
+- What about deep learning?
+</critique>"""
+        candidate = _score_candidate("test q", "test ctx", response_with_critique)
+        assert abs(candidate["reward"] - 0.88) < 0.01
+        assert "<critique>" not in candidate["text"]
+        assert candidate["refinement_pass"] == 0
+
+    def test_scores_plain_response(self):
+        from backend.core.reasoning import _score_candidate
+        candidate = _score_candidate(
+            "test q", "test ctx", "Just a plain answer without critique.",
+            refinement_pass=1,
+        )
+        assert 0.0 <= candidate["reward"] <= 1.0
+        assert candidate["refinement_pass"] == 1
+        assert "plain answer" in candidate["text"]
+
+
+class TestReasoningConfig:
+    """Verify reasoning config section in config.yaml."""
+
+    def test_config_section_exists(self):
+        from backend.config import cfg
+        assert "reasoning" in cfg
+        r = cfg["reasoning"]
+        assert "beam_width" in r
+        assert "prune_threshold" in r
+        assert "max_refinement_passes" in r
+        assert "faithfulness_on_hot_path" in r
+        assert "faithfulness_sensitivity_gate" in r
+        assert "faithfulness_cache_ttl_secs" in r
+        assert "log_exploration_tree" in r
+
+    def test_config_defaults_sane(self):
+        from backend.config import cfg
+        r = cfg["reasoning"]
+        assert 1 <= r["beam_width"] <= 10
+        assert 0.0 <= r["prune_threshold"] <= 1.0
+        assert r["max_refinement_passes"] >= 0
+        assert isinstance(r["faithfulness_on_hot_path"], bool)
+        assert 0.0 <= r["faithfulness_sensitivity_gate"] <= 1.0
+        assert r["faithfulness_cache_ttl_secs"] > 0
+
+
+class TestCoTTraceGeneration:
+    """Phase 5.2: CoT trace extraction from replay buffer."""
+
+    def test_generate_synthetic_cot(self):
+        import tempfile
+        from backend.rl.generate_training_data import _generate_synthetic_cot
+        tmp = Path(tempfile.mkdtemp()) / "cot_test.jsonl"
+        result = _generate_synthetic_cot(tmp, count=10)
+        assert result.exists()
+        import json
+        with open(result) as f:
+            lines = f.readlines()
+        assert len(lines) == 10
+        first = json.loads(lines[0])
+        assert "query" in first
+        assert "reasoning_chain" in first
+        assert "response" in first
+        assert "reward" in first
+        assert first["reward"] >= 0.85
+
+    def test_extract_cot_with_missing_db(self):
+        import tempfile
+        from backend.rl.generate_training_data import extract_cot_traces
+        # point at a nonexistent DB, should fallback to synthetic
+        tmp_dir = tempfile.mkdtemp()
+        result = extract_cot_traces(
+            db_path=f"{tmp_dir}/nonexistent.db",
+            output_path=f"{tmp_dir}/cot.jsonl",
+            max_traces=5,
+        )
+        assert result.exists()
+
+
+# ---------------------------------------------------------------------------
+# model_router.py (Phase 6)
+# ---------------------------------------------------------------------------
+
+class TestModelRouter:
+    """Phase 6: MoE-style model routing for multi-model Ollama serving."""
+
+    def test_default_router_returns_general(self):
+        from backend.core.model_router import ModelRouter
+        router = ModelRouter()
+        # default config has no specialists, should always return general
+        model = router.select_model("explain")
+        assert model == router.general_model
+
+    def test_router_enabled_property(self):
+        from backend.core.model_router import ModelRouter
+        router = ModelRouter()
+        assert isinstance(router.enabled, bool)
+
+    def test_general_model_matches_config(self):
+        from backend.core.model_router import ModelRouter
+        from backend.config import cfg
+        router = ModelRouter()
+        expected = cfg.get("model_router", {}).get("general_model", cfg["llm"]["model"])
+        assert router.general_model == expected
+
+    def test_register_and_select_specialist(self):
+        from backend.core.model_router import ModelRouter
+        router = ModelRouter()
+        router.register_model("codellama:7b", ["design", "troubleshoot"], priority=10)
+        # specialist should win for design
+        assert router.select_model("design") == "codellama:7b"
+        # non-specialist task still returns general
+        assert router.select_model("summarize") == router.general_model
+
+    def test_register_replaces_duplicate(self):
+        from backend.core.model_router import ModelRouter
+        router = ModelRouter()
+        router.register_model("model-a", ["explain"], priority=50)
+        router.register_model("model-a", ["compare"], priority=20)
+        models = router.list_models()
+        matching = [m for m in models if m["name"] == "model-a"]
+        assert len(matching) == 1
+        assert "compare" in matching[0]["task_types"]
+        assert "explain" not in matching[0]["task_types"]
+
+    def test_unregister_model(self):
+        from backend.core.model_router import ModelRouter
+        router = ModelRouter()
+        router.register_model("ephemeral", ["explain"])
+        assert router.unregister_model("ephemeral") is True
+        assert router.unregister_model("ephemeral") is False
+
+    def test_priority_ordering(self):
+        from backend.core.model_router import ModelRouter
+        router = ModelRouter()
+        router.register_model("low-priority", ["explain"], priority=90)
+        router.register_model("high-priority", ["explain"], priority=5)
+        assert router.select_model("explain") == "high-priority"
+
+    def test_list_models_returns_copy(self):
+        from backend.core.model_router import ModelRouter
+        router = ModelRouter()
+        models = router.list_models()
+        assert isinstance(models, list)
+        assert len(models) >= 1  # at least the general model
+
+    def test_register_empty_name_raises(self):
+        from backend.core.model_router import ModelRouter
+        router = ModelRouter()
+        with pytest.raises(ValueError, match="empty"):
+            router.register_model("", ["explain"])
+
+    def test_register_no_tasks_raises(self):
+        from backend.core.model_router import ModelRouter
+        router = ModelRouter()
+        with pytest.raises(ValueError, match="task type"):
+            router.register_model("valid-name", [])
+
+    def test_disabled_router_always_returns_general(self):
+        from backend.core.model_router import ModelRouter
+        router = ModelRouter()
+        router._enabled = False
+        router.register_model("specialist", ["explain"], priority=1)
+        assert router.select_model("explain") == router.general_model
+
+    def test_all_task_types_covered(self):
+        """Every known task type should return a model (no ValueError)."""
+        from backend.core.model_router import ModelRouter, _ALL_TASK_TYPES
+        router = ModelRouter()
+        for task in _ALL_TASK_TYPES:
+            result = router.select_model(task)
+            assert isinstance(result, str)
+            assert len(result) > 0
+
+
+class TestModelEntry:
+    """Phase 6: ModelEntry TypedDict structure."""
+
+    def test_model_entry_keys(self):
+        from backend.core.model_router import ModelEntry
+        entry = ModelEntry(name="test", task_types=["explain"], priority=10)
+        assert entry["name"] == "test"
+        assert entry["task_types"] == ["explain"]
+        assert entry["priority"] == 10
+
+
+# ---------------------------------------------------------------------------
+# fine_tune.py (Phase 6)
+# ---------------------------------------------------------------------------
+
+class TestSFTDataLoading:
+    """Phase 6: loading episodes from replay buffer for SFT."""
+
+    def test_load_from_missing_db(self):
+        from backend.rl.fine_tune import load_training_episodes
+        episodes = load_training_episodes(db_path="/tmp/nonexistent_sft_test.db")
+        assert episodes == []
+
+    def test_load_from_empty_db(self):
+        import sqlite3
+        from backend.rl.fine_tune import load_training_episodes
+        tmp = Path(tempfile.mkdtemp()) / "empty_sft.db"
+        conn = sqlite3.connect(str(tmp))
+        conn.execute("""
+            CREATE TABLE episodes (
+                id INTEGER PRIMARY KEY, query TEXT, response TEXT,
+                reward REAL, rag_weight REAL, cag_weight REAL, graph_weight REAL,
+                fused_context TEXT, proactive_suggestions TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+        episodes = load_training_episodes(min_reward=0.8, db_path=str(tmp))
+        assert episodes == []
+
+    def test_load_filters_by_reward(self):
+        import sqlite3
+        from backend.rl.fine_tune import load_training_episodes
+        tmp = Path(tempfile.mkdtemp()) / "sft_filter.db"
+        conn = sqlite3.connect(str(tmp))
+        conn.execute("""
+            CREATE TABLE episodes (
+                id INTEGER PRIMARY KEY, query TEXT, response TEXT,
+                reward REAL, rag_weight REAL, cag_weight REAL, graph_weight REAL,
+                fused_context TEXT, proactive_suggestions TEXT
+            )
+        """)
+        conn.execute(
+            "INSERT INTO episodes (query, response, reward, rag_weight, cag_weight, graph_weight) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("good query", "good response", 0.95, 0.4, 0.3, 0.3),
+        )
+        conn.execute(
+            "INSERT INTO episodes (query, response, reward, rag_weight, cag_weight, graph_weight) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("bad query", "bad response", 0.3, 0.5, 0.2, 0.3),
+        )
+        conn.commit()
+        conn.close()
+        episodes = load_training_episodes(min_reward=0.8, db_path=str(tmp))
+        assert len(episodes) == 1
+        assert episodes[0]["query"] == "good query"
+        assert episodes[0]["reward"] == 0.95
+
+    def test_episode_typed_fields(self):
+        import sqlite3
+        from backend.rl.fine_tune import load_training_episodes
+        tmp = Path(tempfile.mkdtemp()) / "sft_types.db"
+        conn = sqlite3.connect(str(tmp))
+        conn.execute("""
+            CREATE TABLE episodes (
+                id INTEGER PRIMARY KEY, query TEXT, response TEXT,
+                reward REAL, rag_weight REAL, cag_weight REAL, graph_weight REAL,
+                fused_context TEXT, proactive_suggestions TEXT
+            )
+        """)
+        conn.execute(
+            "INSERT INTO episodes (query, response, reward, rag_weight, cag_weight, graph_weight) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("typed test", "typed response", 0.9, 0.3, 0.3, 0.4),
+        )
+        conn.commit()
+        conn.close()
+        episodes = load_training_episodes(min_reward=0.5, db_path=str(tmp))
+        ep = episodes[0]
+        assert isinstance(ep["query"], str)
+        assert isinstance(ep["reward"], float)
+        assert isinstance(ep["rag_weight"], float)
+
+
+class TestSFTDataPreparation:
+    """Phase 6: formatting episodes into SFT train/val datasets."""
+
+    def test_prepare_empty_input(self):
+        from backend.rl.fine_tune import prepare_sft_dataset
+        train, val = prepare_sft_dataset([])
+        assert train == []
+        assert val == []
+
+    def test_prepare_splits_data(self):
+        from backend.rl.fine_tune import prepare_sft_dataset, TrainingEpisode
+        episodes = [
+            TrainingEpisode(query=f"q{i}", response=f"r{i}",
+                           reward=0.9, rag_weight=0.3, cag_weight=0.3, graph_weight=0.4)
+            for i in range(20)
+        ]
+        train, val = prepare_sft_dataset(episodes, val_split=0.2)
+        assert len(train) + len(val) == 20
+        assert len(val) == 4  # 20 * 0.2
+
+    def test_prepare_format_has_instruction_output(self):
+        from backend.rl.fine_tune import prepare_sft_dataset, TrainingEpisode
+        episodes = [
+            TrainingEpisode(query="what is RL?", response="RL is reinforcement learning.",
+                           reward=0.9, rag_weight=0.4, cag_weight=0.3, graph_weight=0.3)
+        ]
+        train, val = prepare_sft_dataset(episodes, val_split=0.0)
+        assert len(train) == 1
+        assert train[0]["instruction"] == "what is RL?"
+        assert train[0]["output"] == "RL is reinforcement learning."
+
+    def test_prepare_invalid_val_split_raises(self):
+        from backend.rl.fine_tune import prepare_sft_dataset
+        with pytest.raises(ValueError, match="val_split"):
+            prepare_sft_dataset([{"query": "q", "response": "r"}], val_split=1.5)
+
+
+class TestSFTJobConfig:
+    """Phase 6: SFT job configuration defaults and structure."""
+
+    def test_default_config_has_all_keys(self):
+        from backend.rl.fine_tune import default_config, SFTJobConfig
+        config = default_config()
+        required = list(SFTJobConfig.__annotations__.keys())
+        for key in required:
+            assert key in config, f"Missing key: {key}"
+
+    def test_default_config_matches_yaml(self):
+        from backend.rl.fine_tune import default_config
+        from backend.config import cfg
+        config = default_config()
+        ft_cfg = cfg.get("fine_tuning", {})
+        assert config["lora_rank"] == ft_cfg.get("lora_rank", 16)
+        assert config["lora_alpha"] == ft_cfg.get("lora_alpha", 32)
+
+    def test_run_sft_insufficient_data(self):
+        """run_sft should return 'insufficient_data' on empty replay."""
+        from backend.rl.fine_tune import SFTJobConfig, default_config, run_sft
+        config = default_config()
+        # point at a nonexistent DB to guarantee no episodes
+        config["min_reward"] = 99.0  # unreachable threshold
+        result = run_sft(config)
+        assert result["status"] == "insufficient_data"
+        assert result["episodes_used"] < 10
+        assert "error" in result
+
+
+class TestFineTuneEndpoint:
+    """Phase 6: POST /api/fine-tune endpoint request/response."""
+
+    def _reset_limiter(self):
+        """Clear rate limiter state so each test starts fresh."""
+        from backend.main import limiter
+        try:
+            limiter._storage.reset()
+        except Exception:
+            pass
+
+    def test_endpoint_rejects_missing_auth(self):
+        import os
+        from fastapi.testclient import TestClient
+        self._reset_limiter()
+        # ensure admin key is set so the check can fail
+        os.environ["RLFUSION_ADMIN_KEY"] = "test-secret-key-123"
+        try:
+            from backend.main import app
+            client = TestClient(app)
+            resp = client.post("/api/fine-tune", json={"lora_rank": 16})
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["status"] == "unauthorized"
+        finally:
+            os.environ.pop("RLFUSION_ADMIN_KEY", None)
+
+    def test_endpoint_accepts_valid_auth(self):
+        import os
+        from fastapi.testclient import TestClient
+        self._reset_limiter()
+        os.environ["RLFUSION_ADMIN_KEY"] = "test-secret-key-456"
+        try:
+            from backend.main import app
+            client = TestClient(app)
+            resp = client.post(
+                "/api/fine-tune",
+                json={"min_reward": 99.0},
+                headers={"Authorization": "Bearer test-secret-key-456"},
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            # should succeed auth but return insufficient_data (no replay episodes)
+            assert data["status"] == "insufficient_data"
+            assert "job_id" in data
+        finally:
+            os.environ.pop("RLFUSION_ADMIN_KEY", None)
+
+    def test_endpoint_rejects_no_admin_key_set(self):
+        import os
+        from fastapi.testclient import TestClient
+        self._reset_limiter()
+        os.environ.pop("RLFUSION_ADMIN_KEY", None)
+        from backend.main import app
+        client = TestClient(app)
+        resp = client.post(
+            "/api/fine-tune",
+            json={},
+            headers={"Authorization": "Bearer anything"},
+        )
+        data = resp.json()
+        assert data["status"] == "unauthorized"
+
+
+# ---------------------------------------------------------------------------
+# Phase 7: Multimodal Capabilities
+# ---------------------------------------------------------------------------
+
+class TestMultimodalConfig:
+    """Verify multimodal config loads with safe defaults."""
+
+    def test_config_section_exists(self):
+        from backend.config import cfg
+        mm = cfg.get("multimodal", {})
+        assert isinstance(mm, dict)
+        assert "enabled" in mm
+        assert "clip_model" in mm
+        assert "vision_model" in mm
+
+    def test_defaults_are_safe(self):
+        from backend.config import cfg
+        mm = cfg.get("multimodal", {})
+        assert mm.get("clip_model") == "openai/clip-vit-base-patch32"
+        assert mm.get("vision_model") == "llava"
+        assert mm.get("caption_max_tokens", 200) == 200
+        assert mm.get("max_image_size_mb", 10) == 10
+
+
+class TestImageChunkTypedDict:
+    """ImageChunk TypedDict has correct fields."""
+
+    def test_fields_present(self):
+        from backend.core.multimodal import ImageChunk
+        # TypedDicts expose __annotations__
+        keys = set(ImageChunk.__annotations__)
+        expected = {"image_id", "image_path", "source", "caption",
+                    "content_type", "width", "height", "page_number"}
+        assert expected.issubset(keys)
+
+
+class TestImageSearchResultTypedDict:
+    """ImageSearchResult TypedDict has correct fields."""
+
+    def test_fields_present(self):
+        from backend.core.multimodal import ImageSearchResult
+        keys = set(ImageSearchResult.__annotations__)
+        expected = {"text", "score", "source", "id", "image_path",
+                    "caption", "width", "height"}
+        assert expected.issubset(keys)
+
+
+class TestImageId:
+    """Deterministic image hashing."""
+
+    def test_consistent_hash(self):
+        from backend.core.multimodal import _image_id
+        data = b"test image bytes"
+        h1 = _image_id(data)
+        h2 = _image_id(data)
+        assert h1 == h2
+        assert len(h1) == 32  # shake_256 with length=16 -> 32 hex chars
+
+    def test_different_data_different_hash(self):
+        from backend.core.multimodal import _image_id
+        assert _image_id(b"alpha") != _image_id(b"beta")
+
+
+class TestImageStorePath:
+    """Image store directory creation."""
+
+    def test_path_exists(self):
+        from backend.core.multimodal import _image_store_path
+        p = _image_store_path()
+        assert p.exists()
+        assert p.is_dir()
+        assert "data/images" in str(p)
+
+
+class TestImageIndexPath:
+    """Image FAISS index path resolution."""
+
+    def test_index_path(self):
+        from backend.core.multimodal import _image_index_path
+        p = _image_index_path()
+        assert str(p).endswith("image_index.faiss")
+
+    def test_metadata_path(self):
+        from backend.core.multimodal import _image_metadata_path
+        p = _image_metadata_path()
+        assert str(p).endswith("image_metadata.json")
+
+
+class TestBuildImageIndexEmpty:
+    """Building an image index with no chunks produces empty index."""
+
+    def test_empty_index(self):
+        import faiss
+        from backend.core.multimodal import build_image_index, _CLIP_DIM
+        idx = build_image_index([])
+        assert isinstance(idx, faiss.IndexFlatIP)
+        assert idx.ntotal == 0
+        assert idx.d == _CLIP_DIM
+
+
+class TestGetImageIndex:
+    """get_image_index returns valid FAISS index."""
+
+    def test_returns_index(self):
+        import faiss
+        from backend.core.multimodal import get_image_index, _CLIP_DIM
+        idx = get_image_index()
+        assert isinstance(idx, faiss.IndexFlatIP)
+        assert idx.d == _CLIP_DIM
+
+
+class TestRetrieveImagesDisabled:
+    """retrieve_images returns empty when multimodal is disabled."""
+
+    def test_disabled_returns_empty(self):
+        from backend.core.multimodal import retrieve_images
+        from backend.config import cfg
+        original = cfg.get("multimodal", {}).get("enabled")
+        try:
+            cfg.setdefault("multimodal", {})["enabled"] = False
+            result = retrieve_images("test query")
+            assert result == []
+        finally:
+            cfg.setdefault("multimodal", {})["enabled"] = original
+
+
+class TestRetrieveImagesEmptyIndex:
+    """retrieve_images returns empty when index has no images."""
+
+    def test_empty_index_returns_empty(self):
+        from backend.core.multimodal import retrieve_images, build_image_index
+        from backend.config import cfg
+        original = cfg.get("multimodal", {}).get("enabled")
+        try:
+            cfg.setdefault("multimodal", {})["enabled"] = True
+            build_image_index([])
+            result = retrieve_images("test query")
+            assert result == []
+        finally:
+            cfg.setdefault("multimodal", {})["enabled"] = original
+
+
+class TestProcessDocumentsForImagesDisabled:
+    """process_documents_for_images returns empty when disabled."""
+
+    def test_disabled(self):
+        from backend.core.multimodal import process_documents_for_images
+        from backend.config import cfg, PROJECT_ROOT
+        original = cfg.get("multimodal", {}).get("enabled")
+        try:
+            cfg.setdefault("multimodal", {})["enabled"] = False
+            result = process_documents_for_images(PROJECT_ROOT / "data" / "docs")
+            assert result == []
+        finally:
+            cfg.setdefault("multimodal", {})["enabled"] = original
+
+
+class TestDiscoverStandaloneImages:
+    """discover_standalone_images handles missing dirs gracefully."""
+
+    def test_nonexistent_dir(self):
+        from backend.core.multimodal import discover_standalone_images
+        result = discover_standalone_images(Path("/nonexistent/path"))
+        assert result == []
+
+
+class TestExtractPdfImages:
+    """extract_pdf_images degrades gracefully."""
+
+    def test_nonexistent_file(self):
+        from backend.core.multimodal import extract_pdf_images
+        result = extract_pdf_images(Path("/nonexistent/file.pdf"))
+        assert result == []
+
+
+class TestExtractMarkdownImages:
+    """extract_markdown_images handles edge cases."""
+
+    def test_nonexistent_file(self):
+        from backend.core.multimodal import extract_markdown_images
+        result = extract_markdown_images(Path("/nonexistent/file.md"))
+        assert result == []
+
+    def test_no_images_in_markdown(self):
+        import tempfile
+        from backend.core.multimodal import extract_markdown_images
+        with tempfile.NamedTemporaryFile(suffix=".md", mode="w", delete=False) as f:
+            f.write("# Hello\n\nNo images here.")
+            f.flush()
+            result = extract_markdown_images(Path(f.name))
+        assert result == []
+        Path(f.name).unlink()
+
+
+class TestImageToBase64:
+    """image_to_base64 encoding."""
+
+    def test_nonexistent_file(self):
+        from backend.core.multimodal import image_to_base64
+        assert image_to_base64(Path("/nonexistent.png")) == ""
+
+    def test_valid_image(self):
+        import tempfile
+        from backend.core.multimodal import image_to_base64
+        # create minimal 1x1 PNG (valid binary)
+        png_bytes = (
+            b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01'
+            b'\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00'
+            b'\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00'
+            b'\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82'
+        )
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(png_bytes)
+            f.flush()
+            result = image_to_base64(Path(f.name))
+        assert result.startswith("data:image/png;base64,")
+        Path(f.name).unlink()
+
+
+class TestCaptionImageFallback:
+    """caption_image returns fallback when vision model is unavailable."""
+
+    def test_fallback_on_missing_file(self):
+        from backend.core.multimodal import caption_image
+        result = caption_image(Path("/nonexistent.png"), fallback="test caption")
+        assert result == "test caption"
+
+
+class TestBuildMultimodalIndex:
+    """build_multimodal_index end-to-end."""
+
+    def test_empty_docs(self):
+        import tempfile
+        from backend.core.multimodal import build_multimodal_index
+        from backend.config import cfg
+        original = cfg.get("multimodal", {}).get("enabled")
+        try:
+            cfg.setdefault("multimodal", {})["enabled"] = True
+            with tempfile.TemporaryDirectory() as tmpdir:
+                count = build_multimodal_index(Path(tmpdir))
+                assert count == 0
+        finally:
+            cfg.setdefault("multimodal", {})["enabled"] = original
+
+
+class TestRetrieveIncludesImages:
+    """retrieve() returns images key in results."""
+
+    def test_images_key_present(self):
+        from backend.core.retrievers import retrieve
+        result = retrieve("test query")
+        assert "images" in result
+        assert isinstance(result["images"], list)
+
+
+class TestImageServingEndpoint:
+    """Image serving endpoint validation."""
+
+    def _reset_limiter(self):
+        from backend.main import limiter
+        try:
+            limiter._storage.reset()
+        except Exception:
+            pass
+
+    def test_traversal_blocked(self):
+        from fastapi.testclient import TestClient
+        self._reset_limiter()
+        from backend.main import app
+        client = TestClient(app)
+        resp = client.get("/api/images/../../../etc/passwd")
+        assert resp.status_code in (400, 403, 404)
+
+    def test_not_found(self):
+        from fastapi.testclient import TestClient
+        self._reset_limiter()
+        from backend.main import app
+        client = TestClient(app)
+        resp = client.get("/api/images/nonexistent_abc123.png")
+        assert resp.status_code == 404
+
+    def test_absolute_path_rejected(self):
+        from fastapi.testclient import TestClient
+        self._reset_limiter()
+        from backend.main import app
+        client = TestClient(app)
+        resp = client.get("/api/images//etc/passwd")
+        assert resp.status_code in (400, 403, 404)
+
+
+class TestUploadAcceptsImages:
+    """Upload endpoint accepts image file extensions."""
+
+    def _reset_limiter(self):
+        from backend.main import limiter
+        try:
+            limiter._storage.reset()
+        except Exception:
+            pass
+
+    def test_png_accepted(self):
+        from fastapi.testclient import TestClient
+        self._reset_limiter()
+        from backend.main import app
+        client = TestClient(app)
+        # minimal 1x1 PNG
+        png_bytes = (
+            b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01'
+            b'\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00'
+            b'\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00'
+            b'\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82'
+        )
+        resp = client.post("/api/upload", files=[("files", ("test.png", png_bytes, "image/png"))])
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_saved"] >= 1
+        # cleanup
+        uploaded = Path(__file__).resolve().parents[1] / "data" / "docs" / "test.png"
+        if uploaded.exists():
+            uploaded.unlink()

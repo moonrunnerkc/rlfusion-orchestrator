@@ -1,7 +1,10 @@
 // src/App.tsx — FINAL PRODUCTION VERSION (Grok-style cockpit)
 import { useEffect, useRef, useState } from 'react';
+import type { AgentStatus } from './components/AgentPipeline';
+import AgentPipeline from './components/AgentPipeline';
 import ChatInput from './components/ChatInput';
 import ChatList from './components/ChatList';
+import MonitoringPanel from './components/MonitoringPanel';
 
 interface Message {
   id: string;
@@ -55,13 +58,13 @@ function ReindexButton() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const uploadAndIndex = async (files: FileList | File[]) => {
-    const allowed = ['.txt', '.md', '.pdf'];
+    const allowed = ['.txt', '.md', '.pdf', '.png', '.jpg', '.jpeg', '.webp', '.bmp', '.tiff'];
     const valid = Array.from(files).filter(f =>
       allowed.some(ext => f.name.toLowerCase().endsWith(ext))
     );
     if (valid.length === 0) {
       setStatus('error');
-      setDetails('Only .txt, .md, .pdf files accepted');
+      setDetails('Only .txt, .md, .pdf, and image files accepted');
       setTimeout(() => { setStatus('idle'); setDetails(''); }, 3000);
       return;
     }
@@ -88,7 +91,8 @@ function ReindexButton() {
       const ixRes = await fetch('http://localhost:8000/api/reindex', { method: 'POST' });
       const ixData = await ixRes.json();
       setStatus('done');
-      setDetails(`${ixData.files_processed} files, ${ixData.chunks_indexed} chunks (${ixData.elapsed_seconds}s)`);
+      const imgNote = ixData.images_indexed > 0 ? `, ${ixData.images_indexed} images` : '';
+      setDetails(`${ixData.files_processed} files, ${ixData.chunks_indexed} chunks${imgNote} (${ixData.elapsed_seconds}s)`);
       setTimeout(() => { setStatus('idle'); setDetails(''); }, 6000);
     } catch {
       setStatus('error');
@@ -108,7 +112,8 @@ function ReindexButton() {
         setDetails('No documents in data/docs/');
       } else {
         setStatus('done');
-        setDetails(`${data.files_processed} files, ${data.chunks_indexed} chunks (${data.elapsed_seconds}s)`);
+        const imgNote = data.images_indexed > 0 ? `, ${data.images_indexed} images` : '';
+        setDetails(`${data.files_processed} files, ${data.chunks_indexed} chunks${imgNote} (${data.elapsed_seconds}s)`);
       }
       setTimeout(() => { setStatus('idle'); setDetails(''); }, 5000);
     } catch {
@@ -167,7 +172,7 @@ function ReindexButton() {
         ) : (
           <>
             <p className="text-sm text-gray-400">Drop files here</p>
-            <p className="text-xs text-gray-600 mt-1">.txt  .md  .pdf</p>
+            <p className="text-xs text-gray-600 mt-1">.txt  .md  .pdf  .png  .jpg</p>
           </>
         )}
       </div>
@@ -175,7 +180,7 @@ function ReindexButton() {
         ref={fileInputRef}
         type="file"
         multiple
-        accept=".txt,.md,.pdf"
+        accept=".txt,.md,.pdf,.png,.jpg,.jpeg,.webp,.bmp,.tiff"
         onChange={onFileSelect}
         className="hidden"
       />
@@ -264,6 +269,16 @@ export default function App() {
   const [systemInfo, setSystemInfo] = useState<{gpu: string | null; model: string; policy: string; device: string}>({
     gpu: null, model: '—', policy: '—', device: 'cpu'
   });
+  const [pipelineAgents, setPipelineAgents] = useState<AgentStatus[]>([
+    { name: 'safety', status: 'idle' },
+    { name: 'retrieval', status: 'idle' },
+    { name: 'fusion', status: 'idle' },
+    { name: 'generation', status: 'idle' },
+    { name: 'critique', status: 'idle' },
+  ]);
+  const [pipelineActive, setPipelineActive] = useState(false);
+  const [pipelineElapsed, setPipelineElapsed] = useState(0);
+  const pipelineStartRef = useRef(0);
   const ws = useRef<WebSocket | null>(null);
 
   // Fetch system info from backend on mount — clear stale chats on new server boot
@@ -432,11 +447,33 @@ export default function App() {
         if (data.proactive_suggestions && data.proactive_suggestions.length > 0) {
           setProactiveHint(data.proactive_suggestions[0]);
         }
+
+        // pipeline finished — compute elapsed, agents stay visible until next query
+        if (pipelineStartRef.current > 0) {
+          setPipelineElapsed(Date.now() - pipelineStartRef.current);
+        }
+        setPipelineActive(false);
       }
 
-      // Handle start signal
+      // Handle pipeline status updates
+      if (data.type === 'pipeline' && data.agents) {
+        setPipelineAgents(data.agents);
+        const hasRunning = data.agents.some((a: AgentStatus) => a.status === 'running' || a.status === 'pending');
+        setPipelineActive(hasRunning);
+      }
+
+      // Handle start signal — set timer imperatively
       if (data.type === 'start') {
-        // Clear any previous loading state
+        pipelineStartRef.current = Date.now();
+        setPipelineElapsed(0);
+        setPipelineActive(true);
+        setPipelineAgents([
+          { name: 'safety', status: 'pending' },
+          { name: 'retrieval', status: 'pending' },
+          { name: 'fusion', status: 'pending' },
+          { name: 'generation', status: 'pending' },
+          { name: 'critique', status: 'pending' },
+        ]);
       }
     };
     return () => ws.current?.close();
@@ -539,6 +576,11 @@ export default function App() {
             <option value="test">🧪 Experimental Test</option>
           </select>
         </div>
+
+        {/* AGENT PIPELINE */}
+        <div className="px-4 pb-4">
+          <AgentPipeline agents={pipelineAgents} isActive={pipelineActive} elapsedMs={pipelineElapsed} />
+        </div>
       </div>
 
       {/* CENTER: CHAT */}
@@ -601,6 +643,9 @@ export default function App() {
             </div>
             <div className="text-xs text-[var(--muted)]">RL critique score for last response</div>
           </div>
+
+          {/* System Monitor (Phase 9) */}
+          <MonitoringPanel weights={weights} reward={reward} isActive={isLoading} />
 
           {/* System Info */}
           <div className="text-xs text-[var(--muted)] space-y-1 pt-6 border-t border-gray-800">

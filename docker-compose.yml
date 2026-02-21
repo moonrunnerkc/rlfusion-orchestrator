@@ -1,7 +1,8 @@
 # Author: Bradley R. Kinnard
-# docker-compose.yml - CPU and GPU profiles for RLFusion
+# docker-compose.yml - CPU, GPU, and ARM profiles for RLFusion
 # Usage: docker compose --profile cpu up
 #        docker compose --profile gpu up
+#        docker compose --profile arm up
 
 services:
   backend-cpu:
@@ -39,21 +40,37 @@ services:
               capabilities: [gpu]
     command: uvicorn backend.main:app --host 0.0.0.0 --port 8000
 
+  backend-arm:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platforms:
+        - linux/arm64
+    profiles: ["arm"]
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./db:/app/db
+      - ./indexes:/app/indexes
+    environment:
+      - CUDA_VISIBLE_DEVICES=""
+      - RLFUSION_DEVICE=cpu
+      - RLFUSION_FORCE_CPU=true
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000
+
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    profiles: ["cpu", "gpu"]
+    profiles: ["cpu", "gpu", "arm"]
     ports:
       - "5173:5173"
-    depends_on:
-      - backend-cpu
-      - backend-gpu
     command: npm run dev -- --host
 
   ollama:
     image: ollama/ollama:latest
-    profiles: ["cpu", "gpu"]
+    profiles: ["cpu", "gpu", "arm"]
     ports:
       - "11434:11434"
     volumes:

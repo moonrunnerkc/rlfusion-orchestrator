@@ -1,9 +1,11 @@
 # Author: Bradley R. Kinnard
-# generate_training_data.py - Synthetic training episodes for 4D fusion policy
+# generate_training_data.py - Synthetic training episodes + CoT trace extraction
+# Phase 5: adds chain-of-thought training data from high-reward replay episodes
 
 import json
 import random
 import argparse
+import sqlite3
 from pathlib import Path
 import sys
 
@@ -131,5 +133,137 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--episodes", type=int, default=100000)
     parser.add_argument("--output", type=str, default="data/synthetic_episodes/training_100k.jsonl")
+    parser.add_argument("--cot", action="store_true", help="Generate CoT traces from replay buffer")
+    parser.add_argument("--cot-output", type=str, default="data/synthetic_episodes/cot_traces.jsonl")
+    parser.add_argument("--cot-min-reward", type=float, default=0.8)
+    parser.add_argument("--cot-limit", type=int, default=1000)
     args = parser.parse_args()
-    generate_dataset(args.episodes, args.output)
+
+    if args.cot:
+        extract_cot_traces(
+            min_reward=args.cot_min_reward,
+            output_path=args.cot_output,
+            max_traces=args.cot_limit,
+        )
+    else:
+        generate_dataset(args.episodes, args.output)
+
+
+# ── Phase 5: Chain-of-Thought trace extraction ──────────────────────────
+
+def extract_cot_traces(
+    min_reward: float = 0.8,
+    output_path: str = "data/synthetic_episodes/cot_traces.jsonl",
+    max_traces: int = 1000,
+    db_path: str | None = None,
+) -> Path:
+    """Extract high-reward episodes from the replay buffer and format as
+    chain-of-thought training examples for SFT fine-tuning.
+
+    Each trace includes the original query, the high-reward response, and
+    a synthesized reasoning chain that explains the retrieval and fusion
+    decisions that led to the answer.
+    """
+    project_root = Path(__file__).parents[2]
+    resolved_db = Path(db_path) if db_path else project_root / "db" / "rlfo_cache.db"
+    out_file = project_root / output_path
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+
+    if not resolved_db.exists():
+        print(f"No database at {resolved_db}, generating synthetic CoT traces instead")
+        return _generate_synthetic_cot(out_file, max_traces)
+
+    conn = sqlite3.connect(str(resolved_db))
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='episodes'")
+    if not cursor.fetchone():
+        conn.close()
+        print("No episodes table found, generating synthetic CoT traces")
+        return _generate_synthetic_cot(out_file, max_traces)
+
+    cursor.execute(
+        "SELECT query, response, reward, rag_weight, cag_weight, graph_weight, fused_context "
+        "FROM episodes WHERE reward >= ? ORDER BY reward DESC LIMIT ?",
+        (min_reward, max_traces),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        print(f"No episodes with reward >= {min_reward}, generating synthetic CoT traces")
+        return _generate_synthetic_cot(out_file, max_traces)
+
+    traces = []
+    for query, response, reward, rag_w, cag_w, graph_w, context in rows:
+        # build a reasoning chain from the episode metadata
+        weights = {"rag": rag_w or 0.0, "cag": cag_w or 0.0, "graph": graph_w or 0.0}
+        dominant = max(weights, key=weights.get)
+        web_w = max(0.0, 1.0 - sum(weights.values()))
+
+        chain = (
+            f"Step 1: Analyze the query to determine intent and required information.\n"
+            f"Step 2: Route retrieval with weights: RAG={rag_w:.2f}, CAG={cag_w:.2f}, "
+            f"Graph={graph_w:.2f}, Web={web_w:.2f}. Primary source: {dominant}.\n"
+            f"Step 3: Score and filter retrieved chunks using CSWR stability weighting.\n"
+            f"Step 4: Fuse context from all sources weighted by RL policy.\n"
+            f"Step 5: Generate response grounded in fused context.\n"
+            f"Step 6: Self-critique confirmed reward={reward:.2f}."
+        )
+
+        traces.append({
+            "query": query,
+            "reasoning_chain": chain,
+            "response": response[:2000] if response else "",
+            "reward": reward,
+            "weights": {**weights, "web": web_w},
+        })
+
+    with open(out_file, "w") as f:
+        for trace in traces:
+            f.write(json.dumps(trace) + "\n")
+
+    print(f"Extracted {len(traces)} CoT traces (reward >= {min_reward}) -> {out_file}")
+    return out_file
+
+
+def _generate_synthetic_cot(out_file: Path, count: int) -> Path:
+    """Fallback: create synthetic CoT traces when no replay data exists."""
+    traces = []
+    for i in range(min(count, 500)):
+        domain = random.choice(list(DOMAIN_TEMPLATES.keys()))
+        template = DOMAIN_TEMPLATES[domain]
+        query_t = random.choice(template["queries"])
+        concept = random.choice(template["concepts"])
+        query = query_t.format(
+            concept=concept, system=concept, url=concept,
+            website=concept, place=concept, thing=concept,
+            event=concept, topic=concept, person=concept,
+            task=concept, problem=concept, field=concept,
+            error=concept, issue=concept,
+        )
+        opt = template["optimal_sources"]
+        dominant = max(opt, key=opt.get)
+
+        chain = (
+            f"Step 1: Query about '{concept}' in domain '{domain}'.\n"
+            f"Step 2: Optimal retrieval routing: {', '.join(f'{k}={v:.2f}' for k, v in opt.items())}. "
+            f"Primary: {dominant}.\n"
+            f"Step 3: CSWR filters low-stability chunks.\n"
+            f"Step 4: Fuse weighted context.\n"
+            f"Step 5: Generate grounded response.\n"
+            f"Step 6: Self-critique targets reward >= 0.85."
+        )
+        traces.append({
+            "query": query,
+            "reasoning_chain": chain,
+            "response": f"Response about {concept} using {dominant} retrieval.",
+            "reward": 0.85 + random.uniform(0, 0.15),
+            "weights": opt,
+        })
+
+    with open(out_file, "w") as f:
+        for trace in traces:
+            f.write(json.dumps(trace) + "\n")
+
+    print(f"Generated {len(traces)} synthetic CoT traces -> {out_file}")
+    return out_file

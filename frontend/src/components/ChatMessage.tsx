@@ -262,6 +262,28 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ text, role }) => {
               p: ({ node, ...props }) => (
                 <p className="mb-4 leading-relaxed" {...props} />
               ),
+
+              // Phase 7: render image results inline with captions
+              img: ({ node, src, alt, ...props }) => {
+                // rewrite relative image paths to the backend image endpoint
+                const imgSrc = src && !src.startsWith('http') && !src.startsWith('data:')
+                  ? `http://localhost:8000/api/images/${src.replace(/^data\/images\//, '')}`
+                  : src;
+                return (
+                  <span className="block my-4">
+                    <img
+                      src={imgSrc}
+                      alt={alt || 'Image result'}
+                      className="max-w-full max-h-96 rounded-lg border border-gray-700 shadow-lg"
+                      loading="lazy"
+                      {...props}
+                    />
+                    {alt && (
+                      <span className="block text-xs text-gray-500 mt-1 italic">{alt}</span>
+                    )}
+                  </span>
+                );
+              },
             }}
           >
             {mainText}
