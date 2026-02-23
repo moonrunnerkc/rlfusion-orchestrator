@@ -150,6 +150,14 @@ edge:
   auto_quantize: true
   prefer_cpu_fallback: false
   arm_optimized: false
+stis:
+  enabled: true
+  host: http://localhost:8100
+  timeout_secs: 45
+  max_new_tokens: 128
+  num_agents: null
+  similarity_threshold: null
+  alpha: null
 monitoring:
   prometheus_enabled: true
   correlation_id_header: X-Correlation-ID

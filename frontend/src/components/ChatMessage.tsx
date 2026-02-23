@@ -68,7 +68,8 @@ function parseCritique(text: string): { mainText: string; critique: CritiqueData
   };
 }
 
-// Styled critique component
+// Styled critique component (retained for future use)
+// @ts-ignore unused
 function CritiquePanel({ critique }: { critique: CritiqueData }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -165,7 +166,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ text, role }) => {
   const [copied, setCopied] = useState(false);
 
   // Parse critique from message
-  const { mainText, critique } = useMemo(() => parseCritique(text), [text]);
+  const { mainText, critique: _critique } = useMemo(() => parseCritique(text), [text]);
 
   // Copy to clipboard - only for AI messages because who copies their own text?
   const handleCopy = async () => {
@@ -206,22 +207,22 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ text, role }) => {
             remarkPlugins={[remarkGfm]}
             components={{
               // Main headers get the cyber cyan glow with left border accent
-              h1: ({ node, ...props }) => (
+              h1: ({ node, ...props }: {node?: unknown; [key: string]: unknown}) => (
                 <h1 className="text-2xl font-bold text-[var(--accent)] mt-8 mb-4 border-l-4 border-[var(--accent)] pl-4" {...props} />
               ),
 
               // Subheaders slightly dimmer but still pop
-              h2: ({ node, ...props }) => (
+              h2: ({ node, ...props }: {node?: unknown; [key: string]: unknown}) => (
                 <h2 className="text-xl font-semibold text-[var(--accent)] mt-6 mb-3" {...props} />
               ),
 
               // Bold text gets the cyan treatment for emphasis
-              strong: ({ node, ...props }) => (
+              strong: ({ node, ...props }: {node?: unknown; [key: string]: unknown}) => (
                 <strong className="text-[var(--accent)] font-semibold" {...props} />
               ),
 
               // Code styling: inline vs block
-              code({ node, inline, className, children, ...props }) {
+              code({ inline, className, children, ...props }: {inline?: boolean; className?: string; children?: React.ReactNode; [key: string]: unknown}) {
                 if (inline) {
                   // Inline code → subtle bg with cyan text for readability
                   return (
@@ -246,25 +247,25 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ text, role }) => {
               },
 
               // Lists need proper spacing and bullets
-              ul: ({ node, ...props }) => (
+              ul: ({ node, ...props }: {node?: unknown; [key: string]: unknown}) => (
                 <ul className="list-disc ml-6 my-4 space-y-2" {...props} />
               ),
 
-              ol: ({ node, ...props }) => (
+              ol: ({ node, ...props }: {node?: unknown; [key: string]: unknown}) => (
                 <ol className="list-decimal ml-6 my-4 space-y-2" {...props} />
               ),
 
-              li: ({ node, ...props }) => (
+              li: ({ node, ...props }: {node?: unknown; [key: string]: unknown}) => (
                 <li className="leading-relaxed" {...props} />
               ),
 
               // Paragraphs get breathing room
-              p: ({ node, ...props }) => (
+              p: ({ node, ...props }: {node?: unknown; [key: string]: unknown}) => (
                 <p className="mb-4 leading-relaxed" {...props} />
               ),
 
               // Phase 7: render image results inline with captions
-              img: ({ node, src, alt, ...props }) => {
+              img: ({ node, src, alt, ...props }: {node?: unknown; src?: string; alt?: string; [key: string]: unknown}) => {
                 // rewrite relative image paths to the backend image endpoint
                 const imgSrc = src && !src.startsWith('http') && !src.startsWith('data:')
                   ? `http://localhost:8000/api/images/${src.replace(/^data\/images\//, '')}`

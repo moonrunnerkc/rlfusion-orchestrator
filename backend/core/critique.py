@@ -417,3 +417,247 @@ def check_faithfulness(claim: str, chunks: list) -> tuple:
 
     except Exception:
         return (False, 0.5)
+
+
+# ---------------------------------------------------------------------------
+# STIS Contradiction Trigger (Phase 2)
+# ---------------------------------------------------------------------------
+# Hard threshold: if RAG content contradicts authoritative ontology facts
+# AND the best CSWR score drops below this value, abort Ollama generation
+# and route to the STIS engine for mathematically forced consensus.
+
+STIS_CSWR_THRESHOLD = 0.70
+# Minimum query-to-ontology relevance before we bother checking for contradictions.
+# Set high (0.75+) to avoid false positives on tangentially-related queries.
+STIS_RELEVANCE_THRESHOLD = 0.75
+
+
+def _load_ontology_facts() -> list[dict[str, str]]:
+    """Load authoritative facts from ontology.json. Cached in module scope."""
+    import json
+    from backend.config import PROJECT_ROOT
+
+    onto_path = PROJECT_ROOT / "data" / "ontology.json"
+    if not onto_path.exists():
+        return []
+    try:
+        data = json.loads(onto_path.read_text())
+        facts = []
+        for node in data.get("nodes", []):
+            desc = node.get("description", "").strip()
+            if desc and node.get("type") == "fact":
+                facts.append({
+                    "id": node.get("id", ""),
+                    "label": node.get("label", ""),
+                    "text": desc,
+                    "confidence": node.get("confidence", 1.0),
+                })
+        return facts
+    except (json.JSONDecodeError, KeyError) as exc:
+        logger.warning("Failed to load ontology facts: %s", exc)
+        return []
+
+
+# cache ontology between calls (reloaded on import)
+_ontology_facts: list[dict[str, str]] | None = None
+
+
+def _get_ontology_facts() -> list[dict[str, str]]:
+    """Return cached ontology facts, loading once on first call."""
+    global _ontology_facts
+    if _ontology_facts is None:
+        _ontology_facts = _load_ontology_facts()
+    return _ontology_facts
+
+
+def detect_contradiction(
+    rag_results: list[dict[str, object]],
+    graph_results: list[dict[str, object]],
+    query: str = "",
+) -> dict[str, object]:
+    """Detect factual contradictions between RAG results and authoritative ontology.
+
+    Uses a two-stage approach:
+    1. Embedding similarity to find ontology facts RELEVANT to the query
+    2. LLM-based claim comparison to detect if RAG contradicts those facts
+
+    Pure cosine similarity cannot distinguish "uses model A" from "uses model B"
+    because they share vocabulary. Only the LLM can detect factual disagreement
+    between topically-similar statements.
+
+    Returns a dict with:
+        contradicted (bool): True if a factual conflict was detected
+        similarity (float): relevance score of the matched ontology fact
+        rag_claim (str): text of the top RAG chunk
+        graph_claim (str): text of the contradicted ontology fact
+    """
+    from backend.core.utils import embed_text
+
+    empty_result: dict[str, object] = {
+        "contradicted": False,
+        "similarity": 1.0,
+        "rag_claim": "",
+        "graph_claim": "",
+    }
+
+    if not rag_results:
+        return empty_result
+
+    top_rag = max(rag_results, key=lambda r: float(r.get("score", 0)))
+    rag_text = str(top_rag.get("text", ""))
+    if not rag_text.strip():
+        return empty_result
+
+    # Stage 1: find ontology facts relevant to the query via embedding
+    ontology_facts = _get_ontology_facts()
+    if not ontology_facts or not query:
+        return empty_result
+
+    query_emb = embed_text(query)
+    norm_q = float((query_emb @ query_emb) ** 0.5)
+
+    relevant_facts: list[tuple[float, dict[str, str]]] = []
+    for fact in ontology_facts:
+        fact_emb = embed_text(fact["text"])
+        norm_f = float((fact_emb @ fact_emb) ** 0.5)
+        denom = norm_q * norm_f
+        relevance = float(query_emb @ fact_emb) / denom if denom > 1e-9 else 0.0
+        if relevance >= STIS_RELEVANCE_THRESHOLD:
+            relevant_facts.append((relevance, fact))
+
+    if not relevant_facts:
+        logger.debug("No ontology facts relevant to query (threshold=%.2f)", STIS_RELEVANCE_THRESHOLD)
+        return empty_result
+
+    # sort by relevance, check the most relevant fact first
+    relevant_facts.sort(key=lambda x: x[0], reverse=True)
+    best_relevance, best_fact = relevant_facts[0]
+
+    logger.info(
+        "Ontology fact relevant to query: '%s' (relevance=%.4f)",
+        best_fact["label"], best_relevance,
+    )
+
+    # Stage 2: LLM claim contradiction check
+    rag_claim_short = rag_text[:600]
+    onto_claim = best_fact["text"]
+
+    contradiction_prompt = (
+        "You are a fact-checking system. Compare these two claims and determine "
+        "if they CONTRADICT each other on specific facts.\n\n"
+        f"CLAIM A (from retrieved document):\n{rag_claim_short}\n\n"
+        f"CLAIM B (from verified knowledge base):\n{onto_claim}\n\n"
+        "Do these claims contradict each other on any specific factual detail "
+        "(numbers, names, models, measurements)?\n"
+        "Respond with EXACTLY one word: CONTRADICT or AGREE"
+    )
+
+    try:
+        import httpx
+        resp = httpx.post(
+            "http://localhost:11434/api/chat",
+            json={
+                "model": cfg.get("ollama_model", "dolphin-llama3:8b"),
+                "messages": [{"role": "user", "content": contradiction_prompt}],
+                "stream": False,
+                "options": {"temperature": 0.0, "num_predict": 10},
+            },
+            timeout=15.0,
+        )
+        answer = resp.json().get("message", {}).get("content", "").strip().upper()
+        contradicted = "CONTRADICT" in answer
+
+        if contradicted:
+            logger.warning(
+                "LLM detected contradiction: RAG vs ontology '%s' "
+                "(relevance=%.4f, verdict=%s) | RAG='%.80s...'",
+                best_fact["label"], best_relevance, answer, rag_text,
+            )
+        else:
+            logger.info(
+                "LLM found no contradiction: RAG vs ontology '%s' (verdict=%s)",
+                best_fact["label"], answer,
+            )
+
+        return {
+            "contradicted": contradicted,
+            "similarity": round(1.0 - best_relevance, 6) if contradicted else round(best_relevance, 6),
+            "rag_claim": rag_text[:500],
+            "graph_claim": f"[ONTOLOGY: {best_fact['label']}] {onto_claim}" if contradicted else "",
+        }
+
+    except Exception as exc:
+        logger.warning("LLM contradiction check failed, falling back to safe: %s", exc)
+        return empty_result
+
+
+def should_route_to_stis(
+    rag_results: list[dict[str, object]],
+    graph_results: list[dict[str, object]],
+    cswr_scores: list[float] | None = None,
+    query: str = "",
+) -> dict[str, object]:
+    """Evaluate whether to abort Ollama and fall back to the STIS engine.
+
+    LLM-verified contradiction against ontology facts is the primary trigger.
+    When a contradiction IS confirmed by the LLM, the CSWR score acts as a
+    secondary gate: if CSWR is high, the retrieval may still be trustworthy
+    despite the contradiction.
+
+    Returns a dict with:
+        route_to_stis (bool): True if Ollama should be aborted
+        reason (str): human-readable explanation of the decision
+        contradiction (dict): output of detect_contradiction()
+        best_cswr (float): highest CSWR score observed
+    """
+    contradiction = detect_contradiction(rag_results, graph_results, query=query)
+
+    # compute best CSWR from provided scores or from result metadata
+    if cswr_scores and len(cswr_scores) > 0:
+        best_cswr = max(cswr_scores)
+    else:
+        all_scores: list[float] = []
+        for r in rag_results:
+            csw = r.get("csw_score") or r.get("score", 0)
+            all_scores.append(float(csw))
+        for r in graph_results:
+            csw = r.get("csw_score") or r.get("score", 0)
+            all_scores.append(float(csw))
+        best_cswr = max(all_scores) if all_scores else 0.0
+
+    contradicted = bool(contradiction["contradicted"])
+    cswr_below = best_cswr < STIS_CSWR_THRESHOLD
+
+    # LLM-verified contradiction is a strong signal. A well-written
+    # disinformation doc can score high on CSWR while being factually wrong.
+    # If the LLM confirms a contradiction against the ontology, route to STIS
+    # unless CSWR is exceptionally high (> 0.95, near-perfect retrieval).
+    route = contradicted and (cswr_below or best_cswr < 0.95)
+
+    if route:
+        reason = (
+            f"LLM-verified contradiction against ontology "
+            f"with weak CSWR confidence (best={best_cswr:.4f}, threshold={STIS_CSWR_THRESHOLD}). "
+            f"Routing to STIS for forced consensus."
+        )
+        logger.info("STIS routing triggered: %s", reason)
+    elif contradicted:
+        reason = (
+            f"Contradiction detected but "
+            f"CSWR score sufficient (best={best_cswr:.4f} >= {STIS_CSWR_THRESHOLD}). "
+            f"Proceeding with Ollama."
+        )
+    elif cswr_below:
+        reason = (
+            f"CSWR below threshold (best={best_cswr:.4f} < {STIS_CSWR_THRESHOLD}) but "
+            f"no contradiction detected. Proceeding with Ollama."
+        )
+    else:
+        reason = "No contradiction, CSWR confidence adequate. Proceeding with Ollama."
+
+    return {
+        "route_to_stis": route,
+        "reason": reason,
+        "contradiction": contradiction,
+        "best_cswr": round(best_cswr, 6),
+    }

@@ -35,6 +35,8 @@ from slowapi.errors import RateLimitExceeded
 
 from backend.config import cfg, PROJECT_ROOT
 from backend.core.critique import critique, log_episode_to_replay_buffer, get_critique_instruction, strip_critique_block, check_safety
+from backend.core.critique import should_route_to_stis
+from backend.core.stis_client import request_stis_consensus, log_stis_resolution
 from backend.core.fusion import fuse_context
 from backend.core.memory import expand_query_with_context, record_turn, get_context_for_prompt, clear_memory
 from backend.core.profile import detect_and_save_memory, get_user_profile
@@ -89,6 +91,11 @@ REQUESTS_TOTAL = Counter(
 WS_CONNECTIONS = Gauge(
     "rlfusion_ws_connections_active",
     "Number of active WebSocket connections",
+)
+STIS_ROUTING_EVENTS = Counter(
+    "rlfusion_stis_routing_total",
+    "Number of queries routed to STIS engine due to contradiction",
+    ["outcome"],  # resolved, failed, skipped
 )
 
 # numpy._core shim for stable-baselines3
@@ -603,6 +610,55 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             if len(w) > 3 and w[3] > 0.01:
                 fusion_detail += f" Web {w[3]*100:.0f}%"
 
+            # Step 3.5: STIS contradiction check
+            stis_routed = False
+            stis_response = None
+            gen_detail = ""
+            full_response = ""
+            rr = retrieval_result.get("retrieval_results", {})
+            if cfg.get("stis", {}).get("enabled", False):
+                stis_decision = await asyncio.to_thread(
+                    should_route_to_stis,
+                    rr.get("rag", []),
+                    rr.get("graph", []),
+                    query=query,
+                )
+                if stis_decision["route_to_stis"]:
+                    contradiction = stis_decision["contradiction"]
+                    await websocket.send_json({"type": "pipeline", "agents": [
+                        {"name": "safety", "status": "done", "detail": safety_detail},
+                        {"name": "retrieval", "status": "done", "detail": retrieval_detail},
+                        {"name": "fusion", "status": "done", "detail": fusion_detail},
+                        {"name": "generation", "status": "running", "detail": "STIS consensus (contradiction detected)"},
+                        {"name": "critique", "status": "pending", "detail": ""},
+                    ]})
+                    stis_result = await asyncio.to_thread(
+                        request_stis_consensus,
+                        query,
+                        str(contradiction["rag_claim"]),
+                        str(contradiction["graph_claim"]),
+                    )
+                    # log the STIS event regardless of outcome
+                    await asyncio.to_thread(
+                        log_stis_resolution,
+                        query,
+                        str(contradiction["rag_claim"]),
+                        str(contradiction["graph_claim"]),
+                        float(contradiction["similarity"]),
+                        float(stis_decision["best_cswr"]),
+                        stis_result,
+                    )
+                    if stis_result["resolved"]:
+                        stis_routed = True
+                        stis_response = stis_result["resolution"]["text"]
+                        STIS_ROUTING_EVENTS.labels(outcome="resolved").inc()
+                        logger.info("STIS resolved contradiction for query: '%.50s...'", query)
+                    else:
+                        STIS_ROUTING_EVENTS.labels(outcome="failed").inc()
+                        logger.warning("STIS failed, falling back to Ollama: %s", stis_result["error"])
+                else:
+                    STIS_ROUTING_EVENTS.labels(outcome="skipped").inc()
+
             prepared = _orchestrator.build_prompts(
                 query=query,
                 mode=mode,
@@ -620,33 +676,50 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             ctx_len = len(fused_context)
             logger.info("Context length: %d chars", ctx_len)
 
-            # Step 4: LLM Generation
-            model_name = cfg["llm"]["model"]
-            await websocket.send_json({"type": "pipeline", "agents": [
-                {"name": "safety", "status": "done", "detail": safety_detail},
-                {"name": "retrieval", "status": "done", "detail": retrieval_detail},
-                {"name": "fusion", "status": "done", "detail": fusion_detail},
-                {"name": "generation", "status": "running", "detail": f"Streaming {model_name} ({ctx_len} chars context)"},
-                {"name": "critique", "status": "pending", "detail": ""},
-            ]})
+            # Step 4: LLM Generation (skip if STIS already resolved)
+            if stis_routed and stis_response:
+                full_response = stis_response
+                token_count = len(stis_response.split())
+                gen_detail = f"STIS consensus ({token_count} words)"
+                # send the full STIS response as a single token chunk
+                await websocket.send_json({"type": "pipeline", "agents": [
+                    {"name": "safety", "status": "done", "detail": safety_detail},
+                    {"name": "retrieval", "status": "done", "detail": retrieval_detail},
+                    {"name": "fusion", "status": "done", "detail": fusion_detail},
+                    {"name": "generation", "status": "done", "detail": gen_detail},
+                    {"name": "critique", "status": "pending", "detail": ""},
+                ]})
+                await websocket.send_json({"chunk": full_response, "weights": actual_weights, "reward": 0.0})
+            else:
+                pass  # fall through to normal Ollama generation below
 
-            client = Client(host=cfg["llm"]["host"])
-            full_response = ""
-            token_count = 0
+            if not stis_routed:
+                model_name = cfg["llm"]["model"]
+                await websocket.send_json({"type": "pipeline", "agents": [
+                    {"name": "safety", "status": "done", "detail": safety_detail},
+                    {"name": "retrieval", "status": "done", "detail": retrieval_detail},
+                    {"name": "fusion", "status": "done", "detail": fusion_detail},
+                    {"name": "generation", "status": "running", "detail": f"Streaming {model_name} ({ctx_len} chars context)"},
+                    {"name": "critique", "status": "pending", "detail": ""},
+                ]})
 
-            for chunk in client.chat(
-                model=model_name,
-                messages=[{"role": "system", "content": prepared["system_prompt"]}, {"role": "user", "content": prepared["user_prompt"]}],
-                options={"temperature": 0.1, "num_ctx": 8192},
-                stream=True
-            ):
-                if 'message' in chunk and 'content' in chunk['message']:
-                    text_chunk = chunk['message']['content']
-                    full_response += text_chunk
-                    token_count += 1
-                    await websocket.send_json({"chunk": text_chunk, "weights": actual_weights, "reward": 0.0})
+                client = Client(host=cfg["llm"]["host"])
+                full_response = ""
+                token_count = 0
 
-            gen_detail = f"{token_count} tokens via {model_name}"
+                for chunk in client.chat(
+                    model=model_name,
+                    messages=[{"role": "system", "content": prepared["system_prompt"]}, {"role": "user", "content": prepared["user_prompt"]}],
+                    options={"temperature": 0.1, "num_ctx": 8192},
+                    stream=True
+                ):
+                    if 'message' in chunk and 'content' in chunk['message']:
+                        text_chunk = chunk['message']['content']
+                        full_response += text_chunk
+                        token_count += 1
+                        await websocket.send_json({"chunk": text_chunk, "weights": actual_weights, "reward": 0.0})
+
+                gen_detail = f"{token_count} tokens via {model_name}"
 
             # Step 5: Critique
             await websocket.send_json({"type": "pipeline", "agents": [
@@ -730,6 +803,24 @@ async def update_config(request: Request, body: Dict[str, Any]) -> Dict[str, Any
 @limiter.limit("10/minute")
 async def ping(request: Request) -> Dict[str, Any]:
     gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
+
+    # probe STIS engine health (non-blocking, best-effort)
+    stis_info: Dict[str, Any] = {"enabled": False, "model": None, "status": "offline"}
+    if cfg.get("stis", {}).get("enabled", False):
+        stis_info["enabled"] = True
+        try:
+            import httpx
+            stis_host = cfg["stis"].get("host", "http://localhost:8100")
+            with httpx.Client(timeout=2.0) as client:
+                resp = client.get(f"{stis_host}/health")
+            if resp.status_code == 200:
+                health = resp.json()
+                stis_info["model"] = health.get("model_id", "Qwen2.5-1.5B")
+                stis_info["status"] = "ready" if health.get("model_loaded") else "standby"
+                stis_info["agents"] = health.get("num_agents", 2)
+        except Exception:
+            stis_info["status"] = "offline"
+
     return {
         "status": "alive",
         "gpu": gpu_name,
@@ -738,6 +829,7 @@ async def ping(request: Request) -> Dict[str, Any]:
         "policy": "CQL" if Path(cfg["rl"]["policy_path"]).exists() else "heuristic",
         "policy_exists": Path(cfg["rl"]["policy_path"]).exists(),
         "boot_id": _boot_id,
+        "stis": stis_info,
     }
 
 

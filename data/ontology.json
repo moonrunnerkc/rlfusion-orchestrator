@@ -1,1 +1,57 @@
-{"nodes": [], "edges": []}
+{
+  "nodes": [
+    {
+      "id": "cswr_embedding_model",
+      "label": "CSWR Embedding Model",
+      "type": "fact",
+      "description": "CSWR uses the all-MiniLM-L6-v2 embedding model with 384-dimensional vectors and cosine similarity scoring. This is the production model used since v1.0.",
+      "confidence": 1.0,
+      "source": "verified_architecture"
+    },
+    {
+      "id": "cswr_accuracy",
+      "label": "CSWR Factual Accuracy",
+      "type": "fact",
+      "description": "CSWR achieves 94-98% factual accuracy on hard datasets, with near-zero hallucinations even on edge chunks. This represents a 40-60% reduction in error rate versus standard top-k RAG.",
+      "confidence": 1.0,
+      "source": "verified_benchmarks"
+    },
+    {
+      "id": "system_agent_count",
+      "label": "System Agent Count",
+      "type": "fact",
+      "description": "The Neuro-Symbolic Swarm system runs 7 concurrent agent generations per query. These include specialized agents for retrieval, fusion, critique, safety, decomposition, memory, and generation orchestration.",
+      "confidence": 1.0,
+      "source": "verified_architecture"
+    },
+    {
+      "id": "fusion_env_observation",
+      "label": "FusionEnv Observation Space",
+      "type": "fact",
+      "description": "The FusionEnv gymnasium environment uses an observation space of Box(shape=(396,), dtype=float32), consisting of 384 embedding dimensions plus 12 engineered features.",
+      "confidence": 1.0,
+      "source": "verified_architecture"
+    },
+    {
+      "id": "system_latency",
+      "label": "Expected System Latency",
+      "type": "fact",
+      "description": "Expected query latency is 10-60 seconds per turn depending on GPU capability. Design priority is correctness over speed. This is a deep reasoning engine, not a conversational chatbot.",
+      "confidence": 1.0,
+      "source": "verified_architecture"
+    },
+    {
+      "id": "cswr_pipeline",
+      "label": "CSWR 8-Phase Pipeline",
+      "type": "concept",
+      "description": "CSWR uses an 8-phase pipeline: query decomposition, vector search with CSWR scaffold, local stability and question-fit and drift scoring, stability context packs, answerability filtering, structured formatting, logging and metrics, and config-driven operation.",
+      "confidence": 1.0,
+      "source": "verified_architecture"
+    }
+  ],
+  "edges": [
+    {"source": "cswr_embedding_model", "target": "cswr_pipeline", "label": "component_of"},
+    {"source": "cswr_accuracy", "target": "cswr_pipeline", "label": "measured_by"},
+    {"source": "fusion_env_observation", "target": "cswr_embedding_model", "label": "depends_on"}
+  ]
+}

@@ -267,6 +267,31 @@ class Orchestrator:
         }
         return self._fusion(state)
 
+    def step_stis_check(
+        self,
+        retrieval_results: dict[str, list[dict[str, float | str]]],
+        query: str = "",
+    ) -> dict[str, object]:
+        """Evaluate whether to route to STIS engine for contradiction resolution.
+
+        Checks RAG content against ontology facts via LLM claim comparison.
+        Returns the full routing decision dict from should_route_to_stis().
+        """
+        from backend.core.critique import should_route_to_stis
+
+        if not cfg.get("stis", {}).get("enabled", False):
+            return {
+                "route_to_stis": False,
+                "reason": "STIS disabled in config",
+                "contradiction": {"contradicted": False, "similarity": 1.0,
+                                  "rag_claim": "", "graph_claim": ""},
+                "best_cswr": 1.0,
+            }
+
+        rag = retrieval_results.get("rag", [])
+        graph = retrieval_results.get("graph", [])
+        return should_route_to_stis(rag, graph, query=query)
+
     def build_prompts(
         self,
         query: str,
@@ -307,6 +332,7 @@ class Orchestrator:
             blocked=False,
             is_memory_request=False,
             memory_content="",
+            retrieval_results={"rag": [], "cag": [], "graph": [], "web": [], "web_status": "disabled"},
         )
 
     # ---- Original single-call interface (kept for /chat endpoint) ----
@@ -341,6 +367,7 @@ class Orchestrator:
                 blocked=False,
                 is_memory_request=True,
                 memory_content=memory_content or "",
+                retrieval_results={"rag": [], "cag": [], "graph": [], "web": [], "web_status": "disabled"},
             )
 
         # classify complexity
@@ -373,11 +400,13 @@ class Orchestrator:
                 blocked=True,
                 is_memory_request=False,
                 memory_content="",
+                retrieval_results={"rag": [], "cag": [], "graph": [], "web": [], "web_status": "disabled"},
             )
 
         fused_context = result.get("fused_context", "")
         actual_weights = result.get("actual_weights", [0.25, 0.25, 0.25, 0.25])
         web_status = result.get("web_status", "disabled")
+        retrieval_results = result.get("retrieval_results", {"rag": [], "cag": [], "graph": [], "web": [], "web_status": "disabled"})
 
         # inject user profile for personal queries
         if any(w in query.lower() for w in _PERSONAL_KEYWORDS):
@@ -407,6 +436,7 @@ class Orchestrator:
             blocked=False,
             is_memory_request=False,
             memory_content="",
+            retrieval_results=retrieval_results,
         )
 
     def finalize(
@@ -499,7 +529,40 @@ class Orchestrator:
                 web_status=prepared["web_status"],
             )
 
-        # LLM generation (non-streaming for /chat)
+        # STIS contradiction check before LLM generation
+        stis_decision = self.step_stis_check(prepared["retrieval_results"])
+
+        if stis_decision["route_to_stis"]:
+            from backend.core.stis_client import request_stis_consensus, log_stis_resolution
+
+            contradiction = stis_decision["contradiction"]
+            stis_result = request_stis_consensus(
+                query,
+                str(contradiction["rag_claim"]),
+                str(contradiction["graph_claim"]),
+            )
+            log_stis_resolution(
+                query,
+                str(contradiction["rag_claim"]),
+                str(contradiction["graph_claim"]),
+                float(contradiction["similarity"]),
+                float(stis_decision["best_cswr"]),
+                stis_result,
+            )
+            if stis_result["resolved"]:
+                logger.info("STIS resolved contradiction for /chat query")
+                llm_response = stis_result["resolution"]["text"]
+                return self.finalize(
+                    query=query,
+                    llm_response=llm_response,
+                    fused_context=prepared["fused_context"],
+                    actual_weights=prepared["actual_weights"],
+                    web_status=prepared["web_status"],
+                )
+            logger.warning("STIS failed (%s), falling back to Ollama",
+                           stis_result["error"])
+
+        # LLM generation via Ollama (non-streaming for /chat)
         client = Client(host=cfg["llm"]["host"])
         response_obj = client.chat(
             model=cfg["llm"]["model"],

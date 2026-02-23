@@ -123,6 +123,7 @@ class PreparedContext(TypedDict):
     blocked: bool
     is_memory_request: bool
     memory_content: str
+    retrieval_results: RetrievalResults
 
 
 @runtime_checkable
