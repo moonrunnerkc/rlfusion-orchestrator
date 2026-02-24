@@ -285,7 +285,7 @@ class TestBuildFusionContext:
         from backend.agents.fusion_agent import build_fusion_context
         weights = np.array([0.25, 0.25, 0.25, 0.25])
         ctx = build_fusion_context({"rag": [], "cag": [], "graph": [], "web": []}, weights)
-        assert ctx == "No high-confidence sources available."
+        assert ctx == ""
 
     def test_rag_items_included(self):
         from backend.agents.fusion_agent import build_fusion_context

@@ -576,6 +576,7 @@ class GraphEngine:
         self,
         chunk_text: str,
         query: str,
+        query_embedding: np.ndarray | None = None,
     ) -> ChunkGraphScores:
         """Compute graph-aware CSWR scoring for a single chunk.
 
@@ -609,8 +610,8 @@ class GraphEngine:
                 path_distance_weight=0.0,
             )
 
-        # query-relevant seed entities
-        q_emb = embed_text(query)
+        # query-relevant seed entities (use pre-computed embedding when available)
+        q_emb = query_embedding if query_embedding is not None else embed_text(query)
         query_seeds = self._find_seed_entities(q_emb, max_seeds=3)
         query_entity_ids = {sid for sid, _ in query_seeds}
 

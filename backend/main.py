@@ -354,71 +354,12 @@ def _build_fusion_context(retrieval_results: Dict[str, List[Dict[str, Any]]], we
     return "\n\n".join(parts) if parts else "No high-confidence sources available."
 
 
-IDENTITY_BLOCK = """IDENTITY RULES:
-- "I/me/my" (when YOU speak) = RLFusion AI assistant
-- "you/your" (when USER addresses you) = RLFusion AI
-- "I/me/my" (when USER speaks) = The human user
-- Personal details in context (name, pets, job) = THE USER's info, not yours
-- You are software, you don't have pets/vehicles/personal life
-
-TERMINOLOGY (do NOT invent other expansions):
-- CSWR = Chunk Stability Weighted Retrieval (filters RAG chunks by neighbor similarity, question fit, drift)
-- CQL = Conservative Q-Learning (offline RL policy that routes retrieval weights)
-- OOD = Out-of-Distribution detection (Mahalanobis distance)
-
-USER PROFILE:
-- If the context contains a USER PROFILE section, those are facts the user previously asked you to remember.
-- When asked "have you remembered" or "do you know about me", check USER PROFILE first.
-- When no profile data matches, say so honestly.
-"""
-
-WEB_INSTRUCTION = """
-WEB RESULTS: [WEB:...] entries are live internet search. Prioritize them for current events, businesses, prices.
-Cite source URLs. Ignore unrelated [RAG:...] results.
-"""
-
-
-def _generate_system_prompt(mode: str, context_parts: List[str]) -> str:
-    has_cag_hit = any(p.startswith("[CAG:") for p in context_parts)
-    cag_only = has_cag_hit and len([p for p in context_parts if p.startswith("[CAG:")]) == len(context_parts)
-    has_web = any("[WEB:" in p for p in context_parts)
-    critique_suffix = get_critique_instruction()
-
-    if cag_only:
-        return "Return the exact text after [CAG:] with no changes."
-
-    if mode == "build":
-        return f"""{IDENTITY_BLOCK}
-You are an elite AI architect. Be INNOVATIVE, SPECIFIC, CUTTING-EDGE.
-Never output [RAG:...], [CAG:...], [GRAPH:...], [WEB:...] tags.
-{critique_suffix}"""
-
-    web_block = WEB_INSTRUCTION if has_web else ""
-    return f"""{IDENTITY_BLOCK}{web_block}
-You are a knowledgeable assistant with access to retrieved context.
-Never output source tags. Reference sources naturally.
-RULES:
-1. Read the retrieved context carefully for relevant information
-2. Use your own knowledge to supplement when context is incomplete or off-topic
-3. If context covers the topic well, ground your answer in it and cite specifics
-4. If context is unrelated to the question, rely on your own knowledge and say so
-5. Never fabricate sources or pretend context says something it does not
-6. YOU are RLFusion (AI), USER is the human
-7. Ignore context sections that are clearly from a different topic
-{critique_suffix}"""
-
-
-def _generate_user_prompt(mode: str, query: str, fused_context: str, context_parts: List[str]) -> str:
-    has_cag_hit = any(p.startswith("[CAG:") for p in context_parts)
-    cag_only = has_cag_hit and len([p for p in context_parts if p.startswith("[CAG:")]) == len(context_parts)
-
-    if cag_only:
-        return f"Sources:\n{fused_context}\n\nReturn ONLY the text after [CAG:] - exact copy."
-
-    if mode == "build":
-        return f"""Knowledge sources:\n{fused_context}\n\nRequest: {query}\n\nSynthesize innovative concept:"""
-
-    return f"CONTEXT:\n{fused_context}\n\nQUESTION: {query}\n\nANSWER:"
+# Import prompts from orchestrator (single source of truth)
+from backend.agents.orchestrator import (
+    generate_system_prompt as _generate_system_prompt,
+    generate_user_prompt as _generate_user_prompt,
+    NUM_PREDICT,
+)
 
 
 @app.post("/chat")
@@ -496,6 +437,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
             await websocket.send_json({"type": "start"})
 
+            _t0 = _time_mod.perf_counter()
+
             # ---- Granular agent pipeline with per-step status updates ----
             # Each blocking agent call runs in a thread so WS frames flush
             # between steps, giving the frontend real-time status transitions.
@@ -513,7 +456,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     {"name": "retrieval", "status": "skipped", "detail": ""},
                     {"name": "fusion", "status": "skipped", "detail": ""},
                     {"name": "generation", "status": "skipped", "detail": ""},
-                    {"name": "critique", "status": "skipped", "detail": ""},
                 ]})
                 preview = str(pre["memory_content"])[:100]
                 if len(str(pre["memory_content"])) > 100:
@@ -528,7 +470,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 {"name": "retrieval", "status": "pending", "detail": ""},
                 {"name": "fusion", "status": "pending", "detail": ""},
                 {"name": "generation", "status": "pending", "detail": ""},
-                {"name": "critique", "status": "pending", "detail": ""},
             ]})
             safety_result = await asyncio.to_thread(_orchestrator.step_safety, query, complexity)
 
@@ -541,7 +482,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     {"name": "retrieval", "status": "skipped", "detail": ""},
                     {"name": "fusion", "status": "skipped", "detail": ""},
                     {"name": "generation", "status": "skipped", "detail": ""},
-                    {"name": "critique", "status": "skipped", "detail": ""},
                 ]})
                 await websocket.send_json({
                     "type": "done",
@@ -554,6 +494,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 continue
 
             safety_detail = f"Passed ({complexity} query)"
+            _t_safety = _time_mod.perf_counter()
+            logger.info("[TIMING] safety: %.0f ms", (_t_safety - _t0) * 1000)
 
             # Step 2: Retrieval
             await websocket.send_json({"type": "pipeline", "agents": [
@@ -561,7 +503,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 {"name": "retrieval", "status": "running", "detail": f"Querying all paths (depth: {complexity})"},
                 {"name": "fusion", "status": "pending", "detail": ""},
                 {"name": "generation", "status": "pending", "detail": ""},
-                {"name": "critique", "status": "pending", "detail": ""},
             ]})
             retrieval_result = await asyncio.to_thread(
                 _orchestrator.step_retrieval,
@@ -578,6 +519,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             graph_n = len(rr.get("graph", []))
             web_n = len(rr.get("web", []))
             retrieval_detail = f"{rag_n} RAG, {cag_n} CAG, {graph_n} Graph, {web_n} Web"
+            _t_retrieval = _time_mod.perf_counter()
+            logger.info("[TIMING] retrieval: %.0f ms", (_t_retrieval - _t_safety) * 1000)
 
             # record retrieval path usage
             for path_label, count in [("rag", rag_n), ("cag", cag_n), ("graph", graph_n), ("web", web_n)]:
@@ -590,7 +533,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 {"name": "retrieval", "status": "done", "detail": retrieval_detail},
                 {"name": "fusion", "status": "running", "detail": "Computing RL policy weights"},
                 {"name": "generation", "status": "pending", "detail": ""},
-                {"name": "critique", "status": "pending", "detail": ""},
             ]})
             fusion_result = await asyncio.to_thread(
                 _orchestrator.step_fusion,
@@ -609,6 +551,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             fusion_detail = f"RAG {w[0]*100:.0f}% CAG {w[1]*100:.0f}% Graph {w[2]*100:.0f}%"
             if len(w) > 3 and w[3] > 0.01:
                 fusion_detail += f" Web {w[3]*100:.0f}%"
+            _t_fusion = _time_mod.perf_counter()
+            logger.info("[TIMING] fusion: %.0f ms", (_t_fusion - _t_retrieval) * 1000)
 
             # Step 3.5: STIS contradiction check
             stis_routed = False
@@ -630,7 +574,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         {"name": "retrieval", "status": "done", "detail": retrieval_detail},
                         {"name": "fusion", "status": "done", "detail": fusion_detail},
                         {"name": "generation", "status": "running", "detail": "STIS consensus (contradiction detected)"},
-                        {"name": "critique", "status": "pending", "detail": ""},
                     ]})
                     stis_result = await asyncio.to_thread(
                         request_stis_consensus,
@@ -675,6 +618,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             fused_context = prepared["fused_context"]
             ctx_len = len(fused_context)
             logger.info("Context length: %d chars", ctx_len)
+            _t_stis_prompt = _time_mod.perf_counter()
+            logger.info("[TIMING] stis+prompt: %.0f ms", (_t_stis_prompt - _t_fusion) * 1000)
 
             # Step 4: LLM Generation (skip if STIS already resolved)
             if stis_routed and stis_response:
@@ -687,7 +632,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     {"name": "retrieval", "status": "done", "detail": retrieval_detail},
                     {"name": "fusion", "status": "done", "detail": fusion_detail},
                     {"name": "generation", "status": "done", "detail": gen_detail},
-                    {"name": "critique", "status": "pending", "detail": ""},
                 ]})
                 await websocket.send_json({"chunk": full_response, "weights": actual_weights, "reward": 0.0})
             else:
@@ -700,76 +644,103 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     {"name": "retrieval", "status": "done", "detail": retrieval_detail},
                     {"name": "fusion", "status": "done", "detail": fusion_detail},
                     {"name": "generation", "status": "running", "detail": f"Streaming {model_name} ({ctx_len} chars context)"},
-                    {"name": "critique", "status": "pending", "detail": ""},
                 ]})
 
                 client = Client(host=cfg["llm"]["host"])
                 full_response = ""
                 token_count = 0
+                _ttft_logged = False
 
+                _num_predict = NUM_PREDICT.get(mode, 800)
                 for chunk in client.chat(
                     model=model_name,
                     messages=[{"role": "system", "content": prepared["system_prompt"]}, {"role": "user", "content": prepared["user_prompt"]}],
-                    options={"temperature": 0.1, "num_ctx": 8192},
+                    options={"temperature": 0.1, "num_ctx": 4096, "num_predict": _num_predict},
                     stream=True
                 ):
                     if 'message' in chunk and 'content' in chunk['message']:
                         text_chunk = chunk['message']['content']
+                        if not _ttft_logged:
+                            _ttft = (_time_mod.perf_counter() - _t0) * 1000
+                            logger.info("[TIMING] TTFT: %.0f ms", _ttft)
+                            _ttft_logged = True
                         full_response += text_chunk
                         token_count += 1
                         await websocket.send_json({"chunk": text_chunk, "weights": actual_weights, "reward": 0.0})
 
                 gen_detail = f"{token_count} tokens via {model_name}"
+                _t_gen = _time_mod.perf_counter()
+                logger.info("[TIMING] generation: %.0f ms (TTFT included)", (_t_gen - _t_stis_prompt) * 1000)
 
-            # Step 5: Critique
+            # Step 5: Send done immediately, run critique async (Opt 6)
+            # Record the turn before critique so user sees the response instantly
+            record_turn(session_id, "assistant", full_response)
+
+            # Show critique as running in pipeline UI
             await websocket.send_json({"type": "pipeline", "agents": [
                 {"name": "safety", "status": "done", "detail": safety_detail},
                 {"name": "retrieval", "status": "done", "detail": retrieval_detail},
                 {"name": "fusion", "status": "done", "detail": fusion_detail},
                 {"name": "generation", "status": "done", "detail": gen_detail},
-                {"name": "critique", "status": "running", "detail": "Scoring response + logging episode"},
             ]})
 
-            result = await asyncio.to_thread(
-                _orchestrator.finalize,
-                query=query,
-                llm_response=full_response,
-                fused_context=fused_context,
-                actual_weights=actual_weights,
-                web_status=web_status,
-            )
-
-            critique_reward = result["reward"]
-            CRITIQUE_REWARD.observe(critique_reward)
-            # record fusion weight distribution
-            for wpath in ("rag", "cag", "graph"):
-                FUSION_WEIGHT_DIST.labels(path=wpath).observe(result["fusion_weights"].get(wpath, 0))
-            n_suggestions = len(result["proactive_suggestions"])
-            critique_detail = f"Reward: {critique_reward:.2f}"
-            if n_suggestions > 0:
-                critique_detail += f", {n_suggestions} suggestion{'s' if n_suggestions != 1 else ''}"
-
-            # All agents complete
-            await websocket.send_json({"type": "pipeline", "agents": [
-                {"name": "safety", "status": "done", "detail": safety_detail},
-                {"name": "retrieval", "status": "done", "detail": retrieval_detail},
-                {"name": "fusion", "status": "done", "detail": fusion_detail},
-                {"name": "generation", "status": "done", "detail": gen_detail},
-                {"name": "critique", "status": "done", "detail": critique_detail},
-            ]})
-
-            record_turn(session_id, "assistant", result["response"])
-
+            # Send done message with placeholder reward (critique runs async)
             await websocket.send_json({
-                "type": "done", "response": result["response"],
-                "fusion_weights": result["fusion_weights"],
-                "reward": result["reward"],
-                "proactive": result["proactive_suggestions"][0] if result["proactive_suggestions"] else "",
-                "proactive_suggestions": result["proactive_suggestions"],
+                "type": "done", "response": full_response,
+                "fusion_weights": {
+                    "rag": actual_weights[0] if len(actual_weights) > 0 else 0.0,
+                    "cag": actual_weights[1] if len(actual_weights) > 1 else 0.0,
+                    "graph": actual_weights[2] if len(actual_weights) > 2 else 0.0,
+                },
+                "reward": 0.0,
+                "proactive": "",
+                "proactive_suggestions": [],
                 "query_expanded": query_expanded,
                 "expanded_query": expanded_query if query_expanded else None,
                 "web_status": web_status,
             })
+            _t_done = _time_mod.perf_counter()
+            logger.info("[TIMING] TOTAL (query to done): %.0f ms", (_t_done - _t0) * 1000)
+
+            # Fire-and-forget async critique
+            async def _run_critique_async(
+                ws: WebSocket,
+                q: str,
+                resp: str,
+                ctx: str,
+                weights: list[float],
+                w_status: str,
+            ) -> None:
+                try:
+                    result = await asyncio.to_thread(
+                        _orchestrator.finalize,
+                        query=q,
+                        llm_response=resp,
+                        fused_context=ctx,
+                        actual_weights=weights,
+                        web_status=w_status,
+                    )
+                    critique_reward = result["reward"]
+                    CRITIQUE_REWARD.observe(critique_reward)
+                    for wpath in ("rag", "cag", "graph"):
+                        FUSION_WEIGHT_DIST.labels(path=wpath).observe(result["fusion_weights"].get(wpath, 0))
+
+                    # send critique frame to frontend (non-blocking update)
+                    await ws.send_json({
+                        "type": "critique",
+                        "reward": critique_reward,
+                        "proactive_suggestions": result["proactive_suggestions"],
+                        "response": result["response"],
+                    })
+                except (WebSocketDisconnect, RuntimeError):
+                    logger.debug("WS closed before critique delivery")
+                except Exception as exc:
+                    logger.warning("Async critique failed: %s", exc)
+
+            asyncio.create_task(_run_critique_async(
+                websocket, query, full_response, fused_context,
+                actual_weights, web_status,
+            ))
 
     except WebSocketDisconnect:
         WS_CONNECTIONS.dec()

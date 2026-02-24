@@ -274,7 +274,6 @@ export default function App() {
     { name: 'retrieval', status: 'idle' },
     { name: 'fusion', status: 'idle' },
     { name: 'generation', status: 'idle' },
-    { name: 'critique', status: 'idle' },
   ]);
   const [pipelineActive, setPipelineActive] = useState(false);
   const [pipelineElapsed, setPipelineElapsed] = useState(0);
@@ -463,6 +462,16 @@ export default function App() {
         setPipelineActive(hasRunning);
       }
 
+      // Handle async critique result (reward update after generation)
+      if (data.type === 'critique') {
+        if (typeof data.reward === 'number') {
+          setReward(data.reward);
+        }
+        if (data.proactive_suggestions && data.proactive_suggestions.length > 0) {
+          setProactiveHint(data.proactive_suggestions[0]);
+        }
+      }
+
       // Handle start signal — set timer imperatively
       if (data.type === 'start') {
         pipelineStartRef.current = Date.now();
@@ -473,7 +482,6 @@ export default function App() {
           { name: 'retrieval', status: 'pending' },
           { name: 'fusion', status: 'pending' },
           { name: 'generation', status: 'pending' },
-          { name: 'critique', status: 'pending' },
         ]);
       }
     };

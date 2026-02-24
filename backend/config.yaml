@@ -148,6 +148,8 @@ federated:
   storage_dir: data/federated
 edge:
   auto_quantize: true
+decomposer:
+  use_llm: false
   prefer_cpu_fallback: false
   arm_optimized: false
 stis:

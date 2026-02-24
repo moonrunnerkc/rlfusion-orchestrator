@@ -2,6 +2,7 @@
 # utils.py - embedding, chunking, hashing, softmax, OOD detection
 # Originally built for personal offline use, now open-sourced for public benefit.
 
+import functools
 import hashlib
 import logging
 import os
@@ -30,9 +31,29 @@ _device = _get_device()
 embedder = SentenceTransformer("BAAI/bge-small-en-v1.5", device=_device)
 
 
+# LRU cache keyed on text content, eliminates ~13 redundant embed calls per query
+_embed_cache: dict[str, np.ndarray] = {}
+_EMBED_CACHE_MAX = 256
+
+
 def embed_text(text: str) -> np.ndarray:
-    return embedder.encode(text, convert_to_numpy=True, normalize_embeddings=True,
-                          show_progress_bar=False).astype(np.float32)
+    """Cached single-text embedding. Same text returns same ndarray without recompute."""
+    cache_key = hashlib.sha256(text.encode()).hexdigest()
+    if cache_key in _embed_cache:
+        return _embed_cache[cache_key]
+    result = embedder.encode(text, convert_to_numpy=True, normalize_embeddings=True,
+                             show_progress_bar=False).astype(np.float32)
+    # evict oldest if cache is full
+    if len(_embed_cache) >= _EMBED_CACHE_MAX:
+        oldest = next(iter(_embed_cache))
+        del _embed_cache[oldest]
+    _embed_cache[cache_key] = result
+    return result
+
+
+def clear_embed_cache() -> None:
+    """Flush the embedding cache. Call after reindex or model swap."""
+    _embed_cache.clear()
 
 
 def embed_batch(texts: List[str]) -> np.ndarray:

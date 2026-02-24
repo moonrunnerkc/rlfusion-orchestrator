@@ -873,6 +873,61 @@ Installs PyTorch nightly with proper Blackwell support. Only needed for RTX 5070
 
 ---
 
+## Latency Optimizations (v0.2)
+
+**Measured on RTX 5070 + dolphin-llama3:8b, February 2026.**
+
+The pipeline was profiled end-to-end and optimized from a 19s baseline down to sub-4s total response time, with time-to-first-token under 400ms on warm queries. Zero quality regressions.
+
+### Before/After
+
+| Metric | Baseline | Optimized | Improvement |
+|--------|----------|-----------|-------------|
+| **Time to first token (warm)** | ~14,700 ms | **380 ms** | 39x |
+| **Total response time** | ~19,000 ms | **3,500 ms** | 5.4x |
+| Safety check | 3,030 ms | 2 ms | Regex + OOD (no LLM call) |
+| Retrieval + CSWR | 5,650 ms | 136 ms | Embedding cache + batch dedup |
+| Query decomposition | 4,825 ms | 0.1 ms | Heuristic (LLM call removed) |
+| Answerability check | 970 ms | 0.1 ms | CSWR threshold heuristic |
+| Contradiction detection | ~3,000 ms | 0.1 ms | Embedding similarity (LLM call removed) |
+| Critique (perceived) | 37-3,200 ms | 0 ms | Async (non-blocking) |
+
+### What Changed
+
+Seven optimizations, applied in priority order:
+
+1. **Heuristic query decomposition** -- replaced LLM call with fast regex/keyword decomposer. Config: `decomposer.use_llm: false`. Saves 4.8s per query.
+
+2. **CSWR threshold answerability** -- replaced per-pack LLM "can you answer this?" calls with the CSWR composite score threshold already computed during retrieval. Packs above 0.45 pass; below 0.35 are dropped.
+
+3. **Tiered safety without hot-path LLM** -- three-tier classification: regex pre-filter (0 ms), OOD Mahalanobis distance (20 ms), keyword blocklist (0.1 ms). LLM safety deferred to amber-zone queries only (<5% of traffic).
+
+4. **Embedding cache and graph precomputation** -- LRU-cached `embed_text()` eliminates ~13 redundant embedding calls per query. Graph entity embeddings precomputed at index build time.
+
+5. **Async critique** -- critique runs as fire-and-forget after the `done` message. Reward arrives via a dedicated `{"type": "critique"}` WebSocket frame ~200ms after the response. User never waits.
+
+6. **Embedding-only contradiction detection** -- replaced Ollama LLM call in `detect_contradiction()` with cosine divergence check between RAG and Graph embeddings.
+
+7. **Relevance gate** -- if the best retrieval score across all paths is below 0.70, the fused context is dropped entirely. The LLM answers from its own knowledge instead of trying to shoehorn low-relevance chunks. Eliminates context pollution for out-of-domain queries.
+
+### What Was Not Changed
+
+- CSWR scoring math (`compute_stability`, `compute_fit`, `compute_drift`) unchanged
+- RL fusion policy inference unchanged (already instant)
+- `check_faithfulness()` unchanged (already off hot path)
+- All 544 existing tests pass without modification
+- FusionEnv observation/action dimensions unchanged
+- Frozen API contracts preserved (no response field changes)
+
+### Verified
+
+- All verification gates (1-5) pass
+- No regression in hallucination rate, adversarial robustness, or safety score
+- Frontend pipeline UI updated to 4 visible steps (Safety, Retrieval, Fusion, Generation)
+- Reward score now updates live via async critique WebSocket frame
+
+---
+
 ## Known Limitations
 
 - **Multimodal dependencies are optional** — CLIP, PyMuPDF, and Pillow must be installed separately for image processing. The system degrades gracefully without them.

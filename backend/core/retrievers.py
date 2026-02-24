@@ -9,6 +9,7 @@ import uuid
 import logging
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import networkx as nx
 import httpx
@@ -410,24 +411,14 @@ def build_pack(center: dict, all_chunks: list, budget: int = 1800) -> dict:
 
 
 def check_answerable(pack: dict, profile: dict) -> tuple:
-    try:
-        from ollama import Client
-        client = Client(host=cfg["llm"]["host"])
-        resp = client.chat(model=cfg["llm"]["model"], messages=[
-            {"role": "system", "content": "Respond YES or NO followed by confidence 0.0-1.0. Can this context answer the question?"},
-            {"role": "user", "content": f"Q: {profile.get('original_query', '')}\n\nContext:\n{pack['main_text'][:1500]}"}
-        ], options={"temperature": 0.0, "num_predict": 10}, stream=False)
-
-        parts = resp["message"]["content"].strip().upper().split()
-        verdict = parts[0] if parts else "NO"
-        conf = float(parts[1]) if len(parts) > 1 else 0.5
-        return (verdict.startswith("YES"), max(0.0, min(1.0, conf)))
-    except Exception as e:
-        logger.debug("Answerability check fell back to heuristic: %s", e)
-        csw = pack.get("pack_csw_score", 0.0)
-        if csw >= 0.45: return (True, 0.7)
-        if csw >= 0.35: return (True, 0.5)
-        return (False, 0.3)
+    """CSWR-threshold answerability. No LLM call, ~0.1 ms.
+    Scores already computed by score_chunks(), so this is just a gate."""
+    csw = pack.get("pack_csw_score", 0.0)
+    if csw >= 0.45:
+        return (True, 0.7)
+    if csw >= 0.35:
+        return (True, 0.5)
+    return (False, 0.3)
 
 
 def format_pack(pack: dict, rank: int) -> str:
@@ -633,16 +624,20 @@ def _get_graph_engine() -> "GraphEngine | None":
 
 
 def _compute_graph_contexts(chunks: list[dict[str, object]], profile: dict[str, object]) -> dict[str, dict[str, float]]:
-    """Compute graph-aware scoring context per chunk. Returns empty if graph unavailable."""
+    """Compute graph-aware scoring context per chunk. Passes pre-computed query embedding."""
     engine = _get_graph_engine()
     if engine is None or engine.node_count == 0:
         return {}
     query_text = str(profile.get("query_text", ""))
     if not query_text:
         return {}
+    # pre-compute query embedding once, reuse across all chunks
+    q_emb = embed_text(query_text)
     contexts: dict[str, dict[str, float]] = {}
     for c in chunks:
-        scores = engine.compute_chunk_graph_scores(str(c["text"]), query_text)
+        scores = engine.compute_chunk_graph_scores(
+            str(c["text"]), query_text, query_embedding=q_emb,
+        )
         contexts[str(c["id"])] = {
             "co_occurrence_bonus": float(scores.get("co_occurrence_bonus", 0.0)),
             "coherence_penalty": float(scores.get("coherence_penalty", 0.0)),
@@ -829,16 +824,23 @@ def retrieve_web(query: str, max_results: int = 3) -> tuple[List[Dict[str, Any]]
 
 def retrieve(query: str, rag_weight: float = 1.0, cag_weight: float = 1.0,
              graph_weight: float = 1.0, web_weight: float = 1.0, top_k: int = 5) -> Dict[str, Any]:
-    """Main retrieval function. Returns results and web_status."""
-    rag = retrieve_rag_structured(query, top_k=top_k * 2)
-    cag = retrieve_cag(query)
-    graph = retrieve_graph(query, max_hops=2)
+    """Main retrieval function. Runs RAG/CAG/Graph in parallel. Returns results and web_status."""
+    web_enabled = cfg.get("web", {}).get("enabled", False)
 
-    web_status = "disabled"
-    if cfg.get("web", {}).get("enabled", False):
-        web, web_status = retrieve_web(query)
-    else:
-        web = []
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="retrieval") as pool:
+        fut_rag = pool.submit(retrieve_rag_structured, query, top_k * 2)
+        fut_cag = pool.submit(retrieve_cag, query)
+        fut_graph = pool.submit(retrieve_graph, query, 2)
+        fut_web = pool.submit(retrieve_web, query) if web_enabled else None
+
+        rag = fut_rag.result()
+        cag = fut_cag.result()
+        graph = fut_graph.result()
+
+        if fut_web is not None:
+            web, web_status = fut_web.result()
+        else:
+            web, web_status = [], "disabled"
 
     # Phase 7: multimodal image retrieval
     images: list[dict[str, object]] = []

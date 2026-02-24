@@ -23,6 +23,17 @@ Respond with ONLY the JSON object. No explanation."""
 
 
 def decompose_query(query: str, mode: str = "chat") -> dict:
+    """Decompose a query into structured profile for CSWR scoring.
+    Uses heuristic by default (0.1 ms). LLM path available via config."""
+    use_llm = cfg.get("decomposer", {}).get("use_llm", False)
+    if not use_llm:
+        return _heuristic_decompose(query)
+
+    return _llm_decompose(query, mode)
+
+
+def _llm_decompose(query: str, mode: str = "chat") -> dict:
+    """Full LLM roundtrip for structured decomposition. Slow (~4.8s) but precise."""
     try:
         client = Client(host=cfg["llm"]["host"])
         response = client.chat(
@@ -51,7 +62,7 @@ def decompose_query(query: str, mode: str = "chat") -> dict:
             "sensitivity_level": float(parsed.get("sensitivity_level", 0.5))
         }
 
-    except Exception as e:
+    except (json.JSONDecodeError, KeyError, ValueError, ConnectionError) as e:
         logger.warning("LLM decomposition failed (%s), using heuristic fallback", e)
         return _heuristic_decompose(query)
 

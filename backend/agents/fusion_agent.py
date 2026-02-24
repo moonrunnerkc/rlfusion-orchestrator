@@ -84,7 +84,8 @@ def build_fusion_context(
     """Assemble scored retrieval results into a fused context string.
 
     Filters by per-path score thresholds and allocates proportional slots
-    based on the RL fusion weights. Produces tagged context for the LLM.
+    based on the RL fusion weights. If no results clear the relevance bar,
+    returns empty context so the LLM answers from its own knowledge.
     """
     total_items = 15
     rag_take = max(2, int(weights[0] * total_items))
@@ -92,14 +93,29 @@ def build_fusion_context(
     graph_take = max(1, int(weights[2] * total_items))
     web_take = max(1, int(weights[3] * total_items)) if len(weights) > 3 else 0
 
-    rag_items = [r for r in retrieval_results.get("rag", []) if r.get("score", 0) >= 0.50][:rag_take]
+    # Relevance thresholds: only include chunks the model can actually use
+    rag_items = [r for r in retrieval_results.get("rag", []) if r.get("score", 0) >= 0.65][:rag_take]
     cag_items = [c for c in retrieval_results.get("cag", []) if c.get("score", 0) >= 0.85][:cag_take]
-    graph_items = [g for g in retrieval_results.get("graph", []) if g.get("score", 0) >= 0.50][:graph_take]
+    graph_items = [g for g in retrieval_results.get("graph", []) if g.get("score", 0) >= 0.60][:graph_take]
     web_items = (
         [w for w in retrieval_results.get("web", []) if w.get("score", 0) >= 0.60][:web_take]
         if web_take > 0
         else []
     )
+
+    # Global relevance gate: if the BEST score across all paths is still mediocre,
+    # don't send any context. The LLM answers better from its own knowledge
+    # than from low-relevance chunks it tries to shoehorn into the answer.
+    all_scores = (
+        [float(r.get("score", 0)) for r in rag_items]
+        + [float(c.get("score", 0)) for c in cag_items]
+        + [float(g.get("score", 0)) for g in graph_items]
+        + [float(w.get("score", 0)) for w in web_items]
+    )
+    best_score = max(all_scores) if all_scores else 0.0
+    if best_score < 0.70:
+        logger.info("Relevance gate: best score %.2f < 0.70, returning empty context", best_score)
+        return ""
 
     parts: list[str] = []
     for r in rag_items:
@@ -115,7 +131,12 @@ def build_fusion_context(
 
     logger.info("Fusion stats: %d RAG, %d CAG, %d Graph, %d Web",
                 len(rag_items), len(cag_items), len(graph_items), len(web_items))
-    return "\n\n".join(parts) if parts else "No high-confidence sources available."
+    fused = "\n\n".join(parts) if parts else "No high-confidence sources available."
+    # cap context to ~5000 chars (~1250 tokens) to fit within num_ctx budget
+    if len(fused) > 5000:
+        fused = fused[:5000]
+        logger.info("Fused context truncated to 5000 chars")
+    return fused
 
 
 class FusionAgent:

@@ -36,29 +36,19 @@ from backend.core.profile import detect_and_save_memory, get_user_profile
 
 logger = logging.getLogger(__name__)
 
-# Prompt constants (moved from main.py for orchestrator ownership)
-IDENTITY_BLOCK = """IDENTITY RULES:
-- "I/me/my" (when YOU speak) = RLFusion AI assistant
-- "you/your" (when USER addresses you) = RLFusion AI
-- "I/me/my" (when USER speaks) = The human user
-- Personal details in context (name, pets, job) = THE USER's info, not yours
-- You are software, you don't have pets/vehicles/personal life
-
-TERMINOLOGY (do NOT invent other expansions):
-- CSWR = Chunk Stability Weighted Retrieval (filters RAG chunks by neighbor similarity, question fit, drift)
-- CQL = Conservative Q-Learning (offline RL policy that routes retrieval weights)
-- OOD = Out-of-Distribution detection (Mahalanobis distance)
-
-USER PROFILE:
-- If the context contains a USER PROFILE section, those are facts the user previously asked you to remember.
-- When asked "have you remembered" or "do you know about me", check USER PROFILE first.
-- When no profile data matches, say so honestly.
+# Prompt constants (single source of truth for all endpoints)
+IDENTITY_BLOCK = """You are RLFusion AI, an expert retrieval-augmented assistant.
+Personal details in context belong to the USER, not you.
+If context contains a USER PROFILE section, use those facts to personalize answers.
 """
 
 WEB_INSTRUCTION = """
-WEB RESULTS: [WEB:...] entries are live internet search. Prioritize them for current events, businesses, prices.
-Cite source URLs. Ignore unrelated [RAG:...] results.
+WEB RESULTS: [WEB:...] entries are live internet search. Prioritize them for current events.
+Cite source URLs inline. Ignore unrelated [RAG:...] results when web results are present.
 """
+
+# Token budgets per mode (generation cap)
+NUM_PREDICT = {"chat": 500, "build": 600}
 
 # Keywords that indicate a personal/memory query
 _PERSONAL_KEYWORDS = [
@@ -113,23 +103,29 @@ def generate_system_prompt(mode: str, context_parts: list[str]) -> str:
         return "Return the exact text after [CAG:] with no changes."
 
     if mode == "build":
-        return f"""{IDENTITY_BLOCK}
-You are an elite AI architect. Be INNOVATIVE, SPECIFIC, CUTTING-EDGE.
-Never output [RAG:...], [CAG:...], [GRAPH:...], [WEB:...] tags.
+        web_block = WEB_INSTRUCTION if has_web else ""
+        return f"""{IDENTITY_BLOCK}{web_block}
+You are an expert AI architect and systems designer.
+Do not output raw source tags like [RAG:...] or [GRAPH:...].
+INSTRUCTIONS:
+1. Answer ONLY the design request. Nothing else.
+2. If reference material below is relevant, integrate its patterns into your design.
+3. If reference material is NOT relevant, pretend it does not exist. Never mention, acknowledge, or refer to it.
+4. Name specific technologies, protocols, data structures, and algorithms.
+5. Be concrete and production-grade. Include components, data flow, and failure handling.
+6. Never produce generic textbook answers. Be opinionated.
 {critique_suffix}"""
 
     web_block = WEB_INSTRUCTION if has_web else ""
     return f"""{IDENTITY_BLOCK}{web_block}
-You are a knowledgeable assistant with access to retrieved context.
-Never output source tags. Reference sources naturally.
+You have retrieved context from knowledge sources below.
+Do not output raw source tags. Cite information naturally.
 RULES:
-1. Read the retrieved context carefully for relevant information
-2. Use your own knowledge to supplement when context is incomplete or off-topic
-3. If context covers the topic well, ground your answer in it and cite specifics
-4. If context is unrelated to the question, rely on your own knowledge and say so
-5. Never fabricate sources or pretend context says something it does not
-6. YOU are RLFusion (AI), USER is the human
-7. Ignore context sections that are clearly from a different topic
+1. Answer ONLY the question asked. Nothing else.
+2. If context is relevant, ground your answer in it. Cite specific facts, numbers, and details.
+3. If context is partially relevant, use relevant parts and supplement with your own knowledge.
+4. If context is unrelated, pretend it does not exist. Never mention, acknowledge, or refer to it. Answer from your own knowledge.
+5. Never fabricate sources or claim context says something it does not.
 {critique_suffix}"""
 
 
@@ -137,14 +133,24 @@ def generate_user_prompt(mode: str, query: str, fused_context: str, context_part
     """Build the user prompt based on mode and context."""
     has_cag_hit = any(p.startswith("[CAG:") for p in context_parts)
     cag_only = has_cag_hit and len([p for p in context_parts if p.startswith("[CAG:")]) == len(context_parts)
+    has_context = bool(fused_context.strip())
 
     if cag_only:
         return f"Sources:\n{fused_context}\n\nReturn ONLY the text after [CAG:] - exact copy."
 
     if mode == "build":
-        return f"""Knowledge sources:\n{fused_context}\n\nRequest: {query}\n\nSynthesize innovative concept:"""
+        if has_context:
+            return (f"REFERENCE MATERIAL:\n{fused_context}\n\n"
+                    f"DESIGN REQUEST: {query}\n\n"
+                    f"Produce a concrete, production-grade architecture. "
+                    f"Integrate relevant reference material where it applies:")
+        return f"DESIGN REQUEST: {query}\n\nProduce a concrete, production-grade architecture:"
 
-    return f"CONTEXT:\n{fused_context}\n\nQUESTION: {query}\n\nANSWER:"
+    if has_context:
+        return (f"RETRIEVED CONTEXT:\n{fused_context}\n\n"
+                f"QUESTION: {query}\n\n"
+                f"Answer using the context above. Cite specific details:")
+    return f"QUESTION: {query}\n\nAnswer from your knowledge:"
 
 
 def apply_markdown_formatting(text: str) -> str:
@@ -314,6 +320,10 @@ class Orchestrator:
         conv_context = get_context_for_prompt(session_id)
         if conv_context:
             fused_context = conv_context + "\n\n" + fused_context
+
+        # enforce total context budget (~5000 chars, ~1250 tokens)
+        if len(fused_context) > 5000:
+            fused_context = fused_context[:5000]
 
         context_parts = fused_context.split("\n\n")
         system_prompt = generate_system_prompt(mode, context_parts)
@@ -564,13 +574,14 @@ class Orchestrator:
 
         # LLM generation via Ollama (non-streaming for /chat)
         client = Client(host=cfg["llm"]["host"])
+        _num_predict = NUM_PREDICT.get(mode, 800)
         response_obj = client.chat(
             model=cfg["llm"]["model"],
             messages=[
                 {"role": "system", "content": prepared["system_prompt"]},
                 {"role": "user", "content": prepared["user_prompt"]},
             ],
-            options={"temperature": 0.3},
+            options={"temperature": 0.3, "num_ctx": 4096, "num_predict": _num_predict},
         )
         llm_response = response_obj["message"]["content"]
 
