@@ -124,15 +124,15 @@ def parse_inline_critique(response: str) -> Tuple[str, Dict[str, Any]]:
 _CRITIQUE_EVAL_PROMPT = """You are a strict response evaluator. Score the AI response on three axes.
 Return ONLY valid JSON with no other text.
 
-{{"factual_accuracy": 0.0-1.0, "proactivity": 0.0-1.0, "helpfulness": 0.0-1.0, "follow_up_questions": ["q1", "q2", "q3"]}}
+{{"factual_accuracy": 0.0-1.0, "proactivity": 0.0-1.0, "helpfulness": 0.0-1.0, "follow_up_questions": ["<specific question 1>", "<specific question 2>", "<specific question 3>"]}}
 
 Scoring guide:
 - factual_accuracy: Are claims grounded in the provided context? Penalize fabrication.
 - proactivity: Does the response anticipate the user's next need?
 - helpfulness: Is it directly useful, well-structured, and complete?
-- follow_up_questions: 3 specific questions the USER would logically ask next.
-  They must reference concrete details from the query or response.
-  NEVER return generic filler like "Tell me more".
+- follow_up_questions: Write 3 specific questions the USER would logically ask next.
+  Each question MUST reference a concrete detail from the response (a name, concept, or term).
+  NEVER return placeholder text or generic filler.
 
 User query: {query}
 Context (abbreviated): {context}
@@ -149,7 +149,7 @@ def _run_critique_llm(query: str, fused_context: str, response: str) -> Dict[str
     import json as _json
     try:
         from ollama import Client
-        client = Client(host=cfg["llm"]["host"])
+        client = Client(host=cfg["llm"]["host"], timeout=15.0)
 
         prompt = _CRITIQUE_EVAL_PROMPT.format(
             query=query[:500],
@@ -220,6 +220,51 @@ def _run_critique_llm(query: str, fused_context: str, response: str) -> Dict[str
         return {"factual": 0.70, "proactivity": 0.70, "helpfulness": 0.70, "follow_up_questions": []}
 
 
+def _build_fallback_suggestions(query: str, response: str) -> list[str]:
+    """Extract follow-up suggestions from the response when LLM critique fails.
+
+    Pulls key nouns/concepts from the response and builds natural questions.
+    Much better than the old 'What are the key considerations for {query}?'
+    which dumped the entire query verbatim into a generic template.
+    """
+    # extract capitalized multi-word phrases as candidate topics
+    candidates = re.findall(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)', response)
+    # also grab technical terms (acronyms, terms with numbers/underscores)
+    tech_terms = re.findall(r'\b([A-Z]{2,}[a-z]*(?:\s+[A-Z][a-z]+)*)\b', response)
+    # filter noise: short, generic, or already in query
+    q_lower = query.lower()
+    seen: set[str] = set()
+    topics: list[str] = []
+    for term in candidates + tech_terms:
+        t = term.strip()
+        if len(t) < 4 or t.lower() in q_lower or t.lower() in seen:
+            continue
+        # skip articles, pronouns, generic starters
+        if re.match(r'^(?:The|This|That|These|Also|More|Your|Each)\b', t):
+            continue
+        seen.add(t.lower())
+        topics.append(t)
+        if len(topics) >= 6:
+            break
+
+    # build natural questions from extracted topics
+    templates = [
+        "How does {topic} work in practice?",
+        "What role does {topic} play in the pipeline?",
+        "Can you explain {topic} in more detail?",
+    ]
+    suggestions: list[str] = []
+    for i, topic in enumerate(topics[:3]):
+        template = templates[i % len(templates)]
+        suggestions.append(template.format(topic=topic))
+
+    # last resort: short, generic but not hideous
+    if not suggestions:
+        suggestions = ["What would you like to explore next?"]
+
+    return suggestions
+
+
 def critique(query: str, fused_context: str, response: str) -> Dict[str, Any]:
     """Evaluate response quality via a dedicated LLM call. Model-agnostic.
 
@@ -241,29 +286,17 @@ def critique(query: str, fused_context: str, response: str) -> Dict[str, Any]:
     scores = _run_critique_llm(query, fused_context, response)
     reward = (scores["factual"] + scores["proactivity"] + scores["helpfulness"]) / 3.0
 
-    # filter generic filler from suggestions
-    _GENERIC = {"tell me more", "learn more", "know more", "elaborate", "explain further"}
+    # filter generic filler and echoed template placeholders
+    _JUNK = {"tell me more", "learn more", "know more", "elaborate", "explain further",
+            "q1", "q2", "q3", "<specific question 1>", "<specific question 2>",
+            "<specific question 3>", "specific question"}
     suggestions = [
         s.strip() for s in scores.get("follow_up_questions", [])
-        if s.strip() and not any(g in s.strip().lower() for g in _GENERIC)
+        if s.strip() and not any(g in s.strip().lower() for g in _JUNK)
+        and len(s.strip()) > 10  # reject very short placeholder-like strings
     ]
     if not suggestions:
-        # build a grammatical topic by stripping leading question scaffolding
-        # handles: "What GPU is recommended...", "How does X work...", "Tell me about X"
-        cleaned = re.sub(
-            r'^(?:tell\s+me\s+(?:about|how|why|when|what)\s*'
-            r'|(?:what|which|how|why|when|where|who)'
-            r'(?:\s+(?:is|are|was|were|does|do|did|can|could|would|should|GPU|kind|type|sort))*'
-            r'\s+)',
-            '', query, flags=re.IGNORECASE,
-        ).strip().rstrip("?!.,;: ")
-        # strip leftover articles/connectors at the start
-        cleaned = re.sub(
-            r'^(?:about|regarding|the\s+best|the|a|an|recommended\s+for)\b\s*',
-            '', cleaned, flags=re.IGNORECASE,
-        ).strip()
-        topic = cleaned if cleaned and len(cleaned) > 3 else "this topic"
-        suggestions = [f"What are the key considerations for {topic}?"]
+        suggestions = _build_fallback_suggestions(query, response)
 
     return {
         "reward": min(reward * scale, 1.0),
