@@ -124,7 +124,7 @@ def parse_inline_critique(response: str) -> Tuple[str, Dict[str, Any]]:
 _CRITIQUE_EVAL_PROMPT = """You are a strict response evaluator. Score the AI response on three axes.
 Return ONLY valid JSON with no other text.
 
-{"factual_accuracy": 0.0-1.0, "proactivity": 0.0-1.0, "helpfulness": 0.0-1.0, "follow_up_questions": ["q1", "q2", "q3"]}
+{{"factual_accuracy": 0.0-1.0, "proactivity": 0.0-1.0, "helpfulness": 0.0-1.0, "follow_up_questions": ["q1", "q2", "q3"]}}
 
 Scoring guide:
 - factual_accuracy: Are claims grounded in the provided context? Penalize fabrication.
