@@ -94,18 +94,19 @@ def build_fusion_context(
     web_take = max(1, int(weights[3] * total_items)) if len(weights) > 3 else 0
 
     # Relevance thresholds: only include chunks the model can actually use
-    rag_items = [r for r in retrieval_results.get("rag", []) if r.get("score", 0) >= 0.65][:rag_take]
+    rag_items = [r for r in retrieval_results.get("rag", []) if r.get("score", 0) >= 0.50][:rag_take]
     cag_items = [c for c in retrieval_results.get("cag", []) if c.get("score", 0) >= 0.85][:cag_take]
-    graph_items = [g for g in retrieval_results.get("graph", []) if g.get("score", 0) >= 0.60][:graph_take]
+    graph_items = [g for g in retrieval_results.get("graph", []) if g.get("score", 0) >= 0.50][:graph_take]
     web_items = (
         [w for w in retrieval_results.get("web", []) if w.get("score", 0) >= 0.60][:web_take]
         if web_take > 0
         else []
     )
 
-    # Global relevance gate: if the BEST score across all paths is still mediocre,
-    # don't send any context. The LLM answers better from its own knowledge
-    # than from low-relevance chunks it tries to shoehorn into the answer.
+    # Global relevance gate: if the BEST score across all paths is noise-level,
+    # don't send any context. Prevents the LLM from shoehorning unrelated chunks.
+    # Threshold calibrated against CSWR composite scores for this corpus:
+    # genuine matches score 0.55-0.65, noise scores 0.35-0.50.
     all_scores = (
         [float(r.get("score", 0)) for r in rag_items]
         + [float(c.get("score", 0)) for c in cag_items]
@@ -113,8 +114,8 @@ def build_fusion_context(
         + [float(w.get("score", 0)) for w in web_items]
     )
     best_score = max(all_scores) if all_scores else 0.0
-    if best_score < 0.70:
-        logger.info("Relevance gate: best score %.2f < 0.70, returning empty context", best_score)
+    if best_score < 0.52:
+        logger.info("Relevance gate: best score %.2f < 0.52, returning empty context", best_score)
         return ""
 
     parts: list[str] = []
@@ -128,6 +129,39 @@ def build_fusion_context(
         parts.append(
             f"[WEB:{w['score']:.2f}|w={weights[3]:.2f}] Source: {w.get('url', 'unknown')}\n{str(w['text'])[:600]}"
         )
+
+    # Cross-project divergence gate: if RAG chunks from multiple projects
+    # survived, check if they're duplicative (same concept from two sources).
+    # Keep only the highest-scoring project group when overlap > 0.80.
+    rag_projects: dict[str, list[dict]] = {}
+    for r in rag_items:
+        proj = r.get("project", "default")
+        rag_projects.setdefault(proj, []).append(r)
+
+    if len(rag_projects) > 1:
+        from backend.core.utils import embed_batch as _eb
+        group_means = {}
+        for proj, items in rag_projects.items():
+            embs = _eb([str(item["text"]) for item in items])
+            group_means[proj] = embs.mean(axis=0)
+
+        # pairwise similarity between project groups
+        projs = list(group_means.keys())
+        for i in range(len(projs)):
+            for j in range(i + 1, len(projs)):
+                sim = float(np.dot(group_means[projs[i]], group_means[projs[j]]) /
+                           (np.linalg.norm(group_means[projs[i]]) * np.linalg.norm(group_means[projs[j]]) + 1e-9))
+                if sim > 0.80:
+                    # duplicative: keep the group with higher avg score
+                    avg_i = sum(r.get("score", 0) for r in rag_projects[projs[i]]) / len(rag_projects[projs[i]])
+                    avg_j = sum(r.get("score", 0) for r in rag_projects[projs[j]]) / len(rag_projects[projs[j]])
+                    loser = projs[j] if avg_i >= avg_j else projs[i]
+                    # rebuild parts without the losing project's RAG chunks
+                    parts = [p for p in parts if not any(
+                        p.startswith(f"[RAG:") and r["text"] in p
+                        for r in rag_projects[loser]
+                    )]
+                    logger.info("Divergence gate: dropped project '%s' (sim=%.2f, duplicative)", loser, sim)
 
     logger.info("Fusion stats: %d RAG, %d CAG, %d Graph, %d Web",
                 len(rag_items), len(cag_items), len(graph_items), len(web_items))

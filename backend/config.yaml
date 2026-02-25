@@ -64,10 +64,11 @@ cswr:
   min_csw_score: 0.25
   answerability_threshold: 0.55
   stability_threshold: 0.7
-  vector_weight: 0.4
-  local_stability_weight: 0.3
-  question_fit_weight: 0.2
-  drift_penalty_weight: 0.1
+  vector_weight: 0.35
+  local_stability_weight: 0.25
+  question_fit_weight: 0.20
+  drift_penalty_weight: 0.10
+  project_coherence_weight: 0.10
 cswr_quantiles:
   tech:
     stability_threshold: 0.65

@@ -154,8 +154,102 @@ def _get_metadata_path() -> Path:
     return index_dir / "metadata.json"
 
 
+def _compute_all_project_coherence(
+    embeddings: np.ndarray, chunks: list[dict[str, str]], k: int = 5,
+) -> list[float]:
+    """Compute project coherence for every chunk at index time.
+
+    For each chunk, finds its k nearest neighbors in embedding space and
+    measures what fraction share the same project tag. A chunk whose neighbors
+    are all from the same project scores 1.0; one surrounded by foreign-project
+    chunks scores near 0.0. This is the novel CSWR axis.
+    """
+    n = len(chunks)
+    if n <= 1:
+        return [1.0] * n
+
+    # self-similarity matrix via dot product (embeddings are L2-normalized)
+    sims = embeddings @ embeddings.T
+    coherence = []
+    for i in range(n):
+        # exclude self, get top-k neighbor indices
+        row = sims[i].copy()
+        row[i] = -1.0
+        actual_k = min(k, n - 1)
+        neighbor_idxs = np.argpartition(row, -actual_k)[-actual_k:]
+        same_project = sum(
+            1 for j in neighbor_idxs if chunks[j]["project"] == chunks[i]["project"]
+        )
+        coherence.append(same_project / actual_k)
+    return coherence
+
+
+def _compute_project_centroids(
+    embeddings: np.ndarray, chunks: list[dict[str, str]],
+) -> dict[str, np.ndarray]:
+    """Compute mean embedding per project. Used for fast query routing."""
+    project_vecs: dict[str, list[int]] = {}
+    for i, c in enumerate(chunks):
+        project_vecs.setdefault(c["project"], []).append(i)
+    centroids = {}
+    for proj, idxs in project_vecs.items():
+        proj_embs = embeddings[idxs]
+        centroid = proj_embs.mean(axis=0)
+        # L2 normalize
+        norm = np.linalg.norm(centroid)
+        if norm > 0:
+            centroid = centroid / norm
+        centroids[proj] = centroid
+    return centroids
+
+
+def _load_project_centroids() -> dict[str, np.ndarray]:
+    """Load precomputed project centroids from disk."""
+    path = PROJECT_ROOT / "indexes" / "project_centroids.json"
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text())
+    return {proj: np.array(vec, dtype=np.float32) for proj, vec in data.items()}
+
+
+def route_to_projects(query: str, gap_threshold: float = 0.15) -> list[str] | None:
+    """Pre-filter which projects to search based on centroid similarity.
+
+    Returns a list of project names to search, or None for 'search all'.
+    If one project dominates by > gap_threshold, routes exclusively to it.
+    """
+    centroids = _load_project_centroids()
+    if len(centroids) <= 1:
+        return None  # single project, no routing needed
+
+    q_emb = embed_text(query)
+    scores = {proj: float(np.dot(q_emb, centroid)) for proj, centroid in centroids.items()}
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+
+    best_proj, best_score = ranked[0]
+    second_score = ranked[1][1] if len(ranked) > 1 else 0.0
+
+    if best_score - second_score > gap_threshold:
+        logger.info("Centroid routing: '%s' (%.3f) dominates by %.3f", best_proj, best_score, best_score - second_score)
+        return [best_proj]
+
+    # close scores, search all qualifying projects (within gap of best)
+    qualifying = [proj for proj, sc in ranked if best_score - sc <= gap_threshold]
+    logger.info("Centroid routing: multi-project %s (gap %.3f)", qualifying, best_score - second_score)
+    return qualifying
+
+
 def build_rag_index() -> faiss.IndexFlatL2:
-    """Build the RAG FAISS index from documents in data/docs."""
+    """Build the RAG FAISS index from documents in data/docs.
+
+    Supports multi-project indexing: subdirectories under data/docs/ become
+    project namespaces (e.g., data/docs/rlfusion/ -> project 'rlfusion').
+    Files directly in data/docs/ get project 'default'.
+
+    Computes project centroids and per-chunk project coherence scores at build
+    time so queries can route to the right partition and CSWR can penalize
+    cross-project noise.
+    """
     docs_path = _get_docs_path()
     index_path = _get_index_path()
     cpu_index = faiss.IndexFlatL2(384)
@@ -172,9 +266,16 @@ def build_rag_index() -> faiss.IndexFlatL2:
     for fpath in files:
         try:
             content = extract_pdf_text(fpath) if fpath.suffix.lower() == ".pdf" else fpath.read_text()
+            # infer project from first subdirectory under data/docs/
+            rel = fpath.relative_to(docs_path)
+            project = rel.parts[0] if len(rel.parts) > 1 else "default"
             from backend.core.utils import chunk_text
             for chunk in chunk_text(content, max_tokens=400):
-                all_chunks.append({"text": chunk, "source": str(fpath.relative_to(docs_path))})
+                all_chunks.append({
+                    "text": chunk,
+                    "source": str(rel),
+                    "project": project,
+                })
         except Exception as e:
             logger.warning(f"Failed to process {fpath}: {e}")
 
@@ -184,13 +285,39 @@ def build_rag_index() -> faiss.IndexFlatL2:
         return cpu_index
 
     texts = [c["text"] for c in all_chunks]
-    cpu_index.add(embed_batch(texts))
+    embeddings = embed_batch(texts)
+    cpu_index.add(embeddings)
     ensure_path(str(index_path))
     faiss.write_index(cpu_index, str(index_path))
 
-    _get_metadata_path().write_text(json.dumps(
-        [{"text": c["text"], "source": c["source"]} for c in all_chunks], indent=2))
-    logger.info(f"Built RAG index with {len(all_chunks)} chunks")
+    # compute per-chunk project coherence (kNN neighborhood composition)
+    coherence_scores = _compute_all_project_coherence(embeddings, all_chunks)
+
+    # compute project centroids (mean embedding per project namespace)
+    centroids = _compute_project_centroids(embeddings, all_chunks)
+
+    # persist metadata with project tags and coherence
+    meta_entries = []
+    for i, c in enumerate(all_chunks):
+        meta_entries.append({
+            "text": c["text"],
+            "source": c["source"],
+            "project": c["project"],
+            "coherence": round(coherence_scores[i], 4),
+        })
+    _get_metadata_path().write_text(json.dumps(meta_entries, indent=2))
+
+    # persist project centroids alongside metadata
+    centroid_path = PROJECT_ROOT / "indexes" / "project_centroids.json"
+    centroid_data = {
+        proj: emb.tolist() for proj, emb in centroids.items()
+    }
+    centroid_path.write_text(json.dumps(centroid_data, indent=2))
+
+    logger.info(
+        "Built RAG index: %d chunks, %d projects, centroids saved",
+        len(all_chunks), len(centroids),
+    )
 
     # Phase 2: build entity graph from the same chunks
     if cfg.get("graph", {}).get("enabled", True):
@@ -316,10 +443,11 @@ def score_chunks(chunks: list, profile: dict, cswr_cfg: dict) -> list:
     domain = detect_domain(profile.get("query_text", ""))
     thresh = get_stability_thresh(domain)
 
-    vw = cswr_cfg.get("vector_weight", 0.4)
-    sw = cswr_cfg.get("local_stability_weight", 0.3)
-    fw = cswr_cfg.get("question_fit_weight", 0.2)
-    dw = cswr_cfg.get("drift_penalty_weight", 0.1)
+    vw = cswr_cfg.get("vector_weight", 0.35)
+    sw = cswr_cfg.get("local_stability_weight", 0.25)
+    fw = cswr_cfg.get("question_fit_weight", 0.20)
+    dw = cswr_cfg.get("drift_penalty_weight", 0.10)
+    cw = cswr_cfg.get("project_coherence_weight", 0.10)
 
     # batch-embed all chunk texts once (was O(n*k) individual calls)
     texts = [c["text"] for c in chunks]
@@ -337,12 +465,15 @@ def score_chunks(chunks: list, profile: dict, cswr_cfg: dict) -> list:
         gc = graph_contexts.get(c["id"])
         c["question_fit"] = compute_fit(c, profile, graph_context=gc)
         c["drift_penalty"] = compute_drift(c, chunks, embeddings)
+        # project coherence: precomputed at index time, stored in metadata
+        proj_coherence = c.get("project_coherence", 1.0)
 
         if c["local_stability"] < thresh:
             c["drift_penalty"] -= (thresh - c["local_stability"]) * 0.5
 
         c["csw_score"] = max(0.0, vw * c["score"] + sw * c["local_stability"] +
-                            fw * c["question_fit"] + dw * c["drift_penalty"])
+                            fw * c["question_fit"] + dw * c["drift_penalty"] +
+                            cw * proj_coherence)
 
     return sorted(chunks, key=lambda x: x["csw_score"], reverse=True)
 
@@ -433,7 +564,7 @@ def format_pack(pack: dict, rank: int) -> str:
     return out + "---\n"
 
 
-def retrieve_rag(query: str, mode: str = "chat", top_k: int = None) -> str:
+def retrieve_rag(query: str, mode: str = "chat", top_k: int = None, project: str | None = None) -> str:
     cswr_cfg = cfg.get("cswr", {})
     top_k = top_k or cswr_cfg.get("top_k", 20)
 
@@ -453,15 +584,23 @@ def retrieve_rag(query: str, mode: str = "chat", top_k: int = None) -> str:
     meta_path = _get_metadata_path()
     meta = json.loads(meta_path.read_text()) if meta_path.exists() else []
 
+    # project routing
+    target_projects = [project] if project else route_to_projects(query)
+
     chunks = []
     for i in range(len(idxs[0])):
         idx, dist = int(idxs[0][i]), float(dists[0][i])
-        # FAISS returns -1 for missing neighbors
         if idx < 0 or idx >= len(meta):
             continue
+        entry = meta[idx]
+        chunk_project = entry.get("project", "default")
+        if target_projects and chunk_project not in target_projects:
+            continue
         chunks.append({
-            "text": meta[idx]["text"],
-            "source": meta[idx]["source"],
+            "text": entry["text"],
+            "source": entry["source"],
+            "project": chunk_project,
+            "project_coherence": entry.get("coherence", 1.0),
             "score": 1.0 / (1.0 + dist), "id": str(idx),
             "local_stability": 0.0, "question_fit": 0.0, "drift_penalty": 0.0, "csw_score": 0.0
         })
@@ -499,7 +638,7 @@ def retrieve_rag(query: str, mode: str = "chat", top_k: int = None) -> str:
     return result
 
 
-def retrieve_rag_structured(query: str, top_k: int = 5) -> list:
+def retrieve_rag_structured(query: str, top_k: int = 5, project: str | None = None) -> list:
     cswr_cfg = cfg.get("cswr", {})
     top_k = top_k or cswr_cfg.get("top_k", 20)
 
@@ -519,22 +658,38 @@ def retrieve_rag_structured(query: str, top_k: int = 5) -> list:
     meta_path = _get_metadata_path()
     meta = json.loads(meta_path.read_text()) if meta_path.exists() else []
 
+    # project routing: if no explicit project, use centroid routing
+    target_projects = None
+    if project:
+        target_projects = [project]
+    else:
+        target_projects = route_to_projects(query)
+
     chunks = []
     for i in range(len(idxs[0])):
         idx, dist = int(idxs[0][i]), float(dists[0][i])
-        # FAISS returns -1 for missing neighbors
         if idx < 0 or idx >= len(meta):
             continue
+        entry = meta[idx]
+        chunk_project = entry.get("project", "default")
+
+        # skip chunks from non-target projects when routing is active
+        if target_projects and chunk_project not in target_projects:
+            continue
+
         chunks.append({
-            "text": meta[idx]["text"],
-            "source": meta[idx]["source"],
+            "text": entry["text"],
+            "source": entry["source"],
+            "project": chunk_project,
+            "project_coherence": entry.get("coherence", 1.0),
             "score": 1.0 / (1.0 + dist), "id": str(idx),
             "local_stability": 0.0, "question_fit": 0.0, "drift_penalty": 0.0, "csw_score": 0.0
         })
 
     chunks = score_chunks(chunks, profile, cswr_cfg)
     logger.info(f"CSWR structured | query='{query[:50]}...' | {min(top_k, len(chunks))} chunks")
-    return [{"text": c["text"], "score": c["csw_score"], "source": c["source"], "id": c["id"]}
+    return [{"text": c["text"], "score": c["csw_score"], "source": c["source"],
+             "id": c["id"], "project": c.get("project", "default")}
             for c in chunks[:top_k]]
 
 
@@ -823,12 +978,13 @@ def retrieve_web(query: str, max_results: int = 3) -> tuple[List[Dict[str, Any]]
 
 
 def retrieve(query: str, rag_weight: float = 1.0, cag_weight: float = 1.0,
-             graph_weight: float = 1.0, web_weight: float = 1.0, top_k: int = 5) -> Dict[str, Any]:
+             graph_weight: float = 1.0, web_weight: float = 1.0, top_k: int = 5,
+             project: str | None = None) -> Dict[str, Any]:
     """Main retrieval function. Runs RAG/CAG/Graph in parallel. Returns results and web_status."""
     web_enabled = cfg.get("web", {}).get("enabled", False)
 
     with ThreadPoolExecutor(max_workers=4, thread_name_prefix="retrieval") as pool:
-        fut_rag = pool.submit(retrieve_rag_structured, query, top_k * 2)
+        fut_rag = pool.submit(retrieve_rag_structured, query, top_k * 2, project=project)
         fut_cag = pool.submit(retrieve_cag, query)
         fut_graph = pool.submit(retrieve_graph, query, 2)
         fut_web = pool.submit(retrieve_web, query) if web_enabled else None
