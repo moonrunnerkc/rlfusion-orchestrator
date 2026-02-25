@@ -199,20 +199,47 @@ def _run_critique_llm(query: str, fused_context: str, response: str) -> Dict[str
                 "follow_up_questions": [],
             }
 
-        def _clamp(val: Any) -> float:
+        def _unwrap_score(val: Any) -> float:
+            """Extract a float score from flat or nested LLM JSON output.
+
+            Handles: 0.9, {"@value": 0.9}, {"value": 0.9}, {"score": 0.9}
+            dolphin-llama3:8b sometimes wraps scores in nested objects.
+            """
+            if isinstance(val, (int, float)):
+                return max(0.0, min(1.0, float(val)))
+            if isinstance(val, dict):
+                for key in ("@value", "value", "score"):
+                    if key in val:
+                        try:
+                            return max(0.0, min(1.0, float(val[key])))
+                        except (TypeError, ValueError):
+                            pass
             try:
                 return max(0.0, min(1.0, float(val)))
             except (TypeError, ValueError):
                 return 0.70
 
+        def _unwrap_questions(val: Any) -> list[str]:
+            """Extract follow-up questions from flat or nested LLM JSON.
+
+            Handles: ["q1", "q2"], {"@list": ["q1", "q2"]},
+            {"items": ["q1"]}, or nested dicts with string values.
+            """
+            if isinstance(val, list):
+                return [s for s in val if isinstance(s, str) and s.strip()]
+            if isinstance(val, dict):
+                for key in ("@list", "items", "questions"):
+                    if key in val and isinstance(val[key], list):
+                        return [s for s in val[key] if isinstance(s, str) and s.strip()]
+                # last resort: collect all string values from the dict
+                return [v for v in val.values() if isinstance(v, str) and len(v) > 10]
+            return []
+
         return {
-            "factual": _clamp(parsed.get("factual_accuracy", 0.70)),
-            "proactivity": _clamp(parsed.get("proactivity", 0.70)),
-            "helpfulness": _clamp(parsed.get("helpfulness", 0.70)),
-            "follow_up_questions": [
-                s for s in parsed.get("follow_up_questions", [])
-                if isinstance(s, str) and s.strip()
-            ][:3],
+            "factual": _unwrap_score(parsed.get("factual_accuracy", 0.70)),
+            "proactivity": _unwrap_score(parsed.get("proactivity", 0.70)),
+            "helpfulness": _unwrap_score(parsed.get("helpfulness", 0.70)),
+            "follow_up_questions": _unwrap_questions(parsed.get("follow_up_questions", []))[:3],
         }
 
     except Exception as exc:
