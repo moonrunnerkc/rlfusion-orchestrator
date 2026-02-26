@@ -68,7 +68,8 @@ Everything is transparent. You can watch fusion weights shift in real time from 
 | **CSWR** | Chunk Stability Weighted Retrieval — scores every chunk on local stability, question fit, and drift before it touches the LLM |
 | **STIS** | Sub-Token Intuition Swarms — resolves source contradictions via multi-agent convergence in hidden-state space |
 | **CQL/PPO/DPO** | Three-stage adaptive RL policy that learns which retrieval path to trust for each query type |
-| **Multi-Agent Pipeline** | LangGraph-orchestrated agents (safety → retrieval → fusion → generation → critique) with complexity-based routing |
+| **Multi-Engine Inference** | Pluggable LLM serving: Ollama (local dev), vLLM, or TensorRT-LLM (production), switchable via config toggle |
+| **Multi-Agent Pipeline** | LangGraph-orchestrated agents (safety -> retrieval -> fusion -> generation -> critique) with complexity-based routing |
 | **544 Tests** | Full coverage across 9 test files — core modules, agents, tools, RL, edge cases, benchmarks, STIS engine, contradiction detection, and integration |
 
 ---
@@ -125,7 +126,7 @@ STIS is a secondary generation engine that activates when RAG and Graph retrieva
 | **Contradiction detected** | Cosine similarity between top RAG chunk and top Graph chunk < **0.40** | Sources are discussing fundamentally different or opposing content |
 | **Low CSWR confidence** | Best CSWR score across all results < **0.70** | The retrieval pipeline lacks confidence in what it found |
 
-If only one condition fires, Ollama handles it normally — a contradiction without low CSWR means the pipeline is confident enough, and low CSWR without contradiction means sources agree on limited content.
+If only one condition fires, the LLM handles it normally, a contradiction without low CSWR means the pipeline is confident enough, and low CSWR without contradiction means sources agree on limited content.
 
 **How the swarm works (per token):**
 
@@ -156,10 +157,10 @@ If only one condition fires, Ollama handles it normally — a contradiction with
 | Max iterations per token | 30 |
 | Server | FastAPI microservice on port 8100S |
 | Loading | **Lazy** — model stays off-GPU until first `/generate` request |
-| Idle unload | Auto-unloads after 120s of inactivity to free VRAM for Ollama |
+| Idle unload | Auto-unloads after 120s of inactivity to free VRAM for the inference engine |
 | Audit trail | Every routing event logged to SQLite (`stis_resolutions` table) |
 
-When STIS handles a query, the Ollama streaming loop is skipped entirely. The STIS response is sent as a single chunk. If STIS fails (timeout, unreachable, HTTP error), the pipeline falls back to Ollama silently with a logged warning.
+When STIS handles a query, the LLM streaming loop is skipped entirely. The STIS response is sent as a single chunk. If STIS fails (timeout, unreachable, HTTP error), the pipeline falls back to normal LLM generation silently with a logged warning.
 
 > **Full architecture doc:** [STIS_ARCHITECTURE.md](STIS_ARCHITECTURE.md)
 > **Engine:** `stis_engine/swarm.py` — core convergence loop and token sampling
@@ -223,7 +224,7 @@ The system is organized as a **multi-agent pipeline** orchestrated by LangGraph.
                          │
               ┌──────────▼──────────┐
               │   LLM GENERATION    │
-              │   (Ollama stream)   │
+              │   (engine stream)   │
               └──────────┬──────────┘
                          │
               ┌──────────▼──────────┐
@@ -257,7 +258,7 @@ The system is organized as a **multi-agent pipeline** orchestrated by LangGraph.
 6. **Graph engine** — entity resolution, Leiden community detection, 2-hop traversal for structured context
 7. **Fusion agent** — merges results weighted by RL output. Per-path score thresholds enforce quality floors
 8. **Contradiction check** — if RAG vs Graph similarity < 0.40 *and* best CSWR < 0.70, routes to STIS
-9. **LLM generates** — Ollama streams response grounded in fused context (or STIS resolves it)
+9. **LLM generates** — inference engine streams response grounded in fused context (or STIS resolves it)
 10. **Critique agent** — dedicated LLM call scores factual accuracy, helpfulness, proactivity; optional ORPS tree reasoning for high-sensitivity queries
 11. **Response delivered** — fusion weights, reward, citations, and proactive suggestions visible in the UI
 12. **Episode logged** — query, weights, reward stored in SQLite replay buffer for RL training
@@ -358,7 +359,7 @@ Every query passes through the safety agent before retrieval begins:
 
 1. **Regex pre-filter** — fast pattern matching for prompt injection, SQL injection, template injection, XSS, jailbreak attempts
 2. **OOD detection** — Mahalanobis distance with Ledoit-Wolf covariance shrinkage, fitted on the embedding distribution of indexed documents. Queries exceeding the threshold (default: 50.0) are flagged
-3. **LLM safety classification** — binary SAFE/UNSAFE classification via Ollama for patterns that escape regex
+3. **LLM safety classification** — binary SAFE/UNSAFE classification via the inference engine for patterns that escape regex
 
 ### Self-Critique
 
@@ -424,7 +425,10 @@ Per-session state tracked across turns with entity extraction and anaphora resol
 ### Requirements
 
 - Python 3.10+
-- [Ollama](https://ollama.ai) running locally
+- An LLM inference engine (any one of the following):
+  - [Ollama](https://ollama.ai) for local development (default)
+  - [vLLM](https://docs.vllm.ai/) for production throughput
+  - [TensorRT-LLM](https://github.com/NVIDIA/TensorRT-LLM) for NVIDIA-optimized serving
 - Node.js 18+ (frontend, optional)
 - CUDA GPU optional (helps with embeddings and STIS engine)
 
@@ -448,11 +452,22 @@ cp .env.example .env
 
 ### 3. Pull the LLM model
 
+**Ollama (default, local dev):**
+
 ```bash
 ollama pull dolphin-llama3:8b
 ```
 
-> The model name is configured in `backend/config.yaml` under `llm.model`. Change it to any Ollama-compatible model.
+**vLLM (production):**
+
+```bash
+# Set the engine in config.yaml or via environment variables
+export INFERENCE_ENGINE=vllm
+export INFERENCE_BASE_URL=http://localhost:8000
+export INFERENCE_MODEL=dolphin-llama3:8b
+```
+
+> The inference engine is configured in `backend/config.yaml` under `inference.*`. Engine selection (`ollama`, `vllm`, or `tensorrt`) is a config toggle, not a code change. All engines expose the same internal API.
 
 ### 4. Add your documents
 
@@ -511,7 +526,7 @@ docker compose --profile gpu up
 docker compose --profile arm up
 ```
 
-Each profile includes the backend, frontend, and an Ollama container. Volumes are mounted for `data/`, `db/`, and `indexes/` so your documents and state persist.
+Each profile includes the backend, frontend, and an LLM inference container. Volumes are mounted for `data/`, `db/`, and `indexes/` so your documents and state persist.
 
 ---
 
@@ -568,10 +583,10 @@ python backend/rl/train_rl.py
 
 | Feature | Description |
 |---------|-------------|
-| **LoRA SFT** | Fine-tune the base LLM on high-reward episodes via LoRA adapters, export to GGUF for Ollama |
+| **LoRA SFT** | Fine-tune the base LLM on high-reward episodes via LoRA adapters, export to GGUF for local serving |
 | **GRPO** | Group Relative Policy Optimization for multi-agent coordination |
-| **Federated Learning** | Privacy-preserving policy updates across instances — weight deltas are L2-clipped and Gaussian-noised before sharing |
-| **MoE Routing** | Register specialized Ollama models per task type (code, critique, generation) for mixture-of-experts dispatch |
+| **Federated Learning** | Privacy-preserving policy updates across instances, weight deltas are L2-clipped and Gaussian-noised before sharing |
+| **MoE Routing** | Register specialized models per task type (code, critique, generation) for mixture-of-experts dispatch |
 
 > **Implementation:** `backend/rl/fine_tune.py`, `backend/rl/train_ppo.py::train_grpo`, `backend/rl/federated.py`, `backend/core/model_router.py`
 
@@ -587,6 +602,14 @@ llm:
   host: http://localhost:11434
   temperature: 0.72
   max_tokens: 8192
+
+inference:
+  engine: ollama                     # ollama | vllm | tensorrt
+  base_url: http://localhost:11434   # engine endpoint
+  model: dolphin-llama3:8b           # model name on the engine
+  max_concurrent: 4                  # max parallel requests
+  timeout_secs: 30                   # per-request timeout
+  openai_api_key: ""                 # only needed for authenticated vLLM/TRT
 
 embedding:
   model: BAAI/bge-small-en-v1.5     # 384-dim embeddings
@@ -661,7 +684,12 @@ Documented in `.env.example`:
 | `TAVILY_API_KEY` | No | _(empty)_ | Tavily API key for web search. Only needed if `web.enabled: true`. Free key at [tavily.com](https://tavily.com). |
 | `RLFUSION_DEVICE` | No | `cpu` | Compute device: `cpu` or `cuda`. |
 | `RLFUSION_FORCE_CPU` | No | `false` | Force CPU mode even if CUDA is available. |
-| `OLLAMA_HOST` | No | `http://localhost:11434` | Ollama server URL. |
+| `INFERENCE_ENGINE` | No | `ollama` | LLM serving engine: `ollama`, `vllm`, or `tensorrt`. Overrides `inference.engine` in config.yaml. |
+| `INFERENCE_BASE_URL` | No | `http://localhost:11434` | Inference engine endpoint URL. Overrides `inference.base_url`. |
+| `INFERENCE_MODEL` | No | `dolphin-llama3:8b` | Model name on the inference engine. Overrides `inference.model`. |
+| `INFERENCE_API_KEY` | No | _(empty)_ | Bearer token for authenticated vLLM/TensorRT-LLM endpoints. |
+| `INFERENCE_MAX_CONCURRENT` | No | `4` | Maximum parallel inference requests. |
+| `INFERENCE_TIMEOUT` | No | `30` | Per-request timeout in seconds. |
 | `RLFUSION_ADMIN_KEY` | No | _(empty)_ | Bearer token for `POST /api/fine-tune`. If unset, the endpoint rejects all requests. |
 
 STIS engine environment variables:

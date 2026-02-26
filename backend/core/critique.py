@@ -148,8 +148,8 @@ def _run_critique_llm(query: str, fused_context: str, response: str) -> Dict[str
     """Dedicated LLM call to evaluate a response. Returns parsed scores + suggestions."""
     import json as _json
     try:
-        from ollama import Client
-        client = Client(host=cfg["llm"]["host"], timeout=15.0)
+        from backend.core.model_router import get_engine
+        engine = get_engine()
 
         prompt = _CRITIQUE_EVAL_PROMPT.format(
             query=query[:500],
@@ -157,12 +157,10 @@ def _run_critique_llm(query: str, fused_context: str, response: str) -> Dict[str
             response=response[:1200],
         )
 
-        raw = client.chat(
-            model=cfg["llm"]["model"],
+        content = engine.generate(
             messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0.0, "num_predict": 300, "num_ctx": 4096},
-        )
-        content = raw["message"]["content"].strip()
+            temperature=0.0, num_predict=300, num_ctx=4096, timeout=15.0,
+        ).strip()
 
         # try JSON parse, fall back to regex extraction from partial output
         parsed: dict[str, Any] = {}
@@ -478,19 +476,16 @@ def check_faithfulness(claim: str, chunks: list) -> tuple:
         return (False, 0.0)
 
     try:
-        from ollama import Client
-        client = Client(host=cfg["llm"]["host"])
+        from backend.core.model_router import get_engine
+        engine = get_engine()
 
         chunk_text = "\n---\n".join([c.get("text", str(c))[:500] for c in chunks[:5]])
         prompt = f"""Sources:\n{chunk_text}\n\nIs this claim SUPPORTED? (one word)\nClaim: "{claim}" """
 
-        response = client.chat(
-            model=cfg["llm"]["model"],
+        result = engine.generate(
             messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0.0, "num_ctx": 2048}
-        )
-
-        result = response["message"]["content"].upper()
+            temperature=0.0, num_ctx=2048,
+        ).upper()
         supported = "SUPPORTED" in result and "NOT" not in result
         return (supported, 0.9 if supported else 0.1)
 

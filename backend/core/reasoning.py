@@ -154,9 +154,9 @@ def _generate_candidates(
     Uses progressively higher temperature to encourage diversity across
     candidates while keeping the first candidate conservative.
     """
-    from ollama import Client
+    from backend.core.model_router import get_engine
 
-    client = Client(host=cfg["llm"]["host"])
+    engine = get_engine()
     candidates: list[str] = []
 
     for i in range(beam_width):
@@ -164,15 +164,14 @@ def _generate_candidates(
         temp = 0.2 + (i * 0.15)
         temp = min(temp, 0.8)
 
-        response = client.chat(
-            model=cfg["llm"]["model"],
+        content = engine.generate(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            options={"temperature": temp, "num_ctx": 8192},
+            temperature=temp, num_ctx=8192,
         )
-        candidates.append(response["message"]["content"])
+        candidates.append(content)
 
     return candidates
 
@@ -210,9 +209,9 @@ def _refine_candidate(
     Feeds the original response + critique scores back to the LLM with
     instructions to improve weak areas.
     """
-    from ollama import Client
+    from backend.core.model_router import get_engine
 
-    client = Client(host=cfg["llm"]["host"])
+    engine = get_engine()
     refinement_prompt = (
         f"You previously answered this question:\n\n"
         f"QUESTION: {query}\n\n"
@@ -227,15 +226,13 @@ def _refine_candidate(
         f"Be more precise, cite specifics from the context, and anticipate follow-up questions."
     )
 
-    response = client.chat(
-        model=cfg["llm"]["model"],
+    return engine.generate(
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": refinement_prompt},
         ],
-        options={"temperature": 0.15, "num_ctx": 8192},
+        temperature=0.15, num_ctx=8192,
     )
-    return response["message"]["content"]
 
 
 # ── Main ORPS entry point ──────────────────────────────────────────────

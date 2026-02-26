@@ -120,9 +120,16 @@ fine_tuning:
   val_split: 0.1
   output_dir: models/fine_tuned
   export_gguf: true
+inference:
+  engine: vllm
+  base_url: http://localhost:8001
+  model: Qwen/Qwen2.5-3B-Instruct
+  max_concurrent: 4
+  timeout_secs: 60
+  openai_api_key: ""
 model_router:
   enabled: true
-  general_model: dolphin-llama3:8b
+  general_model: Qwen/Qwen2.5-3B-Instruct
   auto_fallback: true
   models: []
 multimodal:

@@ -5,7 +5,6 @@
 import json
 import logging
 import re
-from ollama import Client
 from backend.config import cfg
 
 logger = logging.getLogger(__name__)
@@ -35,17 +34,15 @@ def decompose_query(query: str, mode: str = "chat") -> dict:
 def _llm_decompose(query: str, mode: str = "chat") -> dict:
     """Full LLM roundtrip for structured decomposition. Slow (~4.8s) but precise."""
     try:
-        client = Client(host=cfg["llm"]["host"])
-        response = client.chat(
-            model=cfg["llm"]["model"],
+        from backend.core.model_router import get_engine
+        engine = get_engine()
+        content = engine.generate(
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": f'Mode: {mode}\nQuery: "{query}"\n\nAnalyze and respond with JSON only:'}
             ],
-            options={"temperature": 0.1, "num_predict": 200}
-        )
-
-        content = response["message"]["content"].strip()
+            temperature=0.1, num_predict=200,
+        ).strip()
         if content.startswith("```"):
             content = content.split("```")[1]
             if content.startswith("json"):

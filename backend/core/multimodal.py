@@ -361,27 +361,25 @@ def caption_image(image_path: Path, fallback: str = "") -> str:
 
     vision_model = _vision_model_name()
     try:
-        from ollama import Client
+        from backend.core.model_router import get_engine
+        import base64 as _b64mod
 
-        host = cfg.get("llm", {}).get("host", "http://localhost:11434")
-        client = Client(host=host)
+        engine = get_engine()
 
-        # encode image as base64 for Ollama vision API
+        # encode image as base64 for vision API
         img_bytes = image_path.read_bytes()
-        img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+        img_b64 = _b64mod.b64encode(img_bytes).decode("utf-8")
 
         max_tokens = int(_mm_cfg().get("caption_max_tokens", 200))
-        resp = client.chat(
-            model=vision_model,
+        caption = engine.generate(
             messages=[{
                 "role": "user",
                 "content": "Describe this image concisely in 1-2 sentences.",
-                "images": [img_b64],
             }],
-            options={"temperature": 0.1, "num_predict": max_tokens},
-            stream=False,
-        )
-        caption = resp["message"]["content"].strip()
+            model=vision_model,
+            temperature=0.1, num_predict=max_tokens,
+            images=[img_b64],
+        ).strip()
         if caption:
             return caption
     except Exception as exc:

@@ -7,7 +7,6 @@ import logging
 import re
 import sqlite3
 from pathlib import Path
-from ollama import Client
 from backend.config import cfg, PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
@@ -108,7 +107,8 @@ def detect_and_save_memory(query: str) -> tuple[bool, str | None]:
 
     # LLM extraction for implicit memory
     try:
-        client = Client(host=cfg["llm"]["host"])
+        from backend.core.model_router import get_engine
+        engine = get_engine()
         prompt = f"""Is this a request to remember a fact about the user?
 "{query}"
 
@@ -116,13 +116,12 @@ If YES, respond: {{"fact_key": "identifier", "fact_value": "the fact", "category
 If NO, respond: {{"memory": false}}
 JSON only:"""
 
-        result = client.chat(
-            model=cfg["llm"]["model"],
+        raw = engine.generate(
             messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0.1, "max_tokens": 150}
+            temperature=0.1, num_predict=150,
         )
 
-        parsed = json.loads(result["message"]["content"].strip())
+        parsed = json.loads(raw.strip())
         if parsed.get("memory") == False:
             return (False, None)
 

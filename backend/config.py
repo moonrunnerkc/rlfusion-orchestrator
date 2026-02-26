@@ -56,5 +56,22 @@ def get_web_api_key() -> str:
     return os.environ.get("TAVILY_API_KEY", "")
 
 
+def get_inference_config() -> dict[str, str | int]:
+    """Return the inference engine configuration with env var overrides.
+
+    Supports INFERENCE_ENGINE, INFERENCE_BASE_URL, INFERENCE_MODEL,
+    and INFERENCE_API_KEY environment variables for container deployments.
+    """
+    inf: dict[str, object] = cfg.get("inference", {})
+    return {
+        "engine": os.environ.get("INFERENCE_ENGINE") or str(inf.get("engine", "ollama")),
+        "base_url": os.environ.get("INFERENCE_BASE_URL") or str(inf.get("base_url", "http://localhost:11434")),
+        "model": os.environ.get("INFERENCE_MODEL") or str(inf.get("model", cfg.get("llm", {}).get("model", "dolphin-llama3:8b"))),
+        "max_concurrent": int(os.environ.get("INFERENCE_MAX_CONCURRENT", str(inf.get("max_concurrent", 4)))),
+        "timeout_secs": int(os.environ.get("INFERENCE_TIMEOUT", str(inf.get("timeout_secs", 30)))),
+        "openai_api_key": os.environ.get("INFERENCE_API_KEY") or str(inf.get("openai_api_key", "")),
+    }
+
+
 __all__ = ["cfg", "PROJECT_ROOT", "get_project_root", "get_data_path",
-           "get_db_path", "get_index_path", "get_web_api_key"]
+           "get_db_path", "get_index_path", "get_web_api_key", "get_inference_config"]

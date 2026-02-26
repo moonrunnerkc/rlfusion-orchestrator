@@ -25,7 +25,6 @@ import yaml
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
-from ollama import Client
 from prometheus_client import (
     Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST,
 )
@@ -34,6 +33,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from backend.config import cfg, PROJECT_ROOT
+from backend.core.model_router import get_engine
 from backend.core.critique import critique, log_episode_to_replay_buffer, get_critique_instruction, strip_critique_block, check_safety
 from backend.core.critique import should_route_to_stis
 from backend.core.stis_client import request_stis_consensus, log_stis_resolution
@@ -149,31 +149,27 @@ async def lifespan(app: FastAPI):
     global _rl_policy, _boot_id
     _boot_id = uuid.uuid4().hex[:12]
 
-    # ── Ollama health check ──────────────────────────────────
-    ollama_host = cfg["llm"]["host"]
-    ollama_model = cfg["llm"]["model"]
+    # ── Inference engine health check ────────────────────────
+    engine = get_engine()
     try:
-        import httpx
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{ollama_host}/api/tags")
-            resp.raise_for_status()
-            available_models = [m["name"] for m in resp.json().get("models", [])]
-            # Check for base model name match (ignore tag suffixes)
-            model_base = ollama_model.split(":")[0]
-            if not any(model_base in m for m in available_models):
-                logger.warning(
-                    f"Ollama is running but model '{ollama_model}' not found. "
-                    f"Available: {available_models}. "
-                    f"Pull it with: ollama pull {ollama_model}"
-                )
-            else:
-                logger.info(f"Ollama health check passed — model '{ollama_model}' available")
+        if engine.check_health():
+            logger.info(
+                "Inference health check passed: engine=%s, model=%s",
+                engine.engine, engine.model,
+            )
+        else:
+            logger.warning(
+                "Inference engine '%s' is running but model '%s' not found. "
+                "Queries will fail until the model is available.",
+                engine.engine, engine.model,
+            )
     except Exception as e:
         logger.error(
-            f"Ollama is not reachable at {ollama_host}: {e}\n"
-            f"  → Start Ollama first:  ollama serve\n"
-            f"  → Then pull the model: ollama pull {ollama_model}\n"
-            f"  → The server will start but queries will fail until Ollama is available."
+            "Inference engine not reachable at %s: %s\n"
+            "  Configured engine: %s\n"
+            "  Configured model:  %s\n"
+            "  The server will start but queries will fail until the engine is available.",
+            engine.base_url, e, engine.engine, engine.model,
         )
 
     logger.info("Initializing RAG index...")
@@ -638,7 +634,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 pass  # fall through to normal Ollama generation below
 
             if not stis_routed:
-                model_name = cfg["llm"]["model"]
+                engine = get_engine()
+                model_name = engine.model
                 await websocket.send_json({"type": "pipeline", "agents": [
                     {"name": "safety", "status": "done", "detail": safety_detail},
                     {"name": "retrieval", "status": "done", "detail": retrieval_detail},
@@ -646,27 +643,22 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     {"name": "generation", "status": "running", "detail": f"Streaming {model_name} ({ctx_len} chars context)"},
                 ]})
 
-                client = Client(host=cfg["llm"]["host"])
                 full_response = ""
                 token_count = 0
                 _ttft_logged = False
 
                 _num_predict = NUM_PREDICT.get(mode, 800)
-                for chunk in client.chat(
-                    model=model_name,
+                for text_chunk in engine.stream(
                     messages=[{"role": "system", "content": prepared["system_prompt"]}, {"role": "user", "content": prepared["user_prompt"]}],
-                    options={"temperature": 0.1, "num_ctx": 4096, "num_predict": _num_predict},
-                    stream=True
+                    temperature=0.1, num_ctx=4096, num_predict=_num_predict,
                 ):
-                    if 'message' in chunk and 'content' in chunk['message']:
-                        text_chunk = chunk['message']['content']
-                        if not _ttft_logged:
-                            _ttft = (_time_mod.perf_counter() - _t0) * 1000
-                            logger.info("[TIMING] TTFT: %.0f ms", _ttft)
-                            _ttft_logged = True
-                        full_response += text_chunk
-                        token_count += 1
-                        await websocket.send_json({"chunk": text_chunk, "weights": actual_weights, "reward": 0.0})
+                    if not _ttft_logged:
+                        _ttft = (_time_mod.perf_counter() - _t0) * 1000
+                        logger.info("[TIMING] TTFT: %.0f ms", _ttft)
+                        _ttft_logged = True
+                    full_response += text_chunk
+                    token_count += 1
+                    await websocket.send_json({"chunk": text_chunk, "weights": actual_weights, "reward": 0.0})
 
                 gen_detail = f"{token_count} tokens via {model_name}"
                 _t_gen = _time_mod.perf_counter()

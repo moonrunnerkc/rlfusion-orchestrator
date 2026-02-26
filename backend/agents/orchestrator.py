@@ -508,8 +508,6 @@ class Orchestrator:
         Handles LLM generation internally (non-streaming) and returns the
         complete orchestration result matching the frozen API contract.
         """
-        from ollama import Client
-
         prepared = self.prepare(query, mode, session_id)
 
         # early exit: memory request
@@ -572,18 +570,17 @@ class Orchestrator:
             logger.warning("STIS failed (%s), falling back to Ollama",
                            stis_result["error"])
 
-        # LLM generation via Ollama (non-streaming for /chat)
-        client = Client(host=cfg["llm"]["host"])
+        # LLM generation via inference engine (non-streaming for /chat)
+        from backend.core.model_router import get_engine
+        engine = get_engine()
         _num_predict = NUM_PREDICT.get(mode, 800)
-        response_obj = client.chat(
-            model=cfg["llm"]["model"],
+        llm_response = engine.generate(
             messages=[
                 {"role": "system", "content": prepared["system_prompt"]},
                 {"role": "user", "content": prepared["user_prompt"]},
             ],
-            options={"temperature": 0.3, "num_ctx": 4096, "num_predict": _num_predict},
+            temperature=0.3, num_ctx=4096, num_predict=_num_predict,
         )
-        llm_response = response_obj["message"]["content"]
 
         return self.finalize(
             query=query,
