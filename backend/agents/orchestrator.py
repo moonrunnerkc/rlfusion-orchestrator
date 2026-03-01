@@ -122,9 +122,10 @@ Do not output raw source tags. Cite information naturally.
 RULES:
 1. Answer ONLY the question asked. Nothing else.
 2. If context is relevant, ground your answer in it. Cite specific facts, numbers, and details.
-3. If context is partially relevant, use relevant parts and supplement with your own knowledge.
+3. If context is partially relevant, use relevant parts and supplement with your own knowledge. Blend seamlessly.
 4. If context is unrelated, pretend it does not exist. Never mention, acknowledge, or refer to it. Answer from your own knowledge.
 5. Never fabricate sources or claim context says something it does not.
+6. NEVER comment on the context itself. Do not say "the context does not mention", "based on the provided context", "unfortunately", "please note", or any meta-commentary about your sources. Just answer directly.
 {critique_suffix}"""
 
 
@@ -148,9 +149,9 @@ def generate_user_prompt(mode: str, query: str, fused_context: str, context_part
     if has_context:
         return (f"RETRIEVED CONTEXT:\n{fused_context}\n\n"
                 f"QUESTION: {query}\n\n"
-                f"Answer the question. Use the context above if relevant, "
-                f"otherwise answer from your own knowledge:")
-    return f"QUESTION: {query}\n\nAnswer from your knowledge:"
+                f"Give a direct, confident answer. Weave in context where useful. "
+                f"Fill gaps from your own expertise. No disclaimers:")
+    return f"QUESTION: {query}\n\nGive a direct, confident answer:"
 
 
 def apply_markdown_formatting(text: str) -> str:
@@ -159,6 +160,21 @@ def apply_markdown_formatting(text: str) -> str:
     text = re.sub(r'\[CAG:[^\]]+\]\s*', '', text)
     text = re.sub(r'\[GRAPH:[^\]]+\]\s*', '', text)
     text = re.sub(r'\[WEB:[^\]]+\]\s*', '', text)
+    # strip hedging openers that LLMs love to prepend
+    text = re.sub(
+        r'^(Unfortunately,?\s*|Please note that\s*|Based on the (provided |available )?context,?\s*|'
+        r'I don\'t have (specific |direct )?information about\s*|'
+        r'The (provided |available )?context does not (explicitly |directly )?(mention|contain|include)\s*[^.]*\.\s*'
+        r'(However,?\s*)?)',
+        '', text, flags=re.IGNORECASE,
+    )
+    # strip trailing disclaimer paragraphs
+    text = re.sub(
+        r'\n\n(Please note that |Note that |It\'s worth noting that |'
+        r'Keep in mind that |However, it\'s important to note that |'
+        r'This explanation is based on )[^\n]*$',
+        '', text, flags=re.IGNORECASE,
+    )
     text = re.sub(r'([^\n])(#{1,3}\s)', r'\1\n\n\2', text)
     text = re.sub(r'([.!?:])\s*(-\s)', r'\1\n\n\2', text)
     text = re.sub(r'([.!?])\s+([A-Z#])', r'\1\n\n\2', text)
