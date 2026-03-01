@@ -281,11 +281,83 @@ _engine: InferenceEngine | None = None
 
 
 def get_engine() -> InferenceEngine:
-    """Return the module-level InferenceEngine singleton."""
+    """Return the module-level InferenceEngine singleton.
+
+    When inference.engine == 'llama_cpp_dual', returns an adapter wrapping
+    the AsymmetricLLMOrchestrator so existing call sites (generate/stream)
+    work transparently.
+    """
     global _engine
     if _engine is None:
-        _engine = InferenceEngine()
+        inf = get_inference_config()
+        if str(inf["engine"]) == "llama_cpp_dual":
+            _engine = _build_asymmetric_adapter()
+        else:
+            _engine = InferenceEngine()
     return _engine
+
+
+def _build_asymmetric_adapter() -> InferenceEngine:
+    """Wrap AlymmetricLLMOrchestrator in an InferenceEngine-compatible shell.
+
+    This lets existing code call engine.generate() / engine.stream() without
+    knowing about the dual-model split. Tasks default to GPU executor unless
+    the caller hints via the model parameter.
+    """
+    from backend.core.asymmetric_llm import get_orchestrator
+
+    orch = get_orchestrator()
+
+    adapter = InferenceEngine.__new__(InferenceEngine)
+    adapter._engine = "llama_cpp_dual"
+    adapter._base_url = "local"
+    adapter._model = "dual-model"
+    adapter._timeout = 60
+    adapter._api_key = ""
+
+    def generate_adapter(
+        messages: list[dict[str, str]],
+        *,
+        model: str | None = None,
+        temperature: float = 0.1,
+        num_ctx: int = 4096,
+        num_predict: int | None = None,
+        timeout: float | None = None,
+        images: list[str] | None = None,
+    ) -> str:
+        prompt = messages[-1]["content"] if messages else ""
+        system = next(
+            (m["content"] for m in messages if m["role"] == "system"),
+            "You are a helpful assistant.",
+        )
+        return orch.execute(
+            prompt, system=system, temperature=temperature,
+            max_tokens=num_predict or 2048,
+        )
+
+    def stream_adapter(
+        messages: list[dict[str, str]],
+        *,
+        model: str | None = None,
+        temperature: float = 0.1,
+        num_ctx: int = 4096,
+        num_predict: int | None = None,
+        timeout: float | None = None,
+    ) -> Generator:
+        prompt = messages[-1]["content"] if messages else ""
+        system = next(
+            (m["content"] for m in messages if m["role"] == "system"),
+            "You are a helpful assistant.",
+        )
+        return orch.stream_execute(
+            prompt, system=system, temperature=temperature,
+            max_tokens=num_predict or 2048,
+        )
+
+    adapter.generate = generate_adapter
+    adapter.stream = stream_adapter
+    logger.info("InferenceEngine: using asymmetric dual-model adapter")
+    return adapter
 
 
 # ---------------------------------------------------------------------------

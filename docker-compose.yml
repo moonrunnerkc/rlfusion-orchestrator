@@ -1,8 +1,8 @@
 # Author: Bradley R. Kinnard
-# docker-compose.yml - CPU, GPU, and ARM profiles for RLFusion
+# docker-compose.yml - CPU and GPU profiles for RLFusion (2-path architecture)
 # Usage: docker compose --profile cpu up
 #        docker compose --profile gpu up
-#        docker compose --profile arm up
+# Models must be pre-downloaded to models/ before first run.
 
 services:
   backend-cpu:
@@ -15,10 +15,11 @@ services:
     volumes:
       - ./data:/app/data
       - ./db:/app/db
-      - ./indexes:/app/indexes
+      - ./models:/app/models
     environment:
       - CUDA_VISIBLE_DEVICES=""
-    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000
+      - INFERENCE_ENGINE=llama_cpp_dual
+    command: python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 
   backend-gpu:
     build:
@@ -30,7 +31,9 @@ services:
     volumes:
       - ./data:/app/data
       - ./db:/app/db
-      - ./indexes:/app/indexes
+      - ./models:/app/models
+    environment:
+      - INFERENCE_ENGINE=llama_cpp_dual
     deploy:
       resources:
         reservations:
@@ -38,43 +41,15 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000
-
-  backend-arm:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      platforms:
-        - linux/arm64
-    profiles: ["arm"]
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./data:/app/data
-      - ./db:/app/db
-      - ./indexes:/app/indexes
-    environment:
-      - CUDA_VISIBLE_DEVICES=""
-      - RLFUSION_DEVICE=cpu
-      - RLFUSION_FORCE_CPU=true
-    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000
+        limits:
+          memory: 24G
+    command: python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    profiles: ["cpu", "gpu", "arm"]
+    profiles: ["cpu", "gpu"]
     ports:
       - "5173:5173"
     command: npm run dev -- --host
-
-  ollama:
-    image: ollama/ollama:latest
-    profiles: ["cpu", "gpu", "arm"]
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-
-volumes:
-  ollama_data:

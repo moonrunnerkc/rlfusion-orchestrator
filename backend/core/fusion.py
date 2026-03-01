@@ -1,6 +1,6 @@
 # Author: Bradley R. Kinnard
-# fusion.py - blends RAG/CAG/Graph/Web using default or RL-driven weights
-# Originally built for personal offline use, now open-sourced for public benefit.
+# fusion.py - blends CAG/Graph using default or RL-driven weights
+# RAG and Web paths removed per upgrade plan Step 3.
 
 import numpy as np
 from typing import List, Dict, Any
@@ -18,19 +18,15 @@ def normalize_weights(weights: List[float]) -> List[float]:
 
 def get_default_weights() -> List[float]:
     d = cfg["fusion"]["default_weights"]
-    return [d["rag"], d["cag"], d["graph"]]
+    return [d["cag"], d["graph"]]
 
 
 def fuse_context(query: str, rag_results: List[Dict], cag_results: List[Dict],
                  graph_results: List[Dict]) -> Dict[str, Any]:
-    """Merge retrieval results using default weights. CQL routing lives in main.py."""
+    """Merge retrieval results using default weights. Two-path: CAG + Graph."""
     weights = get_default_weights()
-    rag_w, cag_w, graph_w = weights
+    cag_w, graph_w = weights
     parts = []
-
-    for r in rag_results:
-        if r["score"] >= 0.65:
-            parts.append(f"[RAG:{r['score']:.2f}] {r['text']}")
 
     for c in cag_results:
         if c["score"] >= 0.85:
@@ -42,7 +38,7 @@ def fuse_context(query: str, rag_results: List[Dict], cag_results: List[Dict],
 
     return {
         "context": "\n\n".join(parts),
-        "weights": {"rag": rag_w, "cag": cag_w, "graph": graph_w},
+        "weights": {"cag": cag_w, "graph": graph_w},
         "sources": parts
     }
 

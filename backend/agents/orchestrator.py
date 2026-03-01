@@ -43,8 +43,7 @@ If context contains a USER PROFILE section, use those facts to personalize answe
 """
 
 WEB_INSTRUCTION = """
-WEB RESULTS: [WEB:...] entries are live internet search. Prioritize them for current events.
-Cite source URLs inline. Ignore unrelated [RAG:...] results when web results are present.
+WEB RESULTS: Web search is currently disabled.
 """
 
 # Token budgets per mode (generation cap)
@@ -367,7 +366,7 @@ class Orchestrator:
             return PreparedContext(
                 system_prompt="",
                 user_prompt="",
-                actual_weights=[0.25, 0.25, 0.25, 0.25],
+                actual_weights=[0.5, 0.5],
                 fused_context="",
                 web_status="disabled",
                 expanded_query=expanded_query,
@@ -400,7 +399,7 @@ class Orchestrator:
             return PreparedContext(
                 system_prompt="",
                 user_prompt="",
-                actual_weights=[0.0, 0.0, 0.0, 0.0],
+                actual_weights=[0.0, 0.0],
                 fused_context="",
                 web_status=result.get("web_status", "disabled"),
                 expanded_query=expanded_query,
@@ -414,7 +413,7 @@ class Orchestrator:
             )
 
         fused_context = result.get("fused_context", "")
-        actual_weights = result.get("actual_weights", [0.25, 0.25, 0.25, 0.25])
+        actual_weights = result.get("actual_weights", [0.5, 0.5])
         web_status = result.get("web_status", "disabled")
         retrieval_results = result.get("retrieval_results", {"rag": [], "cag": [], "graph": [], "web": [], "web_status": "disabled"})
 
@@ -486,9 +485,8 @@ class Orchestrator:
         return OrchestrationResult(
             response=clean_response,
             fusion_weights={
-                "rag": actual_weights[0] if len(actual_weights) > 0 else 0.0,
-                "cag": actual_weights[1] if len(actual_weights) > 1 else 0.0,
-                "graph": actual_weights[2] if len(actual_weights) > 2 else 0.0,
+                "cag": actual_weights[0] if len(actual_weights) > 0 else 0.0,
+                "graph": actual_weights[1] if len(actual_weights) > 1 else 0.0,
             },
             reward=critique_updates.get("reward", 0.0),
             proactive_suggestions=critique_updates.get("proactive_suggestions", []),
@@ -517,7 +515,7 @@ class Orchestrator:
                 preview += "..."
             return OrchestrationResult(
                 response=f"\u2705 **Remembered:**\n\n> {preview}",
-                fusion_weights={"rag": 0.0, "cag": 0.0, "graph": 0.0},
+                fusion_weights={"cag": 0.0, "graph": 0.0},
                 reward=1.0,
                 proactive_suggestions=[],
                 blocked=False,
@@ -529,7 +527,7 @@ class Orchestrator:
         if prepared["blocked"]:
             return OrchestrationResult(
                 response="I can't help with that request. " + prepared["safety_reason"],
-                fusion_weights={"rag": 0.0, "cag": 0.0, "graph": 0.0},
+                fusion_weights={"cag": 0.0, "graph": 0.0},
                 reward=0.0,
                 proactive_suggestions=[],
                 blocked=True,

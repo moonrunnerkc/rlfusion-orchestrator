@@ -41,10 +41,13 @@ paths:
   ontology: data/ontology.json
   docs: data/docs
   synthetic_episodes: data/synthetic_episodes
+retrieval:
+  paths:
+    - cag
+    - graph
 fusion:
   default_weights:
-    rag: 0.2
-    cag: 0.2
+    cag: 0.4
     graph: 0.6
   temperature: 1.0
 critique:
@@ -121,12 +124,17 @@ fine_tuning:
   output_dir: models/fine_tuned
   export_gguf: true
 inference:
-  engine: vllm
+  engine: llama_cpp_dual
   base_url: http://localhost:8001
   model: Qwen/Qwen2.5-3B-Instruct
   max_concurrent: 4
   timeout_secs: 60
   openai_api_key: ""
+  cpu_model_path: models/qwen2.5-1.5b-instruct-q4_k_m.gguf
+  gpu_model_path: models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf
+  cpu_ctx_size: 8192
+  gpu_ctx_size: 8192
+  seed: 42
 model_router:
   enabled: true
   general_model: Qwen/Qwen2.5-3B-Instruct

@@ -4,10 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 
 interface WeightSnapshot {
   ts: number;
-  rag: number;
   cag: number;
   graph: number;
-  web: number;
 }
 
 interface RewardEntry {
@@ -31,7 +29,7 @@ interface BenchmarkSummary {
 }
 
 interface Props {
-  weights: { rag: number; cag: number; graph: number; web?: number };
+  weights: { cag: number; graph: number };
   reward: number;
   isActive: boolean;
 }
@@ -64,12 +62,12 @@ export default function MonitoringPanel({ weights, reward, isActive }: Props) {
 
   // Track weight changes over time
   useEffect(() => {
-    if (weights.rag === 0 && weights.cag === 0 && weights.graph === 0) return;
+    if (weights.cag === 0 && weights.graph === 0) return;
     setWeightHistory(prev => {
-      const next = [...prev, { ts: Date.now(), rag: weights.rag, cag: weights.cag, graph: weights.graph, web: weights.web ?? 0 }];
+      const next = [...prev, { ts: Date.now(), cag: weights.cag, graph: weights.graph }];
       return next.length > MAX_HISTORY ? next.slice(-MAX_HISTORY) : next;
     });
-  }, [weights.rag, weights.cag, weights.graph, weights.web]);
+  }, [weights.cag, weights.graph]);
 
   // Track reward changes
   useEffect(() => {
@@ -146,7 +144,7 @@ export default function MonitoringPanel({ weights, reward, isActive }: Props) {
         <div>
           <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Weight History</p>
           <div className="space-y-1">
-            {(['rag', 'cag', 'graph', 'web'] as const).map(path => {
+            {(['cag', 'graph'] as const).map(path => {
               const vals = weightHistory.map(w => w[path]);
               const label = path.toUpperCase();
               const latest = vals.length > 0 ? (vals[vals.length - 1] * 100).toFixed(0) : '—';
@@ -155,10 +153,8 @@ export default function MonitoringPanel({ weights, reward, isActive }: Props) {
                   <span className="text-[10px] text-gray-500 w-10 text-right">{label}</span>
                   <div className="flex-1">
                     <MiniBar values={vals} color={
-                      path === 'rag' ? 'bg-blue-500/70' :
                       path === 'cag' ? 'bg-purple-500/70' :
-                      path === 'graph' ? 'bg-emerald-500/70' :
-                      'bg-amber-500/70'
+                      'bg-emerald-500/70'
                     } maxVal={1.0} />
                   </div>
                   <span className="text-[10px] text-gray-400 w-8">{latest}%</span>

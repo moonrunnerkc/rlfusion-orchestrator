@@ -1,10 +1,8 @@
 // frontend/src/components/FusionMeter.tsx
-// Replaced rainbow gradients with a single disciplined cyan accent.
-// The policy decides dominance. The UI merely obeys.
+// 2-path CAG + Graph meter. The policy decides dominance. The UI obeys.
 
 import { motion } from 'framer-motion';
-
-interface Weights { rag: number; cag: number; graph: number; web?: number; }
+import type { Weights } from '../types/contracts';
 
 interface FusionMeterProps {
   weights: Weights;
@@ -12,10 +10,8 @@ interface FusionMeterProps {
 
 export default function FusionMeter({ weights }: FusionMeterProps) {
   const items = [
-    { label: 'RAG',   value: weights.rag, icon: '📄' },
     { label: 'CAG',   value: weights.cag, icon: '💾' },
     { label: 'Graph', value: weights.graph, icon: '🕸️' },
-    { label: 'Web',   value: weights.web ?? 0, icon: '🌐' },
   ];
 
   return (

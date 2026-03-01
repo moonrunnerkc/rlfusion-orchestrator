@@ -1,20 +1,22 @@
 <p align="center">
   <h1 align="center">RLFusion Orchestrator</h1>
   <p align="center">
-    <strong>Local-first multi-agent retrieval engine with offline RL routing, chunk stability filtering, and sub-token consensus generation.</strong>
+    <strong>Local-first cognitive engine with asymmetric dual-model inference, offline RL routing, chunk stability filtering, and sub-token consensus generation.</strong>
   </p>
   <p align="center">
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"/></a>
     <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+"/>
-    <img src="https://img.shields.io/badge/tests-544%20passing-brightgreen" alt="544 tests"/>
-    <img src="https://img.shields.io/badge/cuda-optional-green" alt="CUDA Optional"/>
-    <img src="https://img.shields.io/badge/platform-linux%20|%20docker%20|%20arm-lightgrey" alt="Platforms"/>
+    <img src="https://img.shields.io/badge/tests-623%20passing-brightgreen" alt="623 tests"/>
+    <img src="https://img.shields.io/badge/cuda-12.1%2B-76B900" alt="CUDA 12.1+"/>
+    <img src="https://img.shields.io/badge/inference-llama--cpp--python-orange" alt="llama-cpp-python"/>
+    <img src="https://img.shields.io/badge/platform-linux%20|%20docker-lightgrey" alt="Platforms"/>
+    <img src="https://img.shields.io/badge/code%20style-black-000000" alt="Code Style: Black"/>
   </p>
 </p>
 
 **Author:** Bradley R. Kinnard
 **LinkedIn:** [linkedin.com/in/brad-kinnard](https://www.linkedin.com/in/brad-kinnard/)
-**Whitepaper:** [WHITEPAPER.md](WHITEPAPER.md) — full technical write-up covering CSWR, CQL routing, self-critique rewards, and benchmark results.
+**Whitepaper:** [WHITEPAPER.md](WHITEPAPER.md) -- full technical write-up covering CSWR, CQL routing, self-critique rewards, and benchmark results.
 
 If you use this work in your own project, research, or write-up, please cite this repo and the LinkedIn above.
 
@@ -27,10 +29,11 @@ If you use this work in your own project, research, or write-up, please cite thi
 
 - [What This Is](#what-this-is)
 - [Headline Features](#headline-features)
-  - [CSWR — Chunk Stability Weighted Retrieval](#-cswr--chunk-stability-weighted-retrieval)
-  - [STIS — Sub-Token Intuition Swarms](#-stis--sub-token-intuition-swarms)
+  - [CSWR -- Chunk Stability Weighted Retrieval](#-cswr--chunk-stability-weighted-retrieval)
+  - [STIS -- Sub-Token Intuition Swarms](#-stis--sub-token-intuition-swarms)
 - [Architecture](#architecture)
-- [The Four Retrieval Paths](#the-four-retrieval-paths)
+- [Asymmetric Dual-Model Pipeline](#asymmetric-dual-model-pipeline)
+- [Two-Path Retrieval](#two-path-retrieval)
 - [RL-Based Fusion Routing](#rl-based-fusion-routing)
 - [Safety and Quality Layers](#safety-and-quality-layers)
 - [Dynamic Tool System](#dynamic-tool-system)
@@ -55,9 +58,9 @@ If you use this work in your own project, research, or write-up, please cite thi
 
 ## What This Is
 
-RLFusion is not another RAG wrapper. It is a local cognitive engine that controls **how** it retrieves, **what** it trusts, and **when** to override its own sources — all running on consumer hardware.
+RLFusion is a local cognitive engine that controls **how** it retrieves, **what** it trusts, and **when** to override its own sources, all running on consumer hardware with zero cloud dependencies.
 
-The system runs four retrieval paths in parallel (vector search, semantic cache, knowledge graph, optional web), applies a **stability filter** to kill noisy chunks before they reach the LLM, and uses an **offline RL policy** to learn the optimal weight mix per query type. When retrieval sources contradict each other and confidence is low, a **secondary swarm engine** forces mathematical consensus in continuous latent space before any token is ever sampled.
+The system uses an **asymmetric dual-model pipeline**: a fast 1.5B parameter model (Qwen 2.5, CPU-pinned) handles all triage, classification, and orchestration tasks, while a full 8B parameter model (Llama 3.1, GPU-pinned) handles generation, critique, and deep reasoning. Two retrieval paths (CAG semantic cache and GraphRAG entity traversal) are fused via an **offline RL policy** that learns the optimal weight mix per query type. A **stability filter** (CSWR) scores every chunk before it touches the LLM and kills noisy context at the gate. When retrieval sources contradict each other and confidence is low, a **secondary swarm engine** forces mathematical consensus in continuous latent space before any token is sampled.
 
 Everything is transparent. You can watch fusion weights shift in real time from the UI. Nothing is hidden and nothing leaves your machine.
 
@@ -65,86 +68,89 @@ Everything is transparent. You can watch fusion weights shift in real time from 
 
 | | |
 |---|---|
-| **CSWR** | Chunk Stability Weighted Retrieval — scores every chunk on local stability, question fit, and drift before it touches the LLM |
-| **STIS** | Sub-Token Intuition Swarms — resolves source contradictions via multi-agent convergence in hidden-state space |
+| **Asymmetric Inference** | Qwen 2.5 1.5B (Q4_K_M, CPU) for triage + Llama 3.1 8B (Q8_0, GPU) for generation. Single process, zero inter-process latency. |
+| **CSWR** | Chunk Stability Weighted Retrieval -- scores every chunk on local stability, question fit, and drift before it touches the LLM |
+| **STIS** | Sub-Token Intuition Swarms -- resolves source contradictions via multi-agent convergence in hidden-state space |
 | **CQL/PPO/DPO** | Three-stage adaptive RL policy that learns which retrieval path to trust for each query type |
-| **Multi-Engine Inference** | Pluggable LLM serving: Ollama (local dev), vLLM, or TensorRT-LLM (production), switchable via config toggle |
+| **CAG + GraphRAG** | Two-path retrieval: instant cache hits via SHA-256/semantic lookup, with entity graph traversal fallback |
 | **Multi-Agent Pipeline** | LangGraph-orchestrated agents (safety -> retrieval -> fusion -> generation -> critique) with complexity-based routing |
-| **544 Tests** | Full coverage across 9 test files — core modules, agents, tools, RL, edge cases, benchmarks, STIS engine, contradiction detection, and integration |
+| **623 Tests** | Full coverage across 11 test files, including asymmetric pipeline, core modules, agents, tools, RL, STIS, and benchmarks |
 
 ---
 
 ## Headline Features
 
-### ⚡ CSWR — Chunk Stability Weighted Retrieval
+### CSWR -- Chunk Stability Weighted Retrieval
 
 > *Standard RAG pulls garbage. CSWR stops it at the gate.*
 
-CSWR replaces naive top-k retrieval with a four-axis scoring function that evaluates every chunk **before** it enters the generation context. This is the single biggest lever against hallucination in the system.
+CSWR replaces naive top-k retrieval with a multi-axis scoring function that evaluates every chunk **before** it enters the generation context. This is the single biggest lever against hallucination in the system. In the current 2-path architecture, CSWR scoring is applied to GraphRAG traversal results.
 
 **How it scores each chunk:**
 
 ```
-CSW = 0.4 × vector_score + 0.3 × local_stability + 0.2 × question_fit + 0.1 × drift_penalty
+CSW = 0.35 x vector_score + 0.25 x local_stability + 0.20 x question_fit
+    + 0.10 x drift_penalty + 0.10 x project_coherence
 ```
 
 | Axis | What It Measures | How |
 |------|-----------------|-----|
-| **Vector Score** | Raw FAISS similarity | `1 / (1 + L2_distance)` — standard but insufficient alone |
-| **Local Stability** | Is this chunk coherent with its document neighbors? | Cosine similarity to adjacent chunks. Boundary chunks (first/last in document) receive a 0.15 penalty |
+| **Vector Score** | Semantic similarity | `1 / (1 + L2_distance)`, standard but insufficient alone |
+| **Local Stability** | Is this chunk coherent with its document neighbors? | Cosine similarity to adjacent chunks. Boundary chunks receive a 0.15 penalty |
 | **Question Fit** | Does this chunk actually address the query? | Entity coverage (40%), required fact coverage (30%), intent keyword matching (20%), answer shape match (10%) |
-| **Drift Penalty** | Does this chunk sit in a topic-shifting neighborhood? | Penalizes chunks where average neighbor similarity drops below 0.5. Fully isolated chunks get 1.5× severity |
+| **Drift Penalty** | Does this chunk sit in a topic-shifting neighborhood? | Penalizes chunks where average neighbor similarity drops below 0.5. Fully isolated chunks get 1.5x severity |
+| **Project Coherence** | Does this chunk belong to the active project context? | Cross-references against known project centroids |
 
-**Domain-adaptive thresholds** — stability requirements adjust based on detected query domain:
+**Domain-adaptive thresholds** -- stability requirements adjust based on detected query domain:
 
 | Domain | Detection | Stability Threshold |
 |--------|-----------|-------------------|
 | General | Default | 0.70 |
-| Tech | Keywords: `gpu`, `model`, `embedding`, `transformer`, `faiss`, etc. | 0.65 |
+| Tech | Keywords: `gpu`, `model`, `embedding`, `transformer`, etc. | 0.65 |
 | Code | Keywords: `function`, `class`, `def`, `import`, `return`, etc. | 0.55 |
 
-**Context Packing** — after scoring, chunks are packed into coherent neighborhoods (up to 1,800 tokens per pack) with an answerability gate: the LLM is asked if the pack can actually answer the question. Packs scoring below 0.55 answerability are dropped.
+**Context Packing** -- after scoring, chunks are packed into coherent neighborhoods (up to 1,800 tokens per pack) with an answerability gate. Packs scoring below 0.55 answerability are dropped.
 
 These thresholds are recalibrated from logged episodes via `compute_domain_quantiles()`, which recalculates the 25th/50th/75th percentile stability scores per domain.
 
-> **Implementation:** `backend/core/retrievers.py::score_chunks`, `build_pack`, `check_answerability`
+> **Implementation:** `backend/core/retrievers.py::score_chunks`, `build_pack`
 > **Config:** `backend/config.yaml` under `cswr:` and `cswr_quantiles:`
 > **Tests:** 168 unit tests in `tests/test_core_units.py` covering `TestScoreChunks`, `TestComputeStability`, `TestComputeFit`, `TestComputeDrift`, `TestBuildPack`
 
 ---
 
-### 🧠 STIS — Sub-Token Intuition Swarms
+### STIS -- Sub-Token Intuition Swarms
 
-> *When your sources disagree and confidence is low, don't guess — converge.*
+> *When your sources disagree and confidence is low, don't guess, converge.*
 
-STIS is a secondary generation engine that activates when RAG and Graph retrieval produce contradictory facts **and** CSWR confidence is simultaneously low. Instead of letting the LLM arbitrarily pick one source, STIS achieves consensus through mathematical convergence in continuous latent space — before any discrete token is sampled.
+STIS is a secondary generation engine that activates when CAG and Graph retrieval produce contradictory facts **and** CSWR confidence is simultaneously low. Instead of letting the LLM arbitrarily pick one source, STIS achieves consensus through mathematical convergence in continuous latent space before any discrete token is sampled.
 
-**Dual-condition gate — both must be true:**
+**Dual-condition gate, both must be true:**
 
 | Condition | Threshold | Why |
 |-----------|-----------|-----|
-| **Contradiction detected** | Cosine similarity between top RAG chunk and top Graph chunk < **0.40** | Sources are discussing fundamentally different or opposing content |
+| **Contradiction detected** | Cosine similarity between top CAG result and top Graph result < **0.40** | Sources are discussing fundamentally different or opposing content |
 | **Low CSWR confidence** | Best CSWR score across all results < **0.70** | The retrieval pipeline lacks confidence in what it found |
 
-If only one condition fires, the LLM handles it normally, a contradiction without low CSWR means the pipeline is confident enough, and low CSWR without contradiction means sources agree on limited content.
+If only one condition fires, the LLM handles it normally. A contradiction without low CSWR means the pipeline is confident enough. Low CSWR without contradiction means sources agree on limited content.
 
 **How the swarm works (per token):**
 
 ```
-1. EXTRACT  → Run N agents through the model, extract final-layer hidden states
-2. MEASURE  → Compute pairwise cosine similarity across all agent hidden states
-3. CONVERGE → If mean similarity < 0.92, blend toward centroid:
-               state_new = (1 - α) × state + α × centroid
+1. EXTRACT  -> Run N agents through the model, extract final-layer hidden states
+2. MEASURE  -> Compute pairwise cosine similarity across all agent hidden states
+3. CONVERGE -> If mean similarity < 0.92, blend toward centroid:
+               state_new = (1 - a) x state + a x centroid
                Repeat until convergence or max 30 iterations
-4. SAMPLE   → Project unified centroid through lm_head → logits → top-p sampling
-5. APPEND   → Add chosen token to all agent sequences, repeat from step 1
+4. SAMPLE   -> Project unified centroid through lm_head -> logits -> top-p sampling
+5. APPEND   -> Add chosen token to all agent sequences, repeat from step 1
 ```
 
 **Mathematical invariants enforced at every step:**
 
-- **Dimension Stability** — hidden state vectors never change dimensionality through convergence
-- **Centroid Preservation** — the blended centroid remains within the convex hull of agent states
-- **Convergence Monotonicity** — mean pairwise similarity is non-decreasing across iterations
+- **Dimension Stability** -- hidden state vectors never change dimensionality through convergence
+- **Centroid Preservation** -- the blended centroid remains within the convex hull of agent states
+- **Convergence Monotonicity** -- mean pairwise similarity is non-decreasing across iterations
 
 **Operational design:**
 
@@ -153,18 +159,18 @@ If only one condition fires, the LLM handles it normally, a contradiction withou
 | Model | Qwen2.5-1.5B (float16, ~3 GB VRAM) |
 | Agents | 2 default (configurable up to 16) |
 | Convergence threshold | 0.92 |
-| Blending rate (α) | 0.5 |
+| Blending rate | 0.5 |
 | Max iterations per token | 30 |
-| Server | FastAPI microservice on port 8100S |
-| Loading | **Lazy** — model stays off-GPU until first `/generate` request |
-| Idle unload | Auto-unloads after 120s of inactivity to free VRAM for the inference engine |
+| Server | FastAPI microservice on port 8100 |
+| Loading | **Lazy** -- model stays off-GPU until first `/generate` request |
+| Idle unload | Auto-unloads after 120s of inactivity to free VRAM for the main pipeline |
 | Audit trail | Every routing event logged to SQLite (`stis_resolutions` table) |
 
 When STIS handles a query, the LLM streaming loop is skipped entirely. The STIS response is sent as a single chunk. If STIS fails (timeout, unreachable, HTTP error), the pipeline falls back to normal LLM generation silently with a logged warning.
 
 > **Full architecture doc:** [STIS_ARCHITECTURE.md](STIS_ARCHITECTURE.md)
-> **Engine:** `stis_engine/swarm.py` — core convergence loop and token sampling
-> **Client:** `backend/core/stis_client.py` — axiom formatting, httpx POST, SQLite audit
+> **Engine:** `stis_engine/swarm.py` -- core convergence loop and token sampling
+> **Client:** `backend/core/stis_client.py` -- axiom formatting, httpx POST, SQLite audit
 > **Gate:** `backend/core/critique.py::should_route_to_stis`, `detect_contradiction`
 > **Config:** `backend/config.yaml` under `stis:`
 > **Tests:** 84 tests across `test_stis_engine.py` (29), `test_stis_contradiction.py` (26), `test_stis_integration.py` (29)
@@ -173,132 +179,162 @@ When STIS handles a query, the LLM streaming loop is skipped entirely. The STIS 
 
 ## Architecture
 
-The system is organized as a **multi-agent pipeline** orchestrated by LangGraph. Each agent follows a `plan() → act() → reflect()` protocol. The orchestrator classifies query complexity and routes through the appropriate agent chain.
+The system is organized as a **multi-agent pipeline** orchestrated by LangGraph. Each agent follows a `plan() -> act() -> reflect()` protocol. The orchestrator classifies query complexity and routes through the appropriate agent chain. All LLM calls route through the asymmetric orchestrator, which dispatches triage tasks to the CPU worker and generation tasks to the GPU executor.
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           USER QUERY                                    │
-└───────────────────────────────┬─────────────────────────────────────────┘
-                                │
-                    ┌───────────▼───────────┐
-                    │     ORCHESTRATOR      │
-                    │  classify_complexity  │
-                    │  simple │ complex │   │
-                    │     adversarial       │
-                    └───────────┬───────────┘
-                                │
-                    ┌───────────▼───────────┐
-                    │    SAFETY AGENT       │
-                    │  • Regex attack scan  │
-                    │  • OOD detection      │
-                    │  • LLM safety check   │
-                    └─────┬─────────┬───────┘
++-------------------------------------------------------------------------+
+|                           USER QUERY                                     |
++-------------------------------+-----------------------------------------+
+                                |
+                    +-----------v-----------+
+                    |     ORCHESTRATOR      |
+                    |  classify_complexity  |
+                    |  simple | complex |   |
+                    |     adversarial       |
+                    +-----------+-----------+
+                                |
+                    +-----------v-----------+
+                    |    SAFETY AGENT       |
+                    |  (CPU triage worker)  |
+                    |  * Regex attack scan  |
+                    |  * OOD detection      |
+                    |  * LLM safety check   |
+                    +-----+---------+-------+
                     blocked         safe
-                      │               │
-                      ▼               ▼
-                  [BLOCKED]   ┌───────────────┐
-                              │RETRIEVAL AGENT│
-                              └──┬──┬──┬──┬───┘
-                                 │  │  │  │
-                    ┌────────────┘  │  │  └────────────┐
-                    ▼              ▼  ▼                ▼
-                ┌──────┐    ┌─────┐  ┌───────┐    ┌──────┐
-                │ RAG  │    │ CAG │  │ Graph │    │ Web  │
-                │+CSWR │    │Cache│  │  RAG  │    │Search│
-                └──┬───┘    └──┬──┘  └──┬────┘    └──┬───┘
-                   │           │        │            │
-                   └─────┬─────┘────────┘────────────┘
-                         │
-              ┌──────────▼──────────┐
-              │    FUSION AGENT     │
-              │  CQL/PPO/DPO policy │
-              │  weighted merging   │
-              └──────────┬──────────┘
-                         │
-              ┌──────────▼──────────┐
-              │ CONTRADICTION CHECK │────── yes ──▶ STIS ENGINE
-              │ sim < 0.40 AND      │              (swarm consensus)
-              │ cswr < 0.70?        │                    │
-              └──────────┬──────────┘                    │
-                    no   │   ◀───────────────────────────┘
-                         │
-              ┌──────────▼──────────┐
-              │   LLM GENERATION    │
-              │   (engine stream)   │
-              └──────────┬──────────┘
-                         │
-              ┌──────────▼──────────┐
-              │   CRITIQUE AGENT    │
-              │  • Factual accuracy │
-              │  • Helpfulness      │
-              │  • Proactivity      │
-              │  • Citation coverage│
-              └──────────┬──────────┘
-                         │
-              ┌──────────▼──────────┐
-              │   RESPONSE + UI     │
-              │  weights, reward,   │
-              │  suggestions shown  │
-              └──────────┬──────────┘
-                         │
-                         ▼
-              ┌─────────────────────┐
-              │  RL POLICY UPDATE   │
-              │  (offline training) │
-              └─────────────────────┘
+                      |               |
+                      v               v
+                  [BLOCKED]   +---------------+
+                              |RETRIEVAL AGENT|
+                              +--+--------+---+
+                                 |        |
+                    +------------+        +------------+
+                    v                                  v
+                +-------+                        +---------+
+                |  CAG  |                        | GraphRAG|
+                | Cache |                        | Entity  |
+                | (< 5ms|                        | Traverse|
+                | on hit)|                       +---------+
+                +---+---+                             |
+                    |                                 |
+                    +------+--------+-----------------+
+                           |
+                +-----------v-----------+
+                |    FUSION AGENT       |
+                |  CQL/PPO/DPO policy   |
+                |  2-path weighted merge|
+                +-----------+-----------+
+                            |
+                +-----------v-----------+
+                | CONTRADICTION CHECK   |------ yes --> STIS ENGINE
+                | sim < 0.40 AND        |              (swarm consensus)
+                | cswr < 0.70?          |                    |
+                +-----------+-----------+                    |
+                      no    |   <----------------------------+
+                            |
+                +-----------v-----------+
+                |   LLM GENERATION      |
+                |   (GPU executor,      |
+                |    Llama 3.1 8B)      |
+                +-----------+-----------+
+                            |
+                +-----------v-----------+
+                |   CRITIQUE AGENT      |
+                |   (GPU executor)      |
+                |  * Factual accuracy   |
+                |  * Helpfulness        |
+                |  * Proactivity        |
+                |  * Citation coverage  |
+                +-----------+-----------+
+                            |
+                +-----------v-----------+
+                |   RESPONSE + UI       |
+                |  weights, reward,     |
+                |  suggestions shown    |
+                +-----------+-----------+
+                            |
+                            v
+                +-----------------------+
+                |  RL POLICY UPDATE     |
+                |  (offline training)   |
+                +-----------------------+
 ```
 
 **Pipeline step-by-step:**
 
-1. **Query enters** — orchestrator classifies complexity as `simple`, `complex`, or `adversarial`
-2. **Safety agent** — three-phase screening: regex attack patterns, Mahalanobis OOD detection, LLM safety classification. Adversarial queries can be blocked before retrieval starts
-3. **Retrieval agent** — dispatches to all four paths in parallel. Depth scales with query complexity
-4. **RL policy** — CQL/PPO/DPO evaluates the query embedding (396-dim observation) and outputs 4D fusion weights
-5. **CSWR** — filters RAG results by stability, fit, and drift. Domain-adaptive thresholds applied
-6. **Graph engine** — entity resolution, Leiden community detection, 2-hop traversal for structured context
-7. **Fusion agent** — merges results weighted by RL output. Per-path score thresholds enforce quality floors
-8. **Contradiction check** — if RAG vs Graph similarity < 0.40 *and* best CSWR < 0.70, routes to STIS
-9. **LLM generates** — inference engine streams response grounded in fused context (or STIS resolves it)
-10. **Critique agent** — dedicated LLM call scores factual accuracy, helpfulness, proactivity; optional ORPS tree reasoning for high-sensitivity queries
-11. **Response delivered** — fusion weights, reward, citations, and proactive suggestions visible in the UI
-12. **Episode logged** — query, weights, reward stored in SQLite replay buffer for RL training
+1. **Query intake** -- sanitize, length check (4,000 char max), assign correlation ID
+2. **CAG lookup** -- SHA-256 exact match or semantic similarity check. On strong hit (score >= 0.85), return immediately, bypassing steps 3-10 entirely. This is the primary latency win: repeated queries cost < 5 ms.
+3. **Safety agent** -- three-phase screening via CPU triage: regex attack patterns, Mahalanobis OOD detection, LLM safety classification
+4. **Intent decomposition** -- CPU triage parses query into structured JSON (intent, entities, expected shape)
+5. **GraphRAG traversal** -- entity resolution, Leiden community detection, 2-hop traversal for structured context
+6. **RL observation build** -- CPU triage assembles the observation vector (394 dimensions)
+7. **RL policy** -- CQL/PPO/DPO predicts 2D fusion weights [cag, graph]
+8. **Fusion agent** -- merges CAG and Graph results weighted by RL output
+9. **Contradiction check** -- if CAG vs Graph similarity < 0.40 *and* best CSWR < 0.70, routes to STIS
+10. **LLM generates** -- GPU executor (Llama 3.1 8B) streams response grounded in fused context
+11. **Critique agent** -- GPU executor scores factual accuracy, helpfulness, proactivity
+12. **CAG store** -- high-reward responses cached for future instant retrieval
+13. **Episode logged** -- query, weights, reward stored in SQLite replay buffer for RL training
 
 ---
 
-## The Four Retrieval Paths
+## Asymmetric Dual-Model Pipeline
 
-### RAG + CSWR
+The system runs two GGUF models in a single Python process with zero inter-process communication:
 
-FAISS-based vector search using **BGE-small-en-v1.5** embeddings (384 dimensions). Documents are chunked at 400 tokens and stored in a flat L2 index. Raw FAISS results pass through the CSWR filter (see [Headline Features](#-cswr--chunk-stability-weighted-retrieval)) before entering the fusion stage.
+| Model | File | Quant | Location | Role |
+|---|---|---|---|---|
+| Qwen 2.5 1.5B Instruct | `qwen2.5-1.5b-instruct-q4_k_m.gguf` | Q4_K_M | CPU (system RAM, ~2 GB) | Triage worker |
+| Llama 3.1 8B Instruct | `Meta-Llama-3.1-8B-Instruct-Q8_0.gguf` | Q8_0 | GPU (VRAM, ~9 GB) | Generation executor |
 
-Supports `.txt`, `.md`, and `.pdf` documents. PDFs are text-extracted via PyPDF2. Index rebuilds are triggered via `POST /api/reindex` or the frontend sidebar button.
+**Task routing rules:**
+
+| Task Type | Worker | Rationale |
+|---|---|---|
+| `intent_parse` | CPU triage | Fast structured JSON, no deep reasoning needed |
+| `safety_check` | CPU triage | Pattern + classification, low complexity |
+| `cag_lookup` | CPU triage | Cache orchestration, not generation |
+| `graph_trigger` | CPU triage | Entity extraction, structured output |
+| `obs_build` | CPU triage | Observation vector assembly |
+| `generation` | GPU executor | Full reasoning, long-form output |
+| `critique` | GPU executor | Quality evaluation requires deep model |
+| `stis_deep` | GPU executor | Contradiction resolution needs capacity |
+| `faithfulness` | GPU executor | Claim verification against sources |
+
+All triage calls that expect JSON use `json_repair` as a safety net. If the CPU worker produces malformed JSON, it is repaired automatically. If repair fails, one retry with a corrective prompt is attempted.
+
+Both models loaded once at startup. Context windows set to 8,192 tokens each. GPU model pinned with `n_gpu_layers=-1` (all layers on GPU). CPU model pinned with `n_gpu_layers=0`. Thread-safe access via per-model locks.
+
+**OOM fallback:** If the GPU executor hits an out-of-memory error, the system temporarily offloads it to CPU, logs the event, and recovers on the next successful load.
+
+**VRAM/RAM monitoring:** A background monitor (via `pynvml`) logs memory snapshots every 10 seconds as structured JSON. Current readings available via the `health_check()` method on the orchestrator.
+
+> **Implementation:** `backend/core/asymmetric_llm.py`, `backend/core/metrics.py`
+
+---
+
+## Two-Path Retrieval
+
+The system uses two retrieval paths: CAG (Cached Answer Graph) for instant cache hits, and GraphRAG for entity-based knowledge traversal. FAISS vector search and Tavily web search have been removed from the hot path.
 
 ### CAG (Cached Answer Graph)
 
-SQLite-backed exact-match and semantic-similarity cache. Queries are matched by:
-1. Exact string match
-2. Case-insensitive match
-3. Embedding cosine similarity (threshold ≥ 0.85)
+SQLite-backed cache with SHA-256 exact-match and semantic-similarity lookup. Queries are matched by:
+1. SHA-256 hash of normalized query (strip, lowercase, hash)
+2. Embedding cosine similarity (threshold >= 0.85)
 
-High-reward responses (reward ≥ 0.70) are automatically cached after each interaction, creating a feedback loop where good responses are served instantly on subsequent similar queries. Batch-embedded keys keep lookups fast.
+High-reward responses (reward >= 0.70) are automatically cached after each interaction. On a strong cache hit, the response is returned in < 5 ms, bypassing the entire retrieval-fusion-generation pipeline.
 
 ### GraphRAG
 
 NetworkX directed knowledge graph with:
-- **Entity resolution** — deduplication via embedding cosine similarity (threshold ≥ 0.92)
-- **Leiden community detection** — via igraph/leidenalg when available, connected-components fallback otherwise
-- **Multi-hop traversal** — up to 2 hops from matched entities, scores decay by 0.8 per hop
-- **Qdrant in-memory** — entity vector + payload search when qdrant-client is installed, numpy cosine fallback otherwise
+- **Entity resolution** -- deduplication via embedding cosine similarity (threshold >= 0.92)
+- **Leiden community detection** -- via igraph/leidenalg when available, connected-components fallback otherwise
+- **Multi-hop traversal** -- up to 2 hops from matched entities, scores decay by 0.8 per hop
+- **Qdrant in-memory** -- entity vector + payload search when qdrant-client is installed, numpy cosine fallback otherwise
 
 The graph engine provides co-occurrence bonuses, coherence penalties, and path distance weights that feed into CSWR's question-fit scoring component.
 
-> **Implementation:** `backend/core/graph_engine.py`
-
-### Web Search
-
-Optional, **off by default**. Requires a [Tavily API key](https://tavily.com). Used only when local context is genuinely insufficient. Results carry a fixed 0.95 confidence and include source URLs for citation.
-
-Enable via `web.enabled: true` in `backend/config.yaml` and set the `TAVILY_API_KEY` environment variable.
+> **Implementation:** `backend/core/retrievers.py`, `backend/core/graph_engine.py`
 
 ---
 
@@ -312,42 +348,41 @@ The `AdaptivePolicy` automatically transitions through RL stages as interaction 
 
 | Stage | Interactions | Method | Behavior |
 |-------|-------------|--------|----------|
-| **CQL** | 0–50 | Conservative Q-Learning (offline) | Stable defaults from pre-trained policy. No exploration. Ships with the repo. |
-| **PPO** | 50–500 | Proximal Policy Optimization (online) | Weights start reflecting your usage patterns. Cautious exploration. |
+| **CQL** | 0-50 | Conservative Q-Learning (offline) | Stable defaults from pre-trained policy. No exploration. Ships with the repo. |
+| **PPO** | 50-500 | Proximal Policy Optimization (online) | Weights start reflecting your usage patterns. Cautious exploration. |
 | **DPO** | 500+ | Direct Preference Optimization | Preference-based refinement from high-reward vs low-reward episode pairs. |
 
-### Observation Space (396 dimensions)
+### Observation Space (394 dimensions)
 
 | Dims | Signal |
 |------|--------|
 | 384 | Query embedding (BGE-small-en-v1.5) |
-| 3 | Top retrieval similarity scores from RAG |
 | 1 | Average CSWR score across top results |
 | 1 | Binary cache hit indicator |
 | 1 | Graph connectivity signal (results / 10) |
 | 1 | Normalized query length (words / 50) |
 | 5 | Query type vector (factoid, how-to, conceptual, comparative, other) |
+| 1 | CAG hit score (best semantic similarity) |
 
-### Action Space (4 continuous values)
+### Action Space (2 continuous values)
 
-Raw logits → softmax → clamped to minimum 0.05 per source. No retrieval path is ever fully zeroed out.
+Raw logits for [cag, graph] passed through softmax and clamped to minimum 0.05 per source. Neither retrieval path is ever fully zeroed out.
 
 ### Heuristic Fallback
 
-When the policy outputs near-uniform weights (max − min < 0.05), keyword heuristics take over:
+When the policy outputs near-uniform weights (max - min < 0.05), keyword heuristics take over:
 
-| Query Pattern | RAG | CAG | Graph | Web |
-|---------------|-----|-----|-------|-----|
-| URLs, "look up" | 0.20 | 0.10 | 0.20 | 0.50 |
-| "architecture", "design" | 0.20 | 0.10 | 0.60 | 0.10 |
-| "what is", "explain" | 0.60 | 0.20 | 0.10 | 0.10 |
-| Default | 0.40 | 0.20 | 0.30 | 0.10 |
+| Query Pattern | CAG | Graph |
+|---------------|-----|-------|
+| "architecture", "design", "workflow" | 0.30 | 0.70 |
+| "what is", "explain", "describe" | 0.40 | 0.60 |
+| Default | 0.40 | 0.60 |
 
 ### Reward Signal
 
-Rewards come from the critique agent — a dedicated LLM call that scores each response on factual accuracy, proactivity, and helpfulness (each 0.0–1.0). The mean becomes the scalar reward logged to the replay buffer. No human annotation required.
+Rewards come from the critique agent (running on the GPU executor), a dedicated LLM call that scores each response on factual accuracy, proactivity, and helpfulness (each 0.0-1.0). The mean becomes the scalar reward logged to the replay buffer. No human annotation required.
 
-> **Implementation:** `backend/agents/fusion_agent.py::compute_rl_weights`, `backend/rl/train_rl.py`, `backend/rl/train_ppo.py`, `backend/rl/train_dpo.py`
+> **Implementation:** `backend/agents/fusion_agent.py`, `backend/rl/fusion_env.py`, `backend/rl/train_rl.py`, `backend/rl/train_ppo.py`, `backend/rl/train_dpo.py`
 
 ---
 
@@ -355,19 +390,19 @@ Rewards come from the critique agent — a dedicated LLM call that scores each r
 
 ### Three-Phase Safety Gate
 
-Every query passes through the safety agent before retrieval begins:
+Every query passes through the safety agent (routed to the CPU triage worker) before retrieval begins:
 
-1. **Regex pre-filter** — fast pattern matching for prompt injection, SQL injection, template injection, XSS, jailbreak attempts
-2. **OOD detection** — Mahalanobis distance with Ledoit-Wolf covariance shrinkage, fitted on the embedding distribution of indexed documents. Queries exceeding the threshold (default: 50.0) are flagged
-3. **LLM safety classification** — binary SAFE/UNSAFE classification via the inference engine for patterns that escape regex
+1. **Regex pre-filter** -- fast pattern matching for prompt injection, SQL injection, template injection, XSS, jailbreak attempts
+2. **OOD detection** -- Mahalanobis distance with Ledoit-Wolf covariance shrinkage, fitted on the embedding distribution of indexed documents. Queries exceeding the threshold (default: 50.0) are flagged
+3. **LLM safety classification** -- binary SAFE/UNSAFE classification via the CPU triage model for patterns that escape regex
 
 ### Self-Critique
 
-The critique agent runs a **dedicated, separate LLM call** after generation (not inline — this was moved to a post-generation step for reliability). It returns structured JSON scores:
+The critique agent runs a **dedicated, separate LLM call** on the GPU executor after generation (not inline). It returns structured JSON scores:
 
-- **Factual accuracy** (0.0–1.0)
-- **Proactivity** (0.0–1.0)
-- **Helpfulness** (0.0–1.0)
+- **Factual accuracy** (0.0-1.0)
+- **Proactivity** (0.0-1.0)
+- **Helpfulness** (0.0-1.0)
 - **Follow-up questions** (3 specific, non-generic suggestions)
 
 Citation coverage is computed independently by counting `[1]`, `[2]`, etc. markers against substantive sentences.
@@ -376,13 +411,11 @@ Citation coverage is computed independently by counting `[1]`, `[2]`, etc. marke
 
 For high-sensitivity queries (sensitivity > 0.7, as determined by query decomposition), the system runs **Outcome-Refining Process Supervision**:
 
-1. Generate N candidates (default beam width: 3) with progressively higher temperature (0.2 → 0.8)
+1. Generate N candidates (default beam width: 3) with progressively higher temperature (0.2 -> 0.8)
 2. Score each via critique
 3. Prune candidates below the reward threshold (0.3)
 4. Optionally refine top candidates
 5. Select the best by composite reward
-
-Exploration trees are logged to the replay buffer for offline RL training.
 
 ### Faithfulness Checking
 
@@ -399,8 +432,7 @@ The tool registry dispatches to specialized tools based on query content. Tools 
 | Tool | What It Does | Safety |
 |------|-------------|--------|
 | **Calculator** | AST-based math evaluation (no `eval`), unit conversions (length, mass, data, time, temperature) | Safe operators whitelist, no code execution |
-| **Code Executor** | Sandboxed Python via subprocess — stdout/stderr capture, 10s timeout | Banned modules list (os, sys, subprocess, socket, etc.), import blocker injected at runtime |
-| **Web Search** | Tavily API wrapper | Delegates to existing `tavily_search()`, config-gated |
+| **Code Executor** | Sandboxed Python via subprocess, stdout/stderr capture, 10s timeout | Banned modules list (os, sys, subprocess, socket, etc.), import blocker injected at runtime |
 | **API Bridge** | Generic REST API calls with URL validation | Configurable timeout (15s default) |
 
 > **Implementation:** `backend/tools/registry.py`, `backend/tools/calculator.py`, `backend/tools/code_executor.py`
@@ -411,10 +443,10 @@ The tool registry dispatches to specialized tools based on query content. Tools 
 
 Per-session state tracked across turns with entity extraction and anaphora resolution:
 
-- **Entity extraction** — regex patterns identify business names, people, locations, and products from messages
-- **Query expansion** — follow-up queries with pronouns ("what are their hours?") are automatically expanded using tracked entities ("what are their hours for The Blue Caboose in Kansas City?")
-- **Demonstrative filtering** — "this project", "that algorithm" are recognized as self-contained and not expanded
-- **Persistent user profile** — facts stored via explicit commands ("remember this: I prefer dark mode") or implicit statements. Stored in SQLite, injected into prompt context for personal queries
+- **Entity extraction** -- regex patterns identify business names, people, locations, and products from messages
+- **Query expansion** -- follow-up queries with pronouns ("what are their hours?") are automatically expanded using tracked entities
+- **Demonstrative filtering** -- "this project", "that algorithm" are recognized as self-contained and not expanded
+- **Persistent user profile** -- facts stored via explicit commands or implicit statements. Stored in SQLite, injected into prompt context for personal queries
 
 > **Implementation:** `backend/core/memory.py`, `backend/core/profile.py`
 
@@ -425,12 +457,10 @@ Per-session state tracked across turns with entity extraction and anaphora resol
 ### Requirements
 
 - Python 3.10+
-- An LLM inference engine (any one of the following):
-  - [Ollama](https://ollama.ai) for local development (default)
-  - [vLLM](https://docs.vllm.ai/) for production throughput
-  - [TensorRT-LLM](https://github.com/NVIDIA/TensorRT-LLM) for NVIDIA-optimized serving
+- NVIDIA GPU with 12+ GB VRAM (RTX 3080 or newer recommended, Blackwell/RTX 50-series supported)
+- CUDA 12.1+ toolkit
+- ~32 GB system RAM
 - Node.js 18+ (frontend, optional)
-- CUDA GPU optional (helps with embeddings and STIS engine)
 
 ### 1. Clone and install
 
@@ -443,31 +473,36 @@ source venv/bin/activate
 pip install -r backend/requirements.txt
 ```
 
-### 2. Initialize environment
+llama-cpp-python must be compiled with CUDA support. For Blackwell GPUs (RTX 5070/5080/5090):
+
+```bash
+CUDACXX=/usr/local/cuda/bin/nvcc \
+  CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=100;120" \
+  pip install llama-cpp-python --no-cache-dir
+```
+
+For Ampere/Ada GPUs (RTX 3090, 4090, etc.), adjust the architecture flags accordingly (e.g., `86;89`).
+
+### 2. Download model artifacts
+
+Both GGUF models are downloaded once and run fully offline after that:
+
+```bash
+# CPU triage model (~1.1 GB)
+huggingface-cli download Qwen/Qwen2.5-1.5B-Instruct-GGUF \
+  qwen2.5-1.5b-instruct-q4_k_m.gguf --local-dir models/
+
+# GPU generation model (~8 GB)
+huggingface-cli download bartowski/Meta-Llama-3.1-8B-Instruct-GGUF \
+  Meta-Llama-3.1-8B-Instruct-Q8_0.gguf --local-dir models/
+```
+
+### 3. Initialize environment
 
 ```bash
 cp .env.example .env
 ./scripts/init_db.sh
 ```
-
-### 3. Pull the LLM model
-
-**Ollama (default, local dev):**
-
-```bash
-ollama pull dolphin-llama3:8b
-```
-
-**vLLM (production):**
-
-```bash
-# Set the engine in config.yaml or via environment variables
-export INFERENCE_ENGINE=vllm
-export INFERENCE_BASE_URL=http://localhost:8000
-export INFERENCE_MODEL=dolphin-llama3:8b
-```
-
-> The inference engine is configured in `backend/config.yaml` under `inference.*`. Engine selection (`ollama`, `vllm`, or `tensorrt`) is a config toggle, not a code change. All engines expose the same internal API.
 
 ### 4. Add your documents
 
@@ -478,16 +513,7 @@ cp ~/my-notes/*.md  data/docs/
 cp ~/papers/*.pdf   data/docs/
 ```
 
-The FAISS index builds automatically on first startup. To rebuild after adding documents:
-
-```bash
-curl -X POST http://localhost:8000/api/reindex
-```
-
-Or use the **Reindex Docs** button in the frontend sidebar.
-
-> **Chunking:** 400 tokens per chunk, embedded with BGE-small-en-v1.5 (384 dims)
-> **Index location:** `indexes/rag_index.faiss` (auto-generated, safe to delete and rebuild)
+Documents feed the GraphRAG knowledge graph. The entity graph builds automatically from document content at indexing time.
 
 ### 5. Start the backend
 
@@ -495,7 +521,7 @@ Or use the **Reindex Docs** button in the frontend sidebar.
 uvicorn backend.main:app --port 8000
 ```
 
-Interactive API docs are available at:
+Both models load at startup (CPU worker in ~2s, GPU executor in ~5s). Interactive API docs at:
 - **Swagger UI:** [http://localhost:8000/docs](http://localhost:8000/docs)
 - **ReDoc:** [http://localhost:8000/redoc](http://localhost:8000/redoc)
 
@@ -513,20 +539,21 @@ The engine runs on port 8100 and lazy-loads Qwen2.5-1.5B on first request. It au
 
 ## Docker
 
-Three profiles for different hardware:
+Two profiles for different hardware configurations:
 
 ```bash
-# CPU-only
+# CPU-only (both models run on CPU, slower but works without GPU)
 docker compose --profile cpu up
 
-# GPU (requires nvidia-container-toolkit)
+# GPU (requires nvidia-container-toolkit, recommended)
 docker compose --profile gpu up
-
-# ARM (Jetson, Apple Silicon, Snapdragon)
-docker compose --profile arm up
 ```
 
-Each profile includes the backend, frontend, and an LLM inference container. Volumes are mounted for `data/`, `db/`, and `indexes/` so your documents and state persist.
+The GPU profile uses NVIDIA CUDA 12.1 as base image and compiles llama-cpp-python with Blackwell architecture flags (`-DCMAKE_CUDA_ARCHITECTURES=100;120`). Multi-stage build keeps the production image lean by excluding training scripts, test files, and removed dependencies.
+
+Models must be pre-downloaded to `models/` before building. Volumes are mounted for `data/`, `db/`, and `models/` so your documents, state, and model artifacts persist.
+
+The container includes a health check that pings `http://localhost:8000/ping` every 30 seconds.
 
 ---
 
@@ -546,24 +573,29 @@ Available at [http://localhost:5173](http://localhost:5173).
 
 | Component | What It Does |
 |-----------|-------------|
-| **Agent Pipeline** | Live status of each agent (safety → retrieval → fusion → generation → critique) as the query processes |
-| **Fusion Meter** | Real-time visualization of RAG/CAG/Graph/Web weight distribution |
+| **Agent Pipeline** | Live status of each agent (safety, retrieval, fusion, generation, critique) as the query processes |
+| **Fusion Meter** | Real-time visualization of CAG/Graph weight distribution (2-bar meter) |
 | **Monitoring Panel** | Weight history over time, reward tracking, system health indicators |
 | **Chat Interface** | Multi-session chat with localStorage persistence, drag-and-drop file upload |
 | **Settings Panel** | Runtime configuration toggles |
 | **Connection Status** | WebSocket health indicator |
 
+Shared TypeScript types live in `frontend/src/types/contracts.ts`, which mirrors backend response shapes exactly.
+
 ---
 
 ## RL Training
 
-RLFusion ships with a pre-trained CQL policy (`models/rl_policy_cql.d3`, ~3.3 MB) that provides reasonable defaults out of the box. The system improves with use.
+RLFusion ships with a pre-trained CQL policy (`models/rl_policy_cql.d3`, ~3.2 MB) that provides reasonable defaults out of the box. The system improves with use.
 
 ### Training commands
 
 ```bash
-# Offline CQL (ships pre-trained)
+# Offline CQL (ships pre-trained, 2-path architecture)
 python backend/rl/train_rl.py
+
+# Retrain for 2-path architecture (500 simulated episodes)
+python scripts/retrain_fusion.py
 
 # Online PPO (after 50+ interactions)
 python backend/rl/train_ppo.py
@@ -594,26 +626,38 @@ python backend/rl/train_rl.py
 
 ## Configuration
 
-All runtime behavior is controlled by `backend/config.yaml`. Every key has safe defaults — the system starts with zero manual configuration.
+All runtime behavior is controlled by `backend/config.yaml`. Every key has safe defaults. The system starts with zero manual configuration.
 
 ```yaml
 llm:
-  model: dolphin-llama3:8b          # any Ollama-compatible model
+  model: dolphin-llama3:8b          # legacy key, kept for backward compat
   host: http://localhost:11434
   temperature: 0.72
   max_tokens: 8192
 
 inference:
-  engine: ollama                     # ollama | vllm | tensorrt
-  base_url: http://localhost:11434   # engine endpoint
-  model: dolphin-llama3:8b           # model name on the engine
-  max_concurrent: 4                  # max parallel requests
-  timeout_secs: 30                   # per-request timeout
-  openai_api_key: ""                 # only needed for authenticated vLLM/TRT
+  engine: llama_cpp_dual             # asymmetric dual-model pipeline
+  cpu_model_path: models/qwen2.5-1.5b-instruct-q4_k_m.gguf
+  gpu_model_path: models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf
+  cpu_ctx_size: 8192                 # context window for CPU triage model
+  gpu_ctx_size: 8192                 # context window for GPU generation model
+  seed: 42                           # deterministic output
+  max_concurrent: 4
+  timeout_secs: 60
 
 embedding:
   model: BAAI/bge-small-en-v1.5     # 384-dim embeddings
   device: cuda                       # or cpu
+
+retrieval:
+  paths:
+    - cag                            # cached answer graph (first)
+    - graph                          # GraphRAG entity traversal (fallback)
+
+fusion:
+  default_weights:
+    cag: 0.4
+    graph: 0.6
 
 cswr:
   enabled: true
@@ -622,10 +666,11 @@ cswr:
   min_csw_score: 0.25
   answerability_threshold: 0.55
   stability_threshold: 0.7
-  vector_weight: 0.4
-  local_stability_weight: 0.3
-  question_fit_weight: 0.2
-  drift_penalty_weight: 0.1
+  vector_weight: 0.35
+  local_stability_weight: 0.25
+  question_fit_weight: 0.20
+  drift_penalty_weight: 0.10
+  project_coherence_weight: 0.10
 
 graph:
   enabled: true
@@ -655,9 +700,7 @@ reasoning:
   faithfulness_sensitivity_gate: 0.7
 
 web:
-  enabled: false
-  max_results: 3
-  search_timeout: 10
+  enabled: false                     # web search removed from hot path
 
 tools:
   enabled: true
@@ -681,15 +724,9 @@ Documented in `.env.example`:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `TAVILY_API_KEY` | No | _(empty)_ | Tavily API key for web search. Only needed if `web.enabled: true`. Free key at [tavily.com](https://tavily.com). |
-| `RLFUSION_DEVICE` | No | `cpu` | Compute device: `cpu` or `cuda`. |
+| `INFERENCE_ENGINE` | No | `llama_cpp_dual` | Inference backend. Use `llama_cpp_dual` for asymmetric pipeline. |
+| `RLFUSION_DEVICE` | No | `cuda` | Compute device: `cpu` or `cuda`. |
 | `RLFUSION_FORCE_CPU` | No | `false` | Force CPU mode even if CUDA is available. |
-| `INFERENCE_ENGINE` | No | `ollama` | LLM serving engine: `ollama`, `vllm`, or `tensorrt`. Overrides `inference.engine` in config.yaml. |
-| `INFERENCE_BASE_URL` | No | `http://localhost:11434` | Inference engine endpoint URL. Overrides `inference.base_url`. |
-| `INFERENCE_MODEL` | No | `dolphin-llama3:8b` | Model name on the inference engine. Overrides `inference.model`. |
-| `INFERENCE_API_KEY` | No | _(empty)_ | Bearer token for authenticated vLLM/TensorRT-LLM endpoints. |
-| `INFERENCE_MAX_CONCURRENT` | No | `4` | Maximum parallel inference requests. |
-| `INFERENCE_TIMEOUT` | No | `30` | Per-request timeout in seconds. |
 | `RLFUSION_ADMIN_KEY` | No | _(empty)_ | Bearer token for `POST /api/fine-tune`. If unset, the endpoint rejects all requests. |
 
 STIS engine environment variables:
@@ -711,18 +748,45 @@ STIS engine environment variables:
 | Method | Path | Rate Limit | Description |
 |--------|------|------------|-------------|
 | `POST` | `/chat` | 10/min | Query with fused response, weights, and reward |
-| `WS` | `/ws` | — | Streaming chat with real-time pipeline status |
+| `WS` | `/ws` | -- | Streaming chat with real-time pipeline status |
 | `GET` | `/api/config` | 10/min | Current configuration |
 | `PATCH` | `/api/config` | 10/min | Update config at runtime |
-| `GET` | `/ping` | 10/min | Health check (GPU status, policy loaded) |
+| `GET` | `/ping` | 10/min | Health check (GPU status, models loaded, VRAM) |
 | `POST` | `/api/upload` | 10/min | Upload documents to `data/docs/` |
-| `POST` | `/api/reindex` | 3/min | Rebuild RAG index |
+| `POST` | `/api/reindex` | 3/min | Rebuild knowledge graph index |
 | `DELETE` | `/api/reset` | 5/min | Wipe transient state (cache, episodes, replay) |
 | `POST` | `/api/fine-tune` | 1/hour | Trigger LoRA SFT (requires `RLFUSION_ADMIN_KEY`) |
-| `GET` | `/api/images/{path}` | — | Serve processed images |
-| `GET` | `/metrics` | — | Prometheus metrics |
+| `GET` | `/api/images/{path}` | -- | Serve processed images |
+| `GET` | `/metrics` | -- | Prometheus metrics |
 
 Full interactive documentation is auto-generated at `/docs` when the server is running.
+
+### POST /chat Response Shape
+
+```json
+{
+  "response": "...",
+  "fusion_weights": {"cag": 0.4, "graph": 0.6},
+  "reward": 0.85,
+  "proactive_suggestions": ["...", "..."]
+}
+```
+
+### WebSocket Done Message
+
+```json
+{
+  "type": "done",
+  "response": "...",
+  "fusion_weights": {"cag": 0.4, "graph": 0.6},
+  "reward": 0.85,
+  "proactive": "...",
+  "proactive_suggestions": ["..."],
+  "query_expanded": false,
+  "expanded_query": null,
+  "web_status": "disabled"
+}
+```
 
 ### Prometheus Metrics
 
@@ -746,23 +810,24 @@ A Grafana dashboard template is included at `scripts/grafana/dashboard.json`.
 
 ```
 backend/
-  main.py                  # FastAPI entry, Orchestrator wiring, Prometheus metrics, WS pipeline
+  main.py                  # FastAPI entry, pipeline wiring, Prometheus metrics, WS streaming
   config.py                # YAML config loader (cfg, PROJECT_ROOT, path helpers)
   config.yaml              # All runtime configuration with safe defaults
   agents/
     base.py                # BaseAgent protocol, PipelineState, QueryComplexity types
     orchestrator.py        # LangGraph DAG, complexity classification, prompt assembly
-    retrieval_agent.py     # Parallel RAG/CAG/Graph/Web dispatch
+    retrieval_agent.py     # CAG + GraphRAG dispatch (2-path)
     fusion_agent.py        # RL policy inference, heuristic fallback, context building
     critique_agent.py      # Dedicated LLM scoring, reward computation
     safety_agent.py        # Regex + OOD + LLM safety gate
   core/
-    retrievers.py          # CSWR scoring, FAISS indexing, context packing, Tavily search
-    fusion.py              # Weight normalization, context merging
-    critique.py            # Critique parsing, STIS gate (detect_contradiction,
-                           #   should_route_to_stis), safety checks, faithfulness
+    asymmetric_llm.py      # Dual-model orchestrator: CPU triage + GPU executor
+    metrics.py             # VRAM/RAM monitoring via pynvml, background gauges
+    retrievers.py          # CAG cache, GraphRAG traversal, CSWR scoring, context packing
+    fusion.py              # Weight normalization, context merging (2-path)
+    critique.py            # Critique parsing, STIS gate, safety checks, faithfulness
     stis_client.py         # STIS httpx client, axiom formatting, SQLite audit
-    decomposer.py          # LLM query decomposition with heuristic fallback
+    decomposer.py          # Heuristic query decomposition (LLM call removed for speed)
     memory.py              # Entity extraction, anaphora resolution, session state
     profile.py             # Persistent user profile (SQLite)
     utils.py               # BGE embeddings, chunking, OOD Mahalanobis detection
@@ -772,7 +837,7 @@ backend/
     multimodal.py          # CLIP embeddings, PDF image extraction, cross-modal search
     scheduler.py           # Hardware profiling, quantization recommendation, task lanes
   rl/
-    fusion_env.py          # Gymnasium env (396-dim obs, 4D continuous action)
+    fusion_env.py          # Gymnasium env (394-dim obs, 2D continuous action)
     train_rl.py            # CQL offline training (d3rlpy)
     train_ppo.py           # PPO online, GRPO, AdaptivePolicy
     train_dpo.py           # DPO preference learning
@@ -785,7 +850,6 @@ backend/
     registry.py            # Thread-safe registry with per-tool rate limiting
     calculator.py          # AST-based math eval, unit conversions
     code_executor.py       # Sandboxed subprocess Python execution
-    web_search.py          # Tavily wrapper (delegates to retrievers.tavily_search)
     api_bridge.py          # Generic REST API calls with URL validation
 stis_engine/
     swarm.py               # Core convergence loop, hidden state extraction, sampling
@@ -797,25 +861,31 @@ stis_engine/
 frontend/
   src/
     App.tsx                # Multi-session chat, file upload, WebSocket management
+    types/
+      contracts.ts         # Shared TS interfaces (Message, Weights, ChatResponse, etc.)
     components/
       AgentPipeline.tsx    # Live per-agent status visualization
       ChatInput.tsx        # Message input with file drag-and-drop
       ChatList.tsx         # Chat history sidebar
       ChatMessage.tsx      # Markdown-rendered message bubbles
-      FusionMeter.tsx      # Real-time weight distribution display
+      FusionMeter.tsx      # Real-time CAG/Graph weight distribution display (2-bar)
       MonitoringPanel.tsx  # Weight history, reward tracking, system health
       SettingsPanel.tsx    # Runtime config toggles
       Sidebar.tsx          # Navigation and document management
       ConnectionStatus.tsx # WebSocket health indicator
       Header.tsx           # App header
 models/
-  rl_policy_cql.d3         # Pre-trained CQL policy (~3.3 MB)
+  rl_policy_cql.d3         # Pre-trained CQL policy (~3.2 MB)
+  qwen2.5-1.5b-instruct-q4_k_m.gguf  # CPU triage model (~1.1 GB)
+  Meta-Llama-3.1-8B-Instruct-Q8_0.gguf  # GPU executor model (~8 GB)
 scripts/
+  retrain_fusion.py        # Offline retraining for 2-path CQL policy
   init_db.sh               # SQLite database initialization
+  profile_pipeline.py      # End-to-end latency profiler
   grafana/dashboard.json   # Grafana dashboard template
   compatibility/
     fix_blackwell.sh       # NVIDIA Blackwell (RTX 50-series) CUDA fix
-tests/                     # 544 tests across 9 files
+tests/                     # 623 tests across 11 files
   benchmarks/              # Ground-truth evaluation framework
     ragchecker.py          # Retrieval precision/recall/F1@k
     hotpotqa.py            # Multi-hop QA (exact-match + token-F1)
@@ -827,7 +897,7 @@ tests/                     # 544 tests across 9 files
 
 ## Test Suite
 
-**544 tests** across 9 test files. Run the full suite:
+**623 tests** across 11 test files. Run the full suite:
 
 ```bash
 python -m pytest tests/ -v
@@ -835,15 +905,18 @@ python -m pytest tests/ -v
 
 | File | Tests | Coverage |
 |------|-------|----------|
-| `tests/test_core_units.py` | 168 | CSWR scoring, stability, fit, drift, packing, critique, fusion, memory, utils, decomposer, graph engine, reasoning, model router, fine-tuning, multimodal |
-| `tests/test_tools.py` | 84 | BaseTool protocol, calculator (math + units), code executor (sandbox + banned modules), API bridge, web search, registry (rate limiting + dispatch) |
+| `tests/test_core_units.py` | 168 | CSWR scoring, stability, fit, drift, packing, critique, fusion, memory, utils, decomposer, graph engine, reasoning, model router, fine-tuning, multimodal, FusionEnv |
+| `tests/test_tools.py` | 84 | BaseTool protocol, calculator (math + units), code executor (sandbox + banned modules), API bridge, registry (rate limiting + dispatch) |
 | `tests/test_agents.py` | 66 | Agent protocol conformance, safety/retrieval/fusion/critique agents, orchestrator routing, LangGraph DAG, prompt generation |
 | `tests/test_phase4_rl.py` | 52 | ReplayFusionEnv, PPO training, DPO preference pairs, GRPO, AdaptivePolicy transitions |
 | `tests/test_phase8_edge.py` | 50 | Hardware detection, quantization recommendation, lane scheduling, federated delta extraction/aggregation, DP noise |
+| `tests/test_asymmetric.py` | 49 | Asymmetric pipeline routing, CAG exact/semantic match, GraphRAG traversal, 2-path RL weights, OOM fallback, CPU/GPU isolation, VRAM/RAM metrics, frontend contract alignment, backward compat |
 | `tests/test_phase9_benchmarks.py` | 40 | RAGChecker, HotpotQA, TruthfulQA, benchmark runner, Prometheus metrics validation, Grafana dashboard schema |
 | `tests/test_stis_engine.py` | 29 | Convergence invariants (dimension stability, centroid preservation, monotonicity), token sampling, schemas, config loading |
 | `tests/test_stis_integration.py` | 29 | STIS client fallbacks (timeout, unreachable, HTTP errors), SQLite audit logging, orchestrator STIS wiring |
 | `tests/test_stis_contradiction.py` | 26 | Contradiction detection thresholds, dual-condition routing logic, BGE embedding similarity |
+| `tests/test_inference_engine.py` | 26 | Inference engine abstraction, model loading, response parsing |
+| `tests/test_api.py` | 4 | API endpoint smoke tests |
 
 ---
 
@@ -858,9 +931,11 @@ Ran on an RTX 5070 with Llama 3.1 8B. Six stress-test suites, 500 iterations eac
 | Adversarial | 500 | **Yes** | 1.0 robustness, 0.65 jailbreak resistance | ~9.7s |
 | Evolution | 500 | **Yes** | 1.0 drift resistance, 0.965 stability | ~10.0s |
 | Extensibility | 500 | **Yes** | 0.97 weight stability | ~10.1s |
-| Ethics & Bias | 500 | **Yes** | 1.0 safety, fairness ≥ 0.983 | ~10.0s |
+| Ethics & Bias | 500 | **Yes** | 1.0 safety, fairness >= 0.983 | ~10.0s |
 
 **Overall pass rate:** 100%
+
+Note: These benchmarks were measured on the pre-upgrade 4-path architecture using Ollama. The 2-path asymmetric pipeline is expected to show different latency characteristics. Updated benchmarks will be published after a full re-run with the new architecture.
 
 ### Ground-Truth Evaluation
 
@@ -884,85 +959,41 @@ python -m pytest tests/test_phase9_benchmarks.py -v
 
 | Platform | Support |
 |----------|---------|
-| Linux x86_64 + NVIDIA GPU | Full support (CUDA embeddings + STIS) |
-| Linux x86_64 CPU-only | Full support (slower embeddings, no STIS) |
-| Linux ARM64 (Jetson, etc.) | Docker profile available |
-| macOS (Apple Silicon) | CPU mode via Docker ARM profile |
-| NVIDIA Blackwell (RTX 50-series) | Supported — run `./scripts/compatibility/fix_blackwell.sh` if you hit cuBLAS errors |
+| Linux x86_64 + NVIDIA GPU (12+ GB VRAM) | Full support (asymmetric dual-model + STIS) |
+| Linux x86_64 CPU-only | Functional (both models on CPU, slower inference) |
+| NVIDIA Blackwell (RTX 50-series) | Supported natively with CUDA arch 100/120 flags |
+| NVIDIA Ampere/Ada (RTX 30/40-series) | Supported with appropriate CUDA arch flags |
 
-### Blackwell GPU Fix
+### Blackwell GPU Setup
 
 ```bash
 source venv/bin/activate
 ./scripts/compatibility/fix_blackwell.sh
 ```
 
-Installs PyTorch nightly with proper Blackwell support. Only needed for RTX 5070/5080/5090.
+Installs PyTorch with proper Blackwell CUDA support. Only needed for RTX 5070/5080/5090.
 
----
+### Memory Requirements
 
-## Latency Optimizations (v0.2)
-
-**Measured on RTX 5070 + dolphin-llama3:8b, February 2026.**
-
-The pipeline was profiled end-to-end and optimized from a 19s baseline down to sub-4s total response time, with time-to-first-token under 400ms on warm queries. Zero quality regressions.
-
-### Before/After
-
-| Metric | Baseline | Optimized | Improvement |
-|--------|----------|-----------|-------------|
-| **Time to first token (warm)** | ~14,700 ms | **380 ms** | 39x |
-| **Total response time** | ~19,000 ms | **3,500 ms** | 5.4x |
-| Safety check | 3,030 ms | 2 ms | Regex + OOD (no LLM call) |
-| Retrieval + CSWR | 5,650 ms | 136 ms | Embedding cache + batch dedup |
-| Query decomposition | 4,825 ms | 0.1 ms | Heuristic (LLM call removed) |
-| Answerability check | 970 ms | 0.1 ms | CSWR threshold heuristic |
-| Contradiction detection | ~3,000 ms | 0.1 ms | Embedding similarity (LLM call removed) |
-| Critique (perceived) | 37-3,200 ms | 0 ms | Async (non-blocking) |
-
-### What Changed
-
-Seven optimizations, applied in priority order:
-
-1. **Heuristic query decomposition** -- replaced LLM call with fast regex/keyword decomposer. Config: `decomposer.use_llm: false`. Saves 4.8s per query.
-
-2. **CSWR threshold answerability** -- replaced per-pack LLM "can you answer this?" calls with the CSWR composite score threshold already computed during retrieval. Packs above 0.45 pass; below 0.35 are dropped.
-
-3. **Tiered safety without hot-path LLM** -- three-tier classification: regex pre-filter (0 ms), OOD Mahalanobis distance (20 ms), keyword blocklist (0.1 ms). LLM safety deferred to amber-zone queries only (<5% of traffic).
-
-4. **Embedding cache and graph precomputation** -- LRU-cached `embed_text()` eliminates ~13 redundant embedding calls per query. Graph entity embeddings precomputed at index build time.
-
-5. **Async critique** -- critique runs as fire-and-forget after the `done` message. Reward arrives via a dedicated `{"type": "critique"}` WebSocket frame ~200ms after the response. User never waits.
-
-6. **Embedding-only contradiction detection** -- replaced Ollama LLM call in `detect_contradiction()` with cosine divergence check between RAG and Graph embeddings.
-
-7. **Relevance gate** -- if the best retrieval score across all paths is below 0.70, the fused context is dropped entirely. The LLM answers from its own knowledge instead of trying to shoehorn low-relevance chunks. Eliminates context pollution for out-of-domain queries.
-
-### What Was Not Changed
-
-- CSWR scoring math (`compute_stability`, `compute_fit`, `compute_drift`) unchanged
-- RL fusion policy inference unchanged (already instant)
-- `check_faithfulness()` unchanged (already off hot path)
-- All 544 existing tests pass without modification
-- FusionEnv observation/action dimensions unchanged
-- Frozen API contracts preserved (no response field changes)
-
-### Verified
-
-- All verification gates (1-5) pass
-- No regression in hallucination rate, adversarial robustness, or safety score
-- Frontend pipeline UI updated to 4 visible steps (Safety, Retrieval, Fusion, Generation)
-- Reward score now updates live via async critique WebSocket frame
+| Component | RAM | VRAM |
+|-----------|-----|------|
+| CPU triage model (Qwen 2.5 1.5B Q4_K_M) | ~2 GB | 0 |
+| GPU executor model (Llama 3.1 8B Q8_0) | 0 | ~9 GB |
+| Embedding model (BGE-small-en-v1.5) | ~0.5 GB | ~0.5 GB |
+| STIS engine (optional, Qwen2.5-1.5B fp16) | 0 | ~3 GB |
+| **Total (without STIS)** | **~2.5 GB** | **~9.5 GB** |
+| **Total (with STIS)** | **~2.5 GB** | **~12.5 GB** |
 
 ---
 
 ## Known Limitations
 
-- **Multimodal dependencies are optional** — CLIP, PyMuPDF, and Pillow must be installed separately for image processing. The system degrades gracefully without them.
-- **Federated learning is local-only** — delta extraction, DP noise, and aggregation work, but no network transport layer exists for cross-instance communication yet.
-- **Web search requires an external API key** — Tavily is the only supported provider. No fallback search engine.
-- **STIS requires GPU** — the Qwen2.5-1.5B model needs ~3 GB VRAM. CPU fallback exists but is impractically slow for real-time use.
-- **WebSocket sessions use connection IDs** — HTTP middleware generates correlation IDs, but WS sessions use their own identifiers.
+- **GPU required for asymmetric pipeline** -- the full dual-model setup needs 12+ GB VRAM. CPU-only mode works but is significantly slower.
+- **Multimodal dependencies are optional** -- CLIP, PyMuPDF, and Pillow must be installed separately for image processing. The system degrades gracefully without them.
+- **Federated learning is local-only** -- delta extraction, DP noise, and aggregation work, but no network transport layer exists for cross-instance communication yet.
+- **STIS requires additional GPU headroom** -- the Qwen2.5-1.5B float16 model needs ~3 GB VRAM on top of the main pipeline. CPU fallback exists but is impractically slow.
+- **Benchmarks measured on pre-upgrade architecture** -- the stress-test latency numbers were measured with the 4-path Ollama setup. The 2-path asymmetric pipeline should be faster, but new benchmarks have not yet been run.
+- **Single-user design** -- no multi-tenant auth or per-user session isolation. Built for personal/development use.
 
 ---
 
@@ -982,4 +1013,4 @@ See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## License
 
-[MIT](LICENSE) — Copyright (c) 2025–2026 Bradley R. Kinnard
+[MIT](LICENSE) -- Copyright (c) 2025-2026 Bradley R. Kinnard

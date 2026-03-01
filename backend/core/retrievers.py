@@ -1,8 +1,8 @@
 # Author: Bradley R. Kinnard
-# retrievers.py - RAG/CAG/Graph/Web retrieval with CSWR stability filtering
-# Originally built for personal offline use, now open-sourced for public benefit.
+# retrievers.py - CAG/Graph retrieval with CSWR stability filtering
+# RAG (FAISS) and Web (Tavily) paths removed per upgrade plan Step 3.
 
-import faiss
+import hashlib
 import sqlite3
 import json
 import uuid
@@ -12,7 +12,6 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import networkx as nx
-import httpx
 from pathlib import Path
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Dict, Any
@@ -83,46 +82,6 @@ def save_quantiles(quantiles: dict):
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
 
-def tavily_search(query: str) -> tuple[str, str]:
-    """
-    Search the web using Tavily API. Requires TAVILY_API_KEY env var.
-    Returns (result_text, status) where status is 'success', 'no_api_key', 'disabled', or 'error'.
-    """
-    if not cfg.get("web", {}).get("enabled", False):
-        logger.debug("Web search disabled in config")
-        return "", "disabled"
-    api_key = get_web_api_key()
-    if not api_key:
-        logger.warning("⚠️ Web search enabled but TAVILY_API_KEY not set - skipping web retrieval")
-        return "", "no_api_key"
-
-    logger.info(f"🌐 Tavily web search: {query[:50]}...")
-    try:
-        resp = httpx.post("https://api.tavily.com/search", json={
-            "api_key": api_key, "query": query, "search_depth": "basic",
-            "include_answer": True, "include_images": False,
-            "max_results": cfg.get("web", {}).get("max_results", 3)
-        }, timeout=cfg.get("web", {}).get("search_timeout", 10))
-
-        if resp.status_code != 200:
-            logger.warning(f"Tavily API returned {resp.status_code}")
-            return "", "error"
-
-        data = resp.json()
-        parts = []
-        if data.get("answer"):
-            parts.append(f"{data['answer']}\n")
-        for i, r in enumerate(data.get("results", [])[:3], 1):
-            title = r.get('title', 'Source')
-            url = r.get('url', '')
-            content = r.get('content', '')
-            parts.append(f"**{title}**\n{url}\n{content}\n")
-        return "\n".join(parts), "success"
-    except Exception as e:
-        logger.warning("Tavily search failed: %s", e)
-        return "", "error"
-
-
 def extract_pdf_text(path: Path) -> str:
     """Extract text from a PDF file."""
     import PyPDF2
@@ -141,14 +100,14 @@ def _get_docs_path() -> Path:
 
 
 def _get_index_path() -> Path:
-    """Return the FAISS index file path."""
+    """DEPRECATED: FAISS index path. Kept for backward compat, returns legacy path."""
     index_dir = PROJECT_ROOT / "indexes"
     index_dir.mkdir(parents=True, exist_ok=True)
     return index_dir / "rag_index.faiss"
 
 
 def _get_metadata_path() -> Path:
-    """Return the metadata JSON file path."""
+    """DEPRECATED: metadata JSON path. Kept for backward compat."""
     index_dir = PROJECT_ROOT / "indexes"
     index_dir.mkdir(parents=True, exist_ok=True)
     return index_dir / "metadata.json"
@@ -239,115 +198,51 @@ def route_to_projects(query: str, gap_threshold: float = 0.15) -> list[str] | No
     return qualifying
 
 
-def build_rag_index() -> faiss.IndexFlatL2:
-    """Build the RAG FAISS index from documents in data/docs.
+def build_rag_index() -> None:
+    """DEPRECATED: FAISS RAG index removed in Step 3 upgrade.
 
-    Supports multi-project indexing: subdirectories under data/docs/ become
-    project namespaces (e.g., data/docs/rlfusion/ -> project 'rlfusion').
-    Files directly in data/docs/ get project 'default'.
-
-    Computes project centroids and per-chunk project coherence scores at build
-    time so queries can route to the right partition and CSWR can penalize
-    cross-project noise.
+    Use retrieve_graph() for entity-based retrieval or populate CAG
+    via the main pipeline's cache-on-success path.
     """
-    docs_path = _get_docs_path()
-    index_path = _get_index_path()
-    cpu_index = faiss.IndexFlatL2(384)
-
-    if not docs_path.exists():
-        ensure_path(str(index_path))
-        faiss.write_index(cpu_index, str(index_path))
-        return cpu_index
-
-    files = (list(docs_path.rglob("*.txt")) + list(docs_path.rglob("*.md"))
-             + list(docs_path.rglob("*.pdf")))
-    all_chunks = []
-
-    for fpath in files:
-        try:
-            content = extract_pdf_text(fpath) if fpath.suffix.lower() == ".pdf" else fpath.read_text()
-            # infer project from first subdirectory under data/docs/
-            rel = fpath.relative_to(docs_path)
-            project = rel.parts[0] if len(rel.parts) > 1 else "default"
-            from backend.core.utils import chunk_text
-            for chunk in chunk_text(content, max_tokens=400):
-                all_chunks.append({
-                    "text": chunk,
-                    "source": str(rel),
-                    "project": project,
-                })
-        except Exception as e:
-            logger.warning(f"Failed to process {fpath}: {e}")
-
-    if not all_chunks:
-        ensure_path(str(index_path))
-        faiss.write_index(cpu_index, str(index_path))
-        return cpu_index
-
-    texts = [c["text"] for c in all_chunks]
-    embeddings = embed_batch(texts)
-    cpu_index.add(embeddings)
-    ensure_path(str(index_path))
-    faiss.write_index(cpu_index, str(index_path))
-
-    # compute per-chunk project coherence (kNN neighborhood composition)
-    coherence_scores = _compute_all_project_coherence(embeddings, all_chunks)
-
-    # compute project centroids (mean embedding per project namespace)
-    centroids = _compute_project_centroids(embeddings, all_chunks)
-
-    # persist metadata with project tags and coherence
-    meta_entries = []
-    for i, c in enumerate(all_chunks):
-        meta_entries.append({
-            "text": c["text"],
-            "source": c["source"],
-            "project": c["project"],
-            "coherence": round(coherence_scores[i], 4),
-        })
-    _get_metadata_path().write_text(json.dumps(meta_entries, indent=2))
-
-    # persist project centroids alongside metadata
-    centroid_path = PROJECT_ROOT / "indexes" / "project_centroids.json"
-    centroid_data = {
-        proj: emb.tolist() for proj, emb in centroids.items()
-    }
-    centroid_path.write_text(json.dumps(centroid_data, indent=2))
-
-    logger.info(
-        "Built RAG index: %d chunks, %d projects, centroids saved",
-        len(all_chunks), len(centroids),
+    import warnings
+    warnings.warn(
+        "build_rag_index() is deprecated. FAISS removed in CAG-RL-Fusion upgrade.",
+        DeprecationWarning, stacklevel=2,
     )
+    logger.warning("build_rag_index() called but FAISS has been removed.")
 
-    # Phase 2: build entity graph from the same chunks
+    # still build entity graph from docs if available
     if cfg.get("graph", {}).get("enabled", True):
-        try:
-            entity_count = build_entity_graph(all_chunks)
-            logger.info("Entity graph built with %d entities during RAG indexing", entity_count)
-        except (ImportError, RuntimeError) as exc:
-            logger.warning("Entity graph build skipped: %s", exc)
+        docs_path = _get_docs_path()
+        files = (list(docs_path.rglob("*.txt")) + list(docs_path.rglob("*.md"))
+                 + list(docs_path.rglob("*.pdf")))
+        all_chunks = []
+        for fpath in files:
+            try:
+                content = extract_pdf_text(fpath) if fpath.suffix.lower() == ".pdf" else fpath.read_text()
+                rel = fpath.relative_to(docs_path)
+                project = rel.parts[0] if len(rel.parts) > 1 else "default"
+                from backend.core.utils import chunk_text
+                for chunk in chunk_text(content, max_tokens=400):
+                    all_chunks.append({"text": chunk, "source": str(rel), "project": project})
+            except Exception as e:
+                logger.warning("Failed to process %s: %s", fpath, e)
+        if all_chunks:
+            try:
+                entity_count = build_entity_graph(all_chunks)
+                logger.info("Entity graph built with %d entities", entity_count)
+            except (ImportError, RuntimeError) as exc:
+                logger.warning("Entity graph build skipped: %s", exc)
 
-    # Phase 7: build multimodal image index from same docs
-    if cfg.get("multimodal", {}).get("enabled", False):
-        try:
-            from backend.core.multimodal import build_multimodal_index
-            img_count = build_multimodal_index(docs_path)
-            if img_count > 0:
-                logger.info("Image index built with %d images during RAG indexing", img_count)
-        except (ImportError, RuntimeError) as exc:
-            logger.warning("Image index build skipped: %s", exc)
 
-    return cpu_index
-
-
-def get_rag_index() -> faiss.IndexFlatL2:
-    """Load or build the RAG FAISS index."""
-    path = _get_index_path()
-    if path.exists():
-        logger.debug("RAG index loaded from disk")
-        return faiss.read_index(str(path))
-    logger.info("Building RAG index...")
-    return build_rag_index()
+def get_rag_index() -> None:
+    """DEPRECATED: FAISS RAG index removed in Step 3 upgrade."""
+    import warnings
+    warnings.warn(
+        "get_rag_index() is deprecated. FAISS removed in CAG-RL-Fusion upgrade.",
+        DeprecationWarning, stacklevel=2,
+    )
+    logger.warning("get_rag_index() called but FAISS has been removed.")
 
 
 def cosine_sim(a, b):
@@ -639,58 +534,13 @@ def retrieve_rag(query: str, mode: str = "chat", top_k: int = None, project: str
 
 
 def retrieve_rag_structured(query: str, top_k: int = 5, project: str | None = None) -> list:
-    cswr_cfg = cfg.get("cswr", {})
-    top_k = top_k or cswr_cfg.get("top_k", 20)
-
-    profile = decompose_query(query, "chat")
-    profile["query_text"] = query
-
-    vec = embed_text(query).reshape(1, 384)
-    index = get_rag_index()
-
-    # empty index — nothing to search
-    if index.ntotal == 0:
-        return []
-
-    search_k = min(top_k, index.ntotal)
-    dists, idxs = index.search(vec, search_k)
-
-    meta_path = _get_metadata_path()
-    meta = json.loads(meta_path.read_text()) if meta_path.exists() else []
-
-    # project routing: if no explicit project, use centroid routing
-    target_projects = None
-    if project:
-        target_projects = [project]
-    else:
-        target_projects = route_to_projects(query)
-
-    chunks = []
-    for i in range(len(idxs[0])):
-        idx, dist = int(idxs[0][i]), float(dists[0][i])
-        if idx < 0 or idx >= len(meta):
-            continue
-        entry = meta[idx]
-        chunk_project = entry.get("project", "default")
-
-        # skip chunks from non-target projects when routing is active
-        if target_projects and chunk_project not in target_projects:
-            continue
-
-        chunks.append({
-            "text": entry["text"],
-            "source": entry["source"],
-            "project": chunk_project,
-            "project_coherence": entry.get("coherence", 1.0),
-            "score": 1.0 / (1.0 + dist), "id": str(idx),
-            "local_stability": 0.0, "question_fit": 0.0, "drift_penalty": 0.0, "csw_score": 0.0
-        })
-
-    chunks = score_chunks(chunks, profile, cswr_cfg)
-    logger.info(f"CSWR structured | query='{query[:50]}...' | {min(top_k, len(chunks))} chunks")
-    return [{"text": c["text"], "score": c["csw_score"], "source": c["source"],
-             "id": c["id"], "project": c.get("project", "default")}
-            for c in chunks[:top_k]]
+    """DEPRECATED: RAG structured retrieval removed. Returns empty list."""
+    import warnings
+    warnings.warn(
+        "retrieve_rag_structured() is deprecated. Use retrieve() for CAG+Graph.",
+        DeprecationWarning, stacklevel=2,
+    )
+    return []
 
 
 def _get_db_path() -> Path:
@@ -701,8 +551,17 @@ def _get_db_path() -> Path:
     return db_path
 
 
+def _cag_hash(query: str) -> str:
+    """Normalize and SHA-256 hash a query for CAG exact-match lookup."""
+    return hashlib.sha256(query.strip().lower().encode("utf-8")).hexdigest()
+
+
 def retrieve_cag(query: str, threshold: float = 0.75) -> list:
-    """Retrieve from the cached answer graph (CAG). Uses embedding cache for semantic matching."""
+    """Retrieve from the cached answer graph (CAG).
+
+    Three-tier lookup: SHA-256 exact match -> case-insensitive -> semantic similarity.
+    The hash tier is new (Step 3 upgrade) and provides sub-millisecond cache hits.
+    """
     db_path = _get_db_path()
     logger.debug(f"[CAG] Searching ({len(query)} chars, threshold={threshold})")
 
@@ -716,27 +575,41 @@ def retrieve_cag(query: str, threshold: float = 0.75) -> list:
 
     try:
         q = query.strip()
+        q_hash = _cag_hash(q)
 
+        # tier 1: SHA-256 exact match (fastest, normalized)
+        # gracefully skip if key_hash column doesn't exist yet
+        try:
+            cur.execute("SELECT value, score FROM cache WHERE key_hash = ?", (q_hash,))
+            row = cur.fetchone()
+            if row and row[1] >= threshold:
+                logger.debug(f"[CAG] HASH HIT: score={row[1]:.2f}")
+                return [{"text": row[0], "source": "cag", "score": row[1]}]
+        except sqlite3.OperationalError:
+            pass  # key_hash column not yet added to schema
+
+        # tier 2: raw string exact match (legacy keys without hash)
         cur.execute("SELECT value, score FROM cache WHERE key = ?", (q,))
         row = cur.fetchone()
         if row and row[1] >= threshold:
             logger.debug(f"[CAG] EXACT HIT: score={row[1]:.2f}")
             return [{"text": row[0], "source": "cag", "score": row[1]}]
 
+        # tier 3: case-insensitive match
         cur.execute("SELECT value, score FROM cache WHERE LOWER(key) = LOWER(?)", (q,))
         row = cur.fetchone()
         if row and row[1] >= threshold:
             logger.debug(f"[CAG] CASE HIT: score={row[1]:.2f}")
             return [{"text": row[0], "source": "cag", "score": row[1]}]
 
+        # tier 4: semantic similarity via embeddings
         q_emb = embed_text(q)
         cur.execute("SELECT key, value, score FROM cache")
         rows = cur.fetchall()
         if rows:
-            # batch-embed all keys at once instead of O(n) single calls
             keys = [r[0] for r in rows]
             key_embs = embed_batch(keys)
-            sims = key_embs @ q_emb  # dot products (normalized vectors)
+            sims = key_embs @ q_emb
             best_idx = int(np.argmax(sims))
             best_sim = float(sims[best_idx])
             if best_sim >= 0.85:
@@ -963,42 +836,33 @@ def retrieve_graph(query: str, max_hops: int = 2) -> List[Dict[str, Any]]:
     return results
 
 
-def retrieve_web(query: str, max_results: int = 3) -> tuple[List[Dict[str, Any]], str]:
+def retrieve(query: str, cag_weight: float = 1.0,
+             graph_weight: float = 1.0, top_k: int = 5,
+             project: str | None = None,
+             rag_weight: float = 0.0, web_weight: float = 0.0) -> Dict[str, Any]:
+    """Two-path retrieval: CAG-first with GraphRAG fallback.
+
+    CAG is checked first for a cache hit. On miss, GraphRAG runs entity traversal.
+    The rag_weight and web_weight params are kept for backward compatibility
+    but ignored (both paths removed in Step 3).
     """
-    Retrieve web results. Returns (results_list, status).
-    Status is 'success', 'no_api_key', 'disabled', or 'error'.
-    """
-    if not cfg.get("web", {}).get("enabled", False):
-        return [], "disabled"
-    ctx, status = tavily_search(query)
-    if not ctx:
-        return [], status
-    return [{"text": ctx, "url": "web", "score": 0.95, "source": "web",
-             "title": f"Web: {query[:50]}"}], status
+    # CAG-first: check cache before anything else
+    cag = retrieve_cag(query)
+    if cag and cag[0].get("score", 0) >= 0.85:
+        # strong CAG hit, bypass GraphRAG entirely
+        for r in cag:
+            r["score"] *= cag_weight
+            r["retriever"] = "cag"
+        logger.info("[retrieve] CAG HIT, skipping GraphRAG")
+        return {
+            "rag": [], "cag": cag[:top_k], "graph": [], "web": [],
+            "images": [], "web_status": "disabled",
+        }
 
+    # GraphRAG: entity traversal via graph_engine
+    graph = retrieve_graph(query, 2)
 
-def retrieve(query: str, rag_weight: float = 1.0, cag_weight: float = 1.0,
-             graph_weight: float = 1.0, web_weight: float = 1.0, top_k: int = 5,
-             project: str | None = None) -> Dict[str, Any]:
-    """Main retrieval function. Runs RAG/CAG/Graph in parallel. Returns results and web_status."""
-    web_enabled = cfg.get("web", {}).get("enabled", False)
-
-    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="retrieval") as pool:
-        fut_rag = pool.submit(retrieve_rag_structured, query, top_k * 2, project=project)
-        fut_cag = pool.submit(retrieve_cag, query)
-        fut_graph = pool.submit(retrieve_graph, query, 2)
-        fut_web = pool.submit(retrieve_web, query) if web_enabled else None
-
-        rag = fut_rag.result()
-        cag = fut_cag.result()
-        graph = fut_graph.result()
-
-        if fut_web is not None:
-            web, web_status = fut_web.result()
-        else:
-            web, web_status = [], "disabled"
-
-    # Phase 7: multimodal image retrieval
+    # multimodal image retrieval (kept, not on critical path)
     images: list[dict[str, object]] = []
     if cfg.get("multimodal", {}).get("enabled", False):
         try:
@@ -1007,17 +871,20 @@ def retrieve(query: str, rag_weight: float = 1.0, cag_weight: float = 1.0,
         except (ImportError, RuntimeError) as exc:
             logger.debug("Image retrieval skipped: %s", exc)
 
-    for r in rag: r["score"] *= rag_weight; r["retriever"] = "rag"
-    for r in cag: r["score"] *= cag_weight; r["retriever"] = "cag"
-    for r in graph: r["score"] *= graph_weight; r["retriever"] = "graph"
-    for r in web: r["score"] *= web_weight; r["retriever"] = "web"
-    for r in images: r["retriever"] = "image"  # type: ignore[index]
+    for r in cag:
+        r["score"] *= cag_weight
+        r["retriever"] = "cag"
+    for r in graph:
+        r["score"] *= graph_weight
+        r["retriever"] = "graph"
+    for r in images:
+        r["retriever"] = "image"  # type: ignore[index]
 
-    for lst in [rag, cag, graph, web]:
+    for lst in [cag, graph]:
         lst.sort(key=lambda x: x["score"], reverse=True)
 
     return {
-        "rag": rag[:top_k], "cag": cag[:top_k], "graph": graph[:top_k], "web": web[:top_k],
+        "rag": [], "cag": cag[:top_k], "graph": graph[:top_k], "web": [],
         "images": images[:top_k],
-        "web_status": web_status
+        "web_status": "disabled",
     }

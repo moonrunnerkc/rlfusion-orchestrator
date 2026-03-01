@@ -1,31 +1,11 @@
-// src/App.tsx — FINAL PRODUCTION VERSION (Grok-style cockpit)
+// src/App.tsx — PRODUCTION VERSION (2-path CAG+Graph architecture)
 import { useEffect, useRef, useState } from 'react';
 import type { AgentStatus } from './components/AgentPipeline';
 import AgentPipeline from './components/AgentPipeline';
 import ChatInput from './components/ChatInput';
 import ChatList from './components/ChatList';
 import MonitoringPanel from './components/MonitoringPanel';
-
-interface Message {
-  id: string;
-  text: string;
-  role: 'user' | 'rlfusion';
-}
-
-interface ChatSession {
-  id: string;
-  title: string;
-  messages: Message[];
-  createdAt: number;
-  updatedAt: number;
-}
-
-interface Weights {
-  rag: number;
-  cag: number;
-  graph: number;
-  web: number;
-}
+import type { ChatSession, Message, Weights } from './types/contracts';
 
 // Helper to generate chat title from first message
 function generateTitle(messages: Message[]): string {
@@ -199,69 +179,11 @@ function ReindexButton() {
   );
 }
 
-// Inline Web Toggle Component
-function WebToggle() {
-  const [webEnabled, setWebEnabled] = useState(true);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    fetch('http://localhost:8000/api/config')
-      .then(res => res.json())
-      .then(data => setWebEnabled(data.web?.enabled ?? true))
-      .catch(() => {});
-  }, []);
-
-  const toggleWeb = async () => {
-    setLoading(true);
-    try {
-      await fetch('http://localhost:8000/api/config', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ web: { enabled: !webEnabled } })
-      });
-      setWebEnabled(!webEnabled);
-    } catch (err) {
-      console.error('Failed to toggle web:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="pt-4 border-t border-gray-800">
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          <span className="text-lg">🌐</span>
-          <span className="text-sm text-[var(--accent)]">Web Search</span>
-        </div>
-        <button
-          onClick={toggleWeb}
-          disabled={loading}
-          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-            webEnabled ? 'bg-cyan-500' : 'bg-gray-700'
-          } ${loading ? 'opacity-50' : ''}`}
-        >
-          <span
-            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-              webEnabled ? 'translate-x-6' : 'translate-x-1'
-            }`}
-          />
-        </button>
-      </div>
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-gray-400">
-          {webEnabled ? 'Online' : 'Offline (100% local)'}
-        </span>
-      </div>
-    </div>
-  );
-}
-
 export default function App() {
   const [chats, setChats] = useState<ChatSession[]>(() => loadChats());
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [weights, setWeights] = useState<Weights>({ rag: 0.25, cag: 0.25, graph: 0.25, web: 0.25 });
+  const [weights, setWeights] = useState<Weights>({ cag: 0.5, graph: 0.5 });
   const [reward, setReward] = useState<number>(0);
   const [proactiveHint, setProactiveHint] = useState<string>('Waiting for next query...');
   const [isLoading, setIsLoading] = useState(false);
@@ -396,10 +318,8 @@ export default function App() {
         // Update live weights/reward/proactive during streaming
         if (data.weights) {
           setWeights({
-            rag: data.weights[0] || 0,
-            cag: data.weights[1] || 0,
-            graph: data.weights[2] || 0,
-            web: data.weights[3] || 0
+            cag: data.weights[0] || 0,
+            graph: data.weights[1] || 0,
           });
         }
         if (typeof data.reward === 'number') {
@@ -611,10 +531,9 @@ export default function App() {
         </div>
 
         <div className="p-5 space-y-5 flex-1 overflow-y-auto">
-          {/* All 4 retrieval sources with icons */}
+          {/* 2-path retrieval sources with icons */}
           <div className="space-y-4">
             {([
-              { key: 'rag' as const, icon: '📄', label: 'RAG' },
               { key: 'cag' as const, icon: '💾', label: 'CAG' },
               { key: 'graph' as const, icon: '🕸️', label: 'Graph' }
             ]).map(({ key, icon, label }) => (
@@ -640,9 +559,6 @@ export default function App() {
 
           {/* Reindex Documents */}
           <ReindexButton />
-
-          {/* Web Toggle with Status */}
-          <WebToggle />
 
           {/* Reward Score */}
           <div className="pt-6 border-t border-gray-800">

@@ -90,3 +90,4 @@ test.md
 
 # Internal project instructions (not for public repo)
 .github/copilot-instructions.md
+*.gguf

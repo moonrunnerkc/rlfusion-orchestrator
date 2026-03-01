@@ -421,11 +421,13 @@ class TestFuseContext:
         assert result["context"] == ""
 
     def test_includes_high_score_rag(self):
+        """RAG path removed. High-score RAG items should be ignored."""
         from backend.core.fusion import fuse_context
         rag = [{"text": "high quality doc", "score": 0.80}]
         result = fuse_context("test", rag, [], [])
-        assert "high quality doc" in result["context"]
-        assert "[RAG:0.80]" in result["context"]
+        # RAG removed - no RAG items in fusion context anymore
+        assert result["context"] == ""
+        assert "[RAG:" not in result["context"]
 
     def test_cag_threshold(self):
         from backend.core.fusion import fuse_context
@@ -439,7 +441,6 @@ class TestFuseContext:
     def test_returns_weights(self):
         from backend.core.fusion import fuse_context
         result = fuse_context("test", [], [], [])
-        assert "rag" in result["weights"]
         assert "cag" in result["weights"]
         assert "graph" in result["weights"]
 
@@ -472,11 +473,11 @@ class TestFusionEnvObsSpace:
         from backend.rl.fusion_env import FusionEnv
         env = FusionEnv()
         obs_reset, _ = env.reset(options={"query": "What is RLFusion?"})
-        assert obs_reset.shape == (396,), f"reset() returned shape {obs_reset.shape}, expected (396,)"
+        assert obs_reset.shape == (394,), f"reset() returned shape {obs_reset.shape}, expected (394,)"
 
         action = env.action_space.sample()
         obs_step, reward, done, truncated, info = env.step(action)
-        assert obs_step.shape == (396,), f"step() returned shape {obs_step.shape}, expected (396,)"
+        assert obs_step.shape == (394,), f"step() returned shape {obs_step.shape}, expected (394,)"
 
     @pytest.mark.slow
     def test_obs_matches_space(self):
@@ -606,21 +607,28 @@ class TestGraphCache:
     def test_retrieve_graph_empty_ontology(self):
         from backend.core.retrievers import retrieve_graph, _graph_engine_cache
         from backend.config import PROJECT_ROOT
-        # reset graph engine cache and temporarily remove entity graph if prior tests wrote one
+        # reset graph engine cache and temporarily remove both data files
         _graph_engine_cache["engine"] = None
         _graph_engine_cache["attempted"] = False
         entity_graph = PROJECT_ROOT / "data" / "entity_graph.json"
-        backup = None
+        ontology = PROJECT_ROOT / "data" / "ontology.json"
+        eg_backup = None
+        ont_backup = None
         if entity_graph.exists():
-            backup = entity_graph.read_text()
+            eg_backup = entity_graph.read_text()
             entity_graph.unlink()
+        if ontology.exists():
+            ont_backup = ontology.read_text()
+            ontology.unlink()
         try:
             results = retrieve_graph("What is machine learning?")
             # empty ontology + no entity graph file = empty results
             assert results == []
         finally:
-            if backup is not None:
-                entity_graph.write_text(backup)
+            if eg_backup is not None:
+                entity_graph.write_text(eg_backup)
+            if ont_backup is not None:
+                ontology.write_text(ont_backup)
             _graph_engine_cache["engine"] = None
             _graph_engine_cache["attempted"] = False
 

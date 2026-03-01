@@ -40,7 +40,7 @@ from backend.core.stis_client import request_stis_consensus, log_stis_resolution
 from backend.core.fusion import fuse_context
 from backend.core.memory import expand_query_with_context, record_turn, get_context_for_prompt, clear_memory
 from backend.core.profile import detect_and_save_memory, get_user_profile
-from backend.core.retrievers import get_rag_index, retrieve
+from backend.core.retrievers import retrieve
 from backend.core.utils import embed_text
 from backend.agents.orchestrator import Orchestrator, apply_markdown_formatting
 
@@ -122,12 +122,21 @@ _orchestrator: Orchestrator | None = None
 
 
 class CQLPolicyWrapper:
-    """Wrapper for CQL policy weights loaded from d3rlpy checkpoint."""
+    """Wrapper for CQL policy weights loaded from d3rlpy checkpoint.
+
+    Handles both legacy 4-output policies and new 2-output policies.
+    For legacy policies, outputs 4D then the caller extracts CAG+Graph dims.
+    """
     def __init__(self, policy_weights):
         import torch.nn as nn
         dev = "cuda" if USE_CUDA else "cpu"
+
+        # detect output size from mu weight shape
+        mu_shape = policy_weights['_mu.weight'].shape[0]
+        self.output_dim = mu_shape
+
         self.encoder = nn.Sequential(nn.Linear(384, 256), nn.ReLU(), nn.Linear(256, 256), nn.ReLU()).to(dev)
-        self.mu = nn.Linear(256, 4).to(dev)
+        self.mu = nn.Linear(256, mu_shape).to(dev)
         self.encoder[0].weight.data = policy_weights['_encoder._layers.0.weight']
         self.encoder[0].bias.data = policy_weights['_encoder._layers.0.bias']
         self.encoder[2].weight.data = policy_weights['_encoder._layers.2.weight']
@@ -172,8 +181,7 @@ async def lifespan(app: FastAPI):
             engine.base_url, e, engine.engine, engine.model,
         )
 
-    logger.info("Initializing RAG index...")
-    get_rag_index()
+    logger.info("Retrieval paths: CAG + GraphRAG (2-path architecture)")
 
     cql_path = PROJECT_ROOT / "models" / "rl_policy_cql.d3"
     ppo_path = PROJECT_ROOT / "rl_policy.zip"
@@ -198,15 +206,8 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"PPO load failed: {e}")
 
-    # Check web search status
-    web_enabled = cfg.get("web", {}).get("enabled", False)
-    web_api_key = os.environ.get("TAVILY_API_KEY", "")
-    if web_enabled and web_api_key:
-        web_status = "enabled (Tavily connected)"
-    elif web_enabled:
-        web_status = "enabled but TAVILY_API_KEY not set"
-    else:
-        web_status = "disabled"
+    # Web search removed in Step 3 upgrade
+    web_status = "disabled"
 
     logger.info("=" * 64)
     logger.info("RLFUSION ORCHESTRATOR - BACKEND STARTED")
@@ -222,8 +223,15 @@ async def lifespan(app: FastAPI):
     global _orchestrator
     _orchestrator = Orchestrator(rl_policy=_rl_policy)
     logger.info("Orchestrator: multi-agent pipeline active (LangGraph)")
+
+    # Start background memory monitoring (Step 8)
+    from backend.core.metrics import get_monitor
+    mem_monitor = get_monitor(interval=10)
+    mem_monitor.start()
+
     logger.info("=" * 64)
     yield
+    mem_monitor.stop()
     logger.info("Shutting down RLFusion Orchestrator")
 
 
@@ -286,67 +294,56 @@ def _apply_markdown_formatting(text: str) -> str:
 
 
 def _compute_rl_fusion_weights(query: str, policy) -> np.ndarray:
-    web_enabled = cfg.get("web", {}).get("enabled", False)
-
+    """Compute 2-path fusion weights [cag, graph] via RL policy or heuristics."""
     if policy is not None:
         try:
             obs = embed_text(query).reshape(1, -1)
             action = policy.predict(obs)[0] if hasattr(policy, 'predict') else policy.predict(obs, deterministic=True)[0]
             weights = action.flatten() if hasattr(action, 'flatten') else np.array(action)
-            if len(weights) == 3:
-                weights = np.append(weights, 0.0)
 
-            exp_w = np.exp(weights)
+            # legacy 4D policy: extract cag (idx 1) and graph (idx 2)
+            if len(weights) >= 4:
+                weights = np.array([weights[1], weights[2]])
+            elif len(weights) == 3:
+                weights = np.array([weights[1], weights[2]])
+
+            exp_w = np.exp(weights[:2])
             rl_weights = exp_w / np.sum(exp_w)
 
-            if max(rl_weights) - min(rl_weights) < 0.05:
+            if abs(rl_weights[0] - rl_weights[1]) < 0.05:
                 logger.info("Policy outputs uniform, applying query heuristics")
                 q = query.lower()
-                if any(kw in q for kw in ['http://', 'https://', 'website', '.com', 'look up']):
-                    rl_weights = np.array([0.2, 0.1, 0.2, 0.5])
-                elif any(kw in q for kw in ['how does', 'architecture', 'design', 'workflow', 'system']):
-                    rl_weights = np.array([0.2, 0.1, 0.6, 0.1])
-                elif any(kw in q for kw in ['what is', 'explain', 'describe', 'document']):
-                    rl_weights = np.array([0.6, 0.2, 0.1, 0.1])
+                if any(kw in q for kw in ['how does', 'architecture', 'design', 'workflow', 'system']):
+                    rl_weights = np.array([0.3, 0.7])
+                elif any(kw in q for kw in ['what is', 'explain', 'describe', 'define']):
+                    rl_weights = np.array([0.6, 0.4])
                 else:
-                    rl_weights = np.array([0.4, 0.2, 0.3, 0.1])
+                    rl_weights = np.array([0.5, 0.5])
 
-            if not web_enabled:
-                rl_weights[3] = 0.0
-                if np.sum(rl_weights[:3]) > 0:
-                    rl_weights[:3] = rl_weights[:3] / np.sum(rl_weights[:3])
-
-            logger.info(f"RL weights: RAG={rl_weights[0]:.2f} CAG={rl_weights[1]:.2f} Graph={rl_weights[2]:.2f} Web={rl_weights[3]:.2f}")
+            logger.info(f"RL weights: CAG={rl_weights[0]:.2f} Graph={rl_weights[1]:.2f}")
             return rl_weights
         except Exception as e:
             logger.warning(f"Policy prediction failed: {e}")
 
-    return np.array([0.33, 0.33, 0.34, 0.0]) if not web_enabled else np.array([0.25, 0.25, 0.25, 0.25])
+    return np.array([0.5, 0.5])
 
 
 def _build_fusion_context(retrieval_results: Dict[str, List[Dict[str, Any]]], weights: np.ndarray) -> str:
-    total_items = 15
-    rag_take = max(2, int(weights[0] * total_items))
-    cag_take = max(1, int(weights[1] * total_items))
-    graph_take = max(1, int(weights[2] * total_items))
-    web_take = max(1, int(weights[3] * total_items)) if len(weights) > 3 else 0
+    """Build fused context from 2-path retrieval results."""
+    total_items = 12
+    cag_take = max(1, int(weights[0] * total_items))
+    graph_take = max(1, int(weights[1] * total_items))
 
-    rag_items = [r for r in retrieval_results["rag"] if r["score"] >= 0.50][:rag_take]
-    cag_items = [c for c in retrieval_results["cag"] if c["score"] >= 0.85][:cag_take]
-    graph_items = [g for g in retrieval_results["graph"] if g["score"] >= 0.50][:graph_take]
-    web_items = [w for w in retrieval_results.get("web", []) if w["score"] >= 0.60][:web_take] if web_take > 0 else []
+    cag_items = [c for c in retrieval_results.get("cag", []) if c["score"] >= 0.85][:cag_take]
+    graph_items = [g for g in retrieval_results.get("graph", []) if g["score"] >= 0.50][:graph_take]
 
     parts = []
-    for r in rag_items:
-        parts.append(f"[RAG:{r['score']:.2f}|w={weights[0]:.2f}] {r['text']}")
     for c in cag_items:
-        parts.append(f"[CAG:{c['score']:.2f}|w={weights[1]:.2f}] {c['text']}")
+        parts.append(f"[CAG:{c['score']:.2f}|w={weights[0]:.2f}] {c['text']}")
     for g in graph_items:
-        parts.append(f"[GRAPH:{g['score']:.2f}|w={weights[2]:.2f}] {g['text']}")
-    for w in web_items:
-        parts.append(f"[WEB:{w['score']:.2f}|w={weights[3]:.2f}] Source: {w.get('url', 'unknown')}\n{w['text'][:600]}")
+        parts.append(f"[GRAPH:{g['score']:.2f}|w={weights[1]:.2f}] {g['text']}")
 
-    logger.info(f"Fusion stats: {len(rag_items)} RAG, {len(cag_items)} CAG, {len(graph_items)} Graph, {len(web_items)} Web")
+    logger.info(f"Fusion stats: {len(cag_items)} CAG, {len(graph_items)} Graph")
     return "\n\n".join(parts) if parts else "No high-confidence sources available."
 
 
@@ -365,9 +362,9 @@ async def chat_endpoint(request: Request, body: Dict[str, Any]) -> Dict[str, Any
     mode = body.get("mode", "chat")
 
     if not query:
-        return {"response": "Please provide a query.", "fusion_weights": {"rag": 0, "cag": 0, "graph": 0}, "reward": 0.0}
+        return {"response": "Please provide a query.", "fusion_weights": {"cag": 0, "graph": 0}, "reward": 0.0}
     if len(query) > _MAX_QUERY_LEN:
-        return {"response": f"Query too long ({len(query)} chars, max {_MAX_QUERY_LEN}).", "fusion_weights": {"rag": 0, "cag": 0, "graph": 0}, "reward": 0.0}
+        return {"response": f"Query too long ({len(query)} chars, max {_MAX_QUERY_LEN}).", "fusion_weights": {"cag": 0, "graph": 0}, "reward": 0.0}
 
     # Multi-agent orchestration (Phase 1)
     t_start = _time_mod.perf_counter()
@@ -376,7 +373,7 @@ async def chat_endpoint(request: Request, body: Dict[str, Any]) -> Dict[str, Any
 
     # record fusion weight distribution
     fw = result["fusion_weights"]
-    for path_name in ("rag", "cag", "graph"):
+    for path_name in ("cag", "graph"):
         FUSION_WEIGHT_DIST.labels(path=path_name).observe(fw.get(path_name, 0))
     CRITIQUE_REWARD.observe(result["reward"])
 
@@ -482,7 +479,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 await websocket.send_json({
                     "type": "done",
                     "response": "I can't help with that request. " + block_reason,
-                    "fusion_weights": {"rag": 0, "cag": 0, "graph": 0},
+                    "fusion_weights": {"cag": 0, "graph": 0},
                     "reward": 0.0,
                     "blocked": True,
                     "safety_reason": block_reason,
@@ -510,16 +507,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
             # summarize retrieval results for the detail text
             rr = retrieval_result.get("retrieval_results", {})
-            rag_n = len(rr.get("rag", []))
             cag_n = len(rr.get("cag", []))
             graph_n = len(rr.get("graph", []))
-            web_n = len(rr.get("web", []))
-            retrieval_detail = f"{rag_n} RAG, {cag_n} CAG, {graph_n} Graph, {web_n} Web"
+            retrieval_detail = f"{cag_n} CAG, {graph_n} Graph"
             _t_retrieval = _time_mod.perf_counter()
             logger.info("[TIMING] retrieval: %.0f ms", (_t_retrieval - _t_safety) * 1000)
 
             # record retrieval path usage
-            for path_label, count in [("rag", rag_n), ("cag", cag_n), ("graph", graph_n), ("web", web_n)]:
+            for path_label, count in [("cag", cag_n), ("graph", graph_n)]:
                 if count > 0:
                     RETRIEVAL_PATH_USAGE.labels(path=path_label).inc()
 
@@ -538,15 +533,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             )
 
             # Build prompts (fast, no status update needed)
-            actual_weights = fusion_result.get("actual_weights", [0.25, 0.25, 0.25, 0.25])
+            actual_weights = fusion_result.get("actual_weights", [0.5, 0.5])
             web_status = retrieval_result.get("web_status", "disabled")
             fused_context = fusion_result.get("fused_context", "")
 
             # summarize fusion weights for detail text
             w = actual_weights
-            fusion_detail = f"RAG {w[0]*100:.0f}% CAG {w[1]*100:.0f}% Graph {w[2]*100:.0f}%"
-            if len(w) > 3 and w[3] > 0.01:
-                fusion_detail += f" Web {w[3]*100:.0f}%"
+            fusion_detail = f"CAG {w[0]*100:.0f}% Graph {w[1]*100:.0f}%"
             _t_fusion = _time_mod.perf_counter()
             logger.info("[TIMING] fusion: %.0f ms", (_t_fusion - _t_retrieval) * 1000)
 
@@ -680,9 +673,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await websocket.send_json({
                 "type": "done", "response": full_response,
                 "fusion_weights": {
-                    "rag": actual_weights[0] if len(actual_weights) > 0 else 0.0,
-                    "cag": actual_weights[1] if len(actual_weights) > 1 else 0.0,
-                    "graph": actual_weights[2] if len(actual_weights) > 2 else 0.0,
+                    "cag": actual_weights[0] if len(actual_weights) > 0 else 0.0,
+                    "graph": actual_weights[1] if len(actual_weights) > 1 else 0.0,
                 },
                 "reward": 0.0,
                 "proactive": "",
@@ -714,7 +706,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     )
                     critique_reward = result["reward"]
                     CRITIQUE_REWARD.observe(critique_reward)
-                    for wpath in ("rag", "cag", "graph"):
+                    for wpath in ("cag", "graph"):
                         FUSION_WEIGHT_DIST.labels(path=wpath).observe(result["fusion_weights"].get(wpath, 0))
 
                     # send critique frame to frontend (non-blocking update)

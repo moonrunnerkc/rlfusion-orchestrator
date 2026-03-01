@@ -61,6 +61,7 @@ def get_inference_config() -> dict[str, str | int]:
 
     Supports INFERENCE_ENGINE, INFERENCE_BASE_URL, INFERENCE_MODEL,
     and INFERENCE_API_KEY environment variables for container deployments.
+    Also exposes dual-model paths for the llama_cpp_dual engine.
     """
     inf: dict[str, object] = cfg.get("inference", {})
     return {
@@ -70,6 +71,11 @@ def get_inference_config() -> dict[str, str | int]:
         "max_concurrent": int(os.environ.get("INFERENCE_MAX_CONCURRENT", str(inf.get("max_concurrent", 4)))),
         "timeout_secs": int(os.environ.get("INFERENCE_TIMEOUT", str(inf.get("timeout_secs", 30)))),
         "openai_api_key": os.environ.get("INFERENCE_API_KEY") or str(inf.get("openai_api_key", "")),
+        "cpu_model_path": str(inf.get("cpu_model_path", "models/qwen2.5-1.5b-instruct-q4_k_m.gguf")),
+        "gpu_model_path": str(inf.get("gpu_model_path", "models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf")),
+        "cpu_ctx_size": int(inf.get("cpu_ctx_size", 8192)),
+        "gpu_ctx_size": int(inf.get("gpu_ctx_size", 8192)),
+        "seed": int(inf.get("seed", 42)),
     }
 
 

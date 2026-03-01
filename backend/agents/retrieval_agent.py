@@ -1,8 +1,8 @@
 # Author: Bradley R. Kinnard
-"""Retrieval agent: owns all four retrieval paths (RAG, CAG, Graph, Web) + CSWR.
+"""Retrieval agent: owns CAG and GraphRAG paths + CSWR.
 
-Wraps retrieve() from backend.core.retrievers. Adjusts retrieval depth
-based on complexity classification from the orchestrator.
+Wraps retrieve() from backend.core.retrievers. CAG-first with GraphRAG fallback.
+RAG (FAISS) and Web (Tavily) paths removed in Step 3 upgrade.
 """
 from __future__ import annotations
 
@@ -22,10 +22,10 @@ _DEPTH_MULTIPLIERS: dict[str, int] = {
 
 
 class RetrievalAgent:
-    """Owns RAG/CAG/Graph/Web retrieval and CSWR scoring.
+    """Owns CAG/Graph retrieval and CSWR scoring.
 
     Pipeline role: converts a query into scored, ranked retrieval results
-    across all four paths. The depth of retrieval scales with query complexity.
+    via CAG-first with GraphRAG fallback. Depth scales with query complexity.
     """
     _NAME: ClassVar[str] = "retrieval"
 
@@ -43,11 +43,8 @@ class RetrievalAgent:
         return {}  # type: ignore[return-value]
 
     def act(self, state: PipelineState) -> PipelineState:
-        """Execute retrieval across all four paths via existing retrieve()."""
-        from backend.core.retrievers import get_rag_index, retrieve
-
-        # ensure index is loaded
-        get_rag_index()
+        """Execute retrieval: CAG-first, then GraphRAG on miss."""
+        from backend.core.retrievers import retrieve
 
         # prefer expanded query if available (memory enriched)
         query = state.get("expanded_query", state.get("query", ""))
@@ -67,17 +64,15 @@ class RetrievalAgent:
     def reflect(self, state: PipelineState) -> PipelineState:
         """Evaluate retrieval quality: log coverage across paths."""
         results = state.get("retrieval_results", {})
-        rag_count = len(results.get("rag", []))
         cag_count = len(results.get("cag", []))
         graph_count = len(results.get("graph", []))
-        web_count = len(results.get("web", []))
-        total = rag_count + cag_count + graph_count + web_count
+        total = cag_count + graph_count
 
         if total == 0:
             logger.warning("[%s] No retrieval results for query", self._NAME)
         else:
-            logger.info("[%s] Retrieval: %d RAG, %d CAG, %d Graph, %d Web",
-                        self._NAME, rag_count, cag_count, graph_count, web_count)
+            logger.info("[%s] Retrieval: %d CAG, %d Graph",
+                        self._NAME, cag_count, graph_count)
         return {}  # type: ignore[return-value]
 
     def __call__(self, state: PipelineState) -> PipelineState:

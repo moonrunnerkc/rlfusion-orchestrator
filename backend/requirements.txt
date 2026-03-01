@@ -21,7 +21,17 @@ torchvision>=0.24
 # ── Vector search (GPU) ─────────────────────────────────
 # Only ONE faiss variant — faiss-gpu-cu12 provides the faiss module.
 # Having both faiss-gpu-cu12 and faiss-cpu causes a pip resolver crash.
+# NOTE: Scheduled for removal in Step 3 (RAG path elimination).
 faiss-gpu-cu12>=1.12.0
+
+# ── LLM inference (asymmetric dual-model pipeline) ──────
+# llama-cpp-python requires CUDA build for Blackwell:
+#   pip install llama-cpp-python --force-reinstall --no-cache-dir \
+#     -C cmake.args="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=100;120"
+llama-cpp-python>=0.3.0,<1
+json-repair>=0.30,<1        # robust JSON parsing for CPU triage output
+huggingface-hub>=0.25,<1   # model artifact download + management
+pynvml>=12.0,<13           # VRAM/GPU monitoring for Step 8
 
 # ── Embeddings & NLP ────────────────────────────────────
 sentence-transformers==3.1.1

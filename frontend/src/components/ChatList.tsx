@@ -1,12 +1,7 @@
 // src/components/ChatList.tsx
 import { useEffect, useRef } from 'react';
+import type { Message } from '../types/contracts';
 import { ChatMessage } from './ChatMessage';
-
-interface Message {
-  id: string;
-  text: string;
-  role: 'user' | 'rlfusion';
-}
 
 interface ChatListProps {
   messages: Message[];
@@ -44,10 +39,9 @@ export default function ChatList({ messages, isLoading, proactiveHint, onSuggest
             <div className="bg-gray-900/50 border border-gray-800 rounded-xl p-5">
               <h3 className="text-[var(--accent)] font-semibold mb-2">How it works</h3>
               <p className="text-gray-400">
-                Every question you ask gets routed through four retrieval paths — a vector search (RAG),
-                a fast cache (CAG), a knowledge graph, and optionally the web. An RL policy decides how
-                much to trust each source based on what's worked before. You can see the live weights
-                shift in the panel on the right.
+                Every question you ask gets routed through two retrieval paths: a fast cache (CAG)
+                and a knowledge graph. An RL policy decides how much to trust each source based on
+                what's worked before. You can see the live weights shift in the panel on the right.
               </p>
             </div>
 
