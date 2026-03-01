@@ -19,11 +19,16 @@ from backend.core.utils import embed_text
 logger = logging.getLogger(__name__)
 
 
-def compute_rl_weights(query: str, policy: RLPolicy | None) -> np.ndarray:
+def compute_rl_weights(
+    query: str,
+    policy: RLPolicy | None,
+    retrieval_results: dict[str, list[dict[str, float | str]]] | None = None,
+) -> np.ndarray:
     """Compute fusion weights via RL policy or fall back to heuristics.
 
-    Returns 2D weight array [cag, graph]. Backward-compat: expands to 4D
-    [0, cag, graph, 0] when legacy callers expect 4-element arrays.
+    Returns 2D weight array [cag, graph]. Adjusts weights post-hoc based on
+    actual retrieval counts: if a path returned 0 results, its weight shifts
+    to the path that did return results.
     """
     if policy is not None:
         try:
@@ -50,14 +55,32 @@ def compute_rl_weights(query: str, policy: RLPolicy | None) -> np.ndarray:
                 logger.info("Policy outputs uniform, applying query heuristics")
                 rl_weights = _heuristic_weights(query)
 
-            logger.info("RL weights: CAG=%.2f Graph=%.2f",
-                        rl_weights[0], rl_weights[1])
-            return rl_weights
-
         except (RuntimeError, ValueError, TypeError) as exc:
             logger.warning("Policy prediction failed: %s", exc)
+            rl_weights = _heuristic_weights(query)
+    else:
+        rl_weights = _heuristic_weights(query)
 
-    return _heuristic_weights(query)
+    # result-aware rebalancing: shift weight away from empty paths
+    if retrieval_results is not None:
+        cag_count = len(retrieval_results.get("cag", []))
+        graph_count = len(retrieval_results.get("graph", []))
+        if cag_count == 0 and graph_count > 0:
+            # CAG missed, lean heavy on graph
+            rl_weights = np.array([0.05, 0.95])
+            logger.info("Rebalanced: CAG empty, shifting to Graph")
+        elif graph_count == 0 and cag_count > 0:
+            # graph empty, lean heavy on cache
+            rl_weights = np.array([0.95, 0.05])
+            logger.info("Rebalanced: Graph empty, shifting to CAG")
+        elif cag_count == 0 and graph_count == 0:
+            # both empty, equal (won't matter, context will be empty)
+            rl_weights = np.array([0.5, 0.5])
+            logger.info("Rebalanced: both paths empty")
+
+    logger.info("RL weights: CAG=%.2f Graph=%.2f",
+                rl_weights[0], rl_weights[1])
+    return rl_weights
 
 
 def _heuristic_weights(query: str) -> np.ndarray:
@@ -105,7 +128,7 @@ def build_fusion_context(
         parts.append(f"[GRAPH:{g['score']:.2f}|w={weights[1]:.2f}] {g['text']}")
 
     logger.info("Fusion stats: %d CAG, %d Graph", len(cag_items), len(graph_items))
-    fused = "\n\n".join(parts) if parts else "No high-confidence sources available."
+    fused = "\n\n".join(parts) if parts else ""
     if len(fused) > 5000:
         fused = fused[:5000]
         logger.info("Fused context truncated to 5000 chars")
@@ -146,7 +169,7 @@ class FusionAgent:
         query = state.get("expanded_query", state.get("query", ""))
         retrieval_results = state.get("retrieval_results", {})
 
-        rl_weights = compute_rl_weights(query, self._rl_policy)
+        rl_weights = compute_rl_weights(query, self._rl_policy, retrieval_results)
         fused_context = build_fusion_context(retrieval_results, rl_weights)
         # 2-path weights: [cag, graph]
         actual_weights = [float(w) for w in rl_weights[:2]]
@@ -166,7 +189,7 @@ class FusionAgent:
                 logger.warning("[%s] Single path dominates: max_weight=%.2f",
                                self._NAME, max_w)
             fused = state.get("fused_context", "")
-            if fused == "No high-confidence sources available.":
+            if not fused.strip():
                 logger.warning("[%s] Empty fusion context, all sources below threshold",
                                self._NAME)
         return {}  # type: ignore[return-value]

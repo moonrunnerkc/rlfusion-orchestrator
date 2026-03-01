@@ -1,5 +1,5 @@
 llm:
-  model: dolphin-llama3:8b
+  model: Llama-3.1-8B + Qwen-2.5-1.5B
   host: http://localhost:11434
   temperature: 0.72
   max_tokens: 8192

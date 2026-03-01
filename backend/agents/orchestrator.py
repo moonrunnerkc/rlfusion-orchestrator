@@ -47,7 +47,7 @@ WEB RESULTS: Web search is currently disabled.
 """
 
 # Token budgets per mode (generation cap)
-NUM_PREDICT = {"chat": 500, "build": 600}
+NUM_PREDICT = {"chat": 400, "build": 500}
 
 # Keywords that indicate a personal/memory query
 _PERSONAL_KEYWORDS = [
@@ -148,7 +148,8 @@ def generate_user_prompt(mode: str, query: str, fused_context: str, context_part
     if has_context:
         return (f"RETRIEVED CONTEXT:\n{fused_context}\n\n"
                 f"QUESTION: {query}\n\n"
-                f"Answer using the context above. Cite specific details:")
+                f"Answer the question. Use the context above if relevant, "
+                f"otherwise answer from your own knowledge:")
     return f"QUESTION: {query}\n\nAnswer from your knowledge:"
 
 

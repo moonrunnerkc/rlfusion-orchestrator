@@ -293,58 +293,16 @@ def _apply_markdown_formatting(text: str) -> str:
     return text.strip()
 
 
-def _compute_rl_fusion_weights(query: str, policy) -> np.ndarray:
-    """Compute 2-path fusion weights [cag, graph] via RL policy or heuristics."""
-    if policy is not None:
-        try:
-            obs = embed_text(query).reshape(1, -1)
-            action = policy.predict(obs)[0] if hasattr(policy, 'predict') else policy.predict(obs, deterministic=True)[0]
-            weights = action.flatten() if hasattr(action, 'flatten') else np.array(action)
-
-            # legacy 4D policy: extract cag (idx 1) and graph (idx 2)
-            if len(weights) >= 4:
-                weights = np.array([weights[1], weights[2]])
-            elif len(weights) == 3:
-                weights = np.array([weights[1], weights[2]])
-
-            exp_w = np.exp(weights[:2])
-            rl_weights = exp_w / np.sum(exp_w)
-
-            if abs(rl_weights[0] - rl_weights[1]) < 0.05:
-                logger.info("Policy outputs uniform, applying query heuristics")
-                q = query.lower()
-                if any(kw in q for kw in ['how does', 'architecture', 'design', 'workflow', 'system']):
-                    rl_weights = np.array([0.3, 0.7])
-                elif any(kw in q for kw in ['what is', 'explain', 'describe', 'define']):
-                    rl_weights = np.array([0.6, 0.4])
-                else:
-                    rl_weights = np.array([0.5, 0.5])
-
-            logger.info(f"RL weights: CAG={rl_weights[0]:.2f} Graph={rl_weights[1]:.2f}")
-            return rl_weights
-        except Exception as e:
-            logger.warning(f"Policy prediction failed: {e}")
-
-    return np.array([0.5, 0.5])
+def _compute_rl_fusion_weights(query: str, policy, retrieval_results=None) -> np.ndarray:
+    """Compute 2-path fusion weights. Delegates to the canonical implementation."""
+    from backend.agents.fusion_agent import compute_rl_weights
+    return compute_rl_weights(query, policy, retrieval_results)
 
 
 def _build_fusion_context(retrieval_results: Dict[str, List[Dict[str, Any]]], weights: np.ndarray) -> str:
-    """Build fused context from 2-path retrieval results."""
-    total_items = 12
-    cag_take = max(1, int(weights[0] * total_items))
-    graph_take = max(1, int(weights[1] * total_items))
-
-    cag_items = [c for c in retrieval_results.get("cag", []) if c["score"] >= 0.85][:cag_take]
-    graph_items = [g for g in retrieval_results.get("graph", []) if g["score"] >= 0.50][:graph_take]
-
-    parts = []
-    for c in cag_items:
-        parts.append(f"[CAG:{c['score']:.2f}|w={weights[0]:.2f}] {c['text']}")
-    for g in graph_items:
-        parts.append(f"[GRAPH:{g['score']:.2f}|w={weights[1]:.2f}] {g['text']}")
-
-    logger.info(f"Fusion stats: {len(cag_items)} CAG, {len(graph_items)} Graph")
-    return "\n\n".join(parts) if parts else "No high-confidence sources available."
+    """Build fused context. Delegates to the canonical implementation."""
+    from backend.agents.fusion_agent import build_fusion_context
+    return build_fusion_context(retrieval_results, weights)
 
 
 # Import prompts from orchestrator (single source of truth)
@@ -781,6 +739,9 @@ async def ping(request: Request) -> Dict[str, Any]:
         "gpu": gpu_name,
         "device": "cuda" if torch.cuda.is_available() else "cpu",
         "model": cfg["llm"]["model"],
+        "inference_engine": cfg.get("inference", {}).get("engine", "ollama"),
+        "cpu_model": "Qwen 2.5 1.5B (Q4_K_M)",
+        "gpu_model": "Llama 3.1 8B (Q8_0)",
         "policy": "CQL" if Path(cfg["rl"]["policy_path"]).exists() else "heuristic",
         "policy_exists": Path(cfg["rl"]["policy_path"]).exists(),
         "boot_id": _boot_id,

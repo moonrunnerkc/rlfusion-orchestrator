@@ -205,17 +205,15 @@ class TestFusionAgent:
         state = {
             "query": "What is machine learning?",
             "retrieval_results": {
-                "rag": [{"text": "ML is...", "score": 0.8, "source": "doc", "id": "1"}],
                 "cag": [],
-                "graph": [],
-                "web": [],
+                "graph": [{"text": "ML is...", "score": 0.8, "source": "graph", "id": "1"}],
             },
         }
         result = agent.act(state)
         assert "rl_weights" in result
         assert "fused_context" in result
         assert "actual_weights" in result
-        assert len(result["actual_weights"]) == 4
+        assert len(result["actual_weights"]) == 2
         assert abs(sum(result["actual_weights"]) - 1.0) < 0.01
 
     def test_policy_setter(self):
@@ -235,7 +233,7 @@ class TestFusionAgent:
         agent = FusionAgent()
         state = {
             "query": "test",
-            "retrieval_results": {"rag": [], "cag": [], "graph": [], "web": []},
+            "retrieval_results": {"cag": [], "graph": []},
         }
         result = agent(state)
         assert "fused_context" in result
@@ -243,7 +241,7 @@ class TestFusionAgent:
     def test_reflect_single_path_warning(self):
         from backend.agents.fusion_agent import FusionAgent
         agent = FusionAgent()
-        state = {"actual_weights": [0.95, 0.02, 0.02, 0.01], "fused_context": "text"}
+        state = {"actual_weights": [0.95, 0.05], "fused_context": "text"}
         # should not raise, just log a warning
         agent.reflect(state)
 
@@ -251,8 +249,8 @@ class TestFusionAgent:
         from backend.agents.fusion_agent import FusionAgent
         agent = FusionAgent()
         state = {
-            "actual_weights": [0.25, 0.25, 0.25, 0.25],
-            "fused_context": "No high-confidence sources available.",
+            "actual_weights": [0.5, 0.5],
+            "fused_context": "",
         }
         agent.reflect(state)
 
@@ -263,14 +261,14 @@ class TestComputeRlWeights:
     def test_no_policy_returns_fallback(self):
         from backend.agents.fusion_agent import compute_rl_weights
         weights = compute_rl_weights("test query", None)
-        assert len(weights) == 4
+        assert len(weights) == 2
         assert abs(sum(weights) - 1.0) < 0.01
 
     def test_heuristic_web_query(self):
         from backend.agents.fusion_agent import compute_rl_weights
         weights = compute_rl_weights("look up https://example.com", None)
         # without a policy, falls back to heuristic; web disabled by default
-        assert len(weights) == 4
+        assert len(weights) == 2
 
     def test_weights_sum_to_one(self):
         from backend.agents.fusion_agent import compute_rl_weights
@@ -283,46 +281,40 @@ class TestBuildFusionContext:
 
     def test_empty_results(self):
         from backend.agents.fusion_agent import build_fusion_context
-        weights = np.array([0.25, 0.25, 0.25, 0.25])
-        ctx = build_fusion_context({"rag": [], "cag": [], "graph": [], "web": []}, weights)
+        weights = np.array([0.5, 0.5])
+        ctx = build_fusion_context({"cag": [], "graph": []}, weights)
         assert ctx == ""
 
-    def test_rag_items_included(self):
+    def test_graph_items_included(self):
         from backend.agents.fusion_agent import build_fusion_context
-        weights = np.array([0.6, 0.2, 0.1, 0.1])
+        weights = np.array([0.3, 0.7])
         results = {
-            "rag": [{"text": "Important doc content", "score": 0.80}],
             "cag": [],
-            "graph": [],
-            "web": [],
+            "graph": [{"text": "Important graph content", "score": 0.80}],
         }
         ctx = build_fusion_context(results, weights)
-        assert "Important doc content" in ctx
-        assert "[RAG:0.80" in ctx
+        assert "Important graph content" in ctx
+        assert "[GRAPH:0.80" in ctx
 
     def test_low_score_filtered(self):
         from backend.agents.fusion_agent import build_fusion_context
-        weights = np.array([0.5, 0.2, 0.2, 0.1])
+        weights = np.array([0.5, 0.5])
         results = {
-            "rag": [{"text": "low quality", "score": 0.30}],
             "cag": [],
-            "graph": [],
-            "web": [],
+            "graph": [{"text": "low quality", "score": 0.30}],
         }
         ctx = build_fusion_context(results, weights)
         assert "low quality" not in ctx
 
     def test_cag_threshold(self):
         from backend.agents.fusion_agent import build_fusion_context
-        weights = np.array([0.2, 0.5, 0.2, 0.1])
+        weights = np.array([0.6, 0.4])
         results = {
-            "rag": [],
             "cag": [
                 {"text": "low cached", "score": 0.50},
                 {"text": "high cached", "score": 0.90},
             ],
             "graph": [],
-            "web": [],
         }
         ctx = build_fusion_context(results, weights)
         assert "low cached" not in ctx
@@ -358,7 +350,7 @@ Proactive suggestions:
             "query": "test query",
             "llm_response": self.SAMPLE_RESPONSE,
             "fused_context": "test context",
-            "actual_weights": [0.4, 0.2, 0.3, 0.1],
+            "actual_weights": [0.4, 0.6],
         }
         result = agent.act(state)
         assert "reward" in result
@@ -371,7 +363,7 @@ Proactive suggestions:
             "query": "test",
             "llm_response": self.SAMPLE_RESPONSE,
             "fused_context": "ctx",
-            "actual_weights": [0.25, 0.25, 0.25, 0.25],
+            "actual_weights": [0.5, 0.5],
         }
         result = agent.act(state)
         assert "<critique>" not in result["clean_response"]
@@ -384,7 +376,7 @@ Proactive suggestions:
             "query": "test",
             "llm_response": self.SAMPLE_RESPONSE,
             "fused_context": "ctx",
-            "actual_weights": [0.25, 0.25, 0.25, 0.25],
+            "actual_weights": [0.5, 0.5],
         }
         result = agent.act(state)
         assert len(result["proactive_suggestions"]) >= 1
@@ -396,7 +388,7 @@ Proactive suggestions:
             "query": "test",
             "llm_response": "Just a plain response with no critique block.",
             "fused_context": "ctx",
-            "actual_weights": [0.25, 0.25, 0.25, 0.25],
+            "actual_weights": [0.5, 0.5],
         }
         result = agent.act(state)
         # without inline block, falls through to LLM critique call (or fallback)
@@ -410,7 +402,7 @@ Proactive suggestions:
             "query": "test",
             "llm_response": "Simple answer.",
             "fused_context": "ctx",
-            "actual_weights": [0.25, 0.25, 0.25, 0.25],
+            "actual_weights": [0.5, 0.5],
         }
         result = agent(state)
         assert "reward" in result
@@ -542,7 +534,7 @@ class TestOrchestratorPipeline:
         assert result["blocked"] is False
         assert len(result["system_prompt"]) > 0
         assert len(result["user_prompt"]) > 0
-        assert len(result["actual_weights"]) == 4
+        assert len(result["actual_weights"]) == 2
 
     def test_prepare_blocked_query(self):
         from backend.agents.orchestrator import Orchestrator
@@ -574,13 +566,13 @@ Proactive suggestions:
             query="What is ML?",
             llm_response=response,
             fused_context="context",
-            actual_weights=[0.4, 0.2, 0.3, 0.1],
+            actual_weights=[0.4, 0.6],
             web_status="disabled",
         )
         assert result["response"]
         assert "<critique>" not in result["response"]
         assert abs(result["reward"] - 0.80) < 0.01
-        assert result["fusion_weights"]["rag"] == 0.4
+        assert result["fusion_weights"]["cag"] == 0.4
         assert result["blocked"] is False
 
     def test_finalize_web_notice(self):
@@ -590,7 +582,7 @@ Proactive suggestions:
             query="test",
             llm_response="Answer text.",
             fused_context="ctx",
-            actual_weights=[0.25, 0.25, 0.25, 0.25],
+            actual_weights=[0.5, 0.5],
             web_status="no_api_key",
         )
         assert "TAVILY_API_KEY" in result["response"]
@@ -602,7 +594,7 @@ Proactive suggestions:
             query="test",
             llm_response="Answer text.",
             fused_context="ctx",
-            actual_weights=[0.25, 0.25, 0.25, 0.25],
+            actual_weights=[0.5, 0.5],
             web_status="disabled",
         )
         assert "TAVILY_API_KEY" not in result["response"]
@@ -672,7 +664,7 @@ Proactive suggestions:
             "query": "test query",
             "llm_response": self.SAMPLE_RESPONSE,
             "fused_context": "test context",
-            "actual_weights": [0.4, 0.2, 0.3, 0.1],
+            "actual_weights": [0.4, 0.6],
             "sensitivity_level": 0.3,
         }
         result = agent.act(state)
@@ -689,7 +681,7 @@ Proactive suggestions:
             "query": "test",
             "llm_response": "Simple answer.",
             "fused_context": "ctx",
-            "actual_weights": [0.25, 0.25, 0.25, 0.25],
+            "actual_weights": [0.5, 0.5],
             "sensitivity_level": 0.2,
         }
         result = agent(state)
@@ -704,7 +696,7 @@ Proactive suggestions:
             "query": "test",
             "llm_response": "Answer text.",
             "fused_context": "ctx",
-            "actual_weights": [0.25, 0.25, 0.25, 0.25],
+            "actual_weights": [0.5, 0.5],
         }
         result = agent.act(state)
         assert result["faithfulness_checked"] is False

@@ -501,6 +501,9 @@ def check_faithfulness(claim: str, chunks: list) -> tuple:
 # and route to the STIS engine for mathematically forced consensus.
 
 STIS_CSWR_THRESHOLD = 0.70
+# Cosine similarity floor for contradiction detection. Below this, claims
+# are too dissimilar to conflict. Set to 0.40 per STIS architecture spec.
+STIS_SIMILARITY_FLOOR = 0.40
 # Minimum query-to-ontology relevance before we bother checking for contradictions.
 # Set high (0.75+) to avoid false positives on tangentially-related queries.
 STIS_RELEVANCE_THRESHOLD = 0.75

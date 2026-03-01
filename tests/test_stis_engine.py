@@ -28,9 +28,9 @@ class TestSTISConfig:
         from stis_engine.config import STISConfig, SwarmConfig, ModelConfig, ServerConfig
         cfg = STISConfig()
         assert cfg.swarm.num_agents == 4
-        assert cfg.swarm.similarity_threshold == 0.95
-        assert cfg.swarm.alpha == 0.3
-        assert cfg.swarm.max_iterations == 50
+        assert cfg.swarm.similarity_threshold == 0.92
+        assert cfg.swarm.alpha == 0.5
+        assert cfg.swarm.max_iterations == 30
         assert cfg.model.model_id == "Qwen/Qwen2.5-1.5B"
         assert cfg.model.dtype == "float16"
         assert cfg.model.seed == 42

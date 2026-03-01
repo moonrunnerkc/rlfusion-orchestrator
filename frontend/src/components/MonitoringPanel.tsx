@@ -17,6 +17,8 @@ interface SystemHealth {
   gpu: string | null;
   device: string;
   model: string;
+  gpu_model: string;
+  cpu_model: string;
   policy: string;
   uptime: number;
 }
@@ -87,6 +89,8 @@ export default function MonitoringPanel({ weights, reward, isActive }: Props) {
           gpu: data.gpu || null,
           device: data.device || 'cpu',
           model: data.model || 'unknown',
+          gpu_model: data.gpu_model || 'Llama-3.1-8B',
+          cpu_model: data.cpu_model || 'Qwen-2.5-1.5B',
           policy: data.policy || 'unknown',
           uptime: Math.round((Date.now() - mountRef.current) / 1000),
         }))
@@ -207,8 +211,12 @@ export default function MonitoringPanel({ weights, reward, isActive }: Props) {
                 <span className="text-cyan-400">{health.gpu || health.device.toUpperCase()}</span>
               </div>
               <div className="flex justify-between">
-                <span>Model</span>
-                <span className="text-cyan-400">{health.model}</span>
+                <span>LLM</span>
+                <span className="text-cyan-400 text-right text-[10px]">{health.gpu_model || 'Llama-3.1-8B'}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Triage</span>
+                <span className="text-cyan-400 text-right text-[10px]">{health.cpu_model || 'Qwen-2.5-1.5B'}</span>
               </div>
               <div className="flex justify-between">
                 <span>Policy</span>

@@ -298,7 +298,7 @@ def get_engine() -> InferenceEngine:
 
 
 def _build_asymmetric_adapter() -> InferenceEngine:
-    """Wrap AlymmetricLLMOrchestrator in an InferenceEngine-compatible shell.
+    """Wrap AsymmetricLLMOrchestrator in an InferenceEngine-compatible shell.
 
     This lets existing code call engine.generate() / engine.stream() without
     knowing about the dual-model split. Tasks default to GPU executor unless
