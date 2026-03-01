@@ -74,7 +74,7 @@ Everything is transparent. You can watch fusion weights shift in real time from 
 | **CQL/PPO/DPO** | Three-stage adaptive RL policy that learns which retrieval path to trust for each query type |
 | **CAG + GraphRAG** | Two-path retrieval: instant cache hits via SHA-256/semantic lookup, with entity graph traversal fallback |
 | **Multi-Agent Pipeline** | LangGraph-orchestrated agents (safety -> retrieval -> fusion -> generation -> critique) with complexity-based routing |
-| **623 Tests** | Full coverage across 11 test files, including asymmetric pipeline, core modules, agents, tools, RL, STIS, and benchmarks |
+| **623 Tests** | Full coverage across 12 test files, including asymmetric pipeline, core modules, agents, tools, RL, STIS, and benchmarks |
 
 ---
 
@@ -160,7 +160,7 @@ If only one condition fires, the LLM handles it normally. A contradiction withou
 | Agents | 2 default (configurable up to 16) |
 | Convergence threshold | 0.92 |
 | Blending rate | 0.5 |
-| Max iterations per token | 30 |
+| Max iterations per token | 20 (runtime default via `load_config()`) |
 | Server | FastAPI microservice on port 8100 |
 | Loading | **Lazy** -- model stays off-GPU until first `/generate` request |
 | Idle unload | Auto-unloads after 120s of inactivity to free VRAM for the main pipeline |
@@ -357,12 +357,12 @@ The `AdaptivePolicy` automatically transitions through RL stages as interaction 
 | Dims | Signal |
 |------|--------|
 | 384 | Query embedding (BGE-small-en-v1.5) |
-| 1 | Average CSWR score across top results |
 | 1 | Binary cache hit indicator |
+| 1 | CAG top result score |
 | 1 | Graph connectivity signal (results / 10) |
+| 3 | Graph top-3 result scores |
 | 1 | Normalized query length (words / 50) |
-| 5 | Query type vector (factoid, how-to, conceptual, comparative, other) |
-| 1 | CAG hit score (best semantic similarity) |
+| 3 | Query type vector (factual, relational, general) |
 
 ### Action Space (2 continuous values)
 
@@ -374,9 +374,9 @@ When the policy outputs near-uniform weights (max - min < 0.05), keyword heurist
 
 | Query Pattern | CAG | Graph |
 |---------------|-----|-------|
-| "architecture", "design", "workflow" | 0.30 | 0.70 |
-| "what is", "explain", "describe" | 0.40 | 0.60 |
-| Default | 0.40 | 0.60 |
+| "how does", "architecture", "design", "workflow", "system", "relationship" | 0.30 | 0.70 |
+| "what is", "explain", "describe", "define" | 0.60 | 0.40 |
+| Default | 0.50 | 0.50 |
 
 ### Reward Signal
 
@@ -630,7 +630,7 @@ All runtime behavior is controlled by `backend/config.yaml`. Every key has safe 
 
 ```yaml
 llm:
-  model: dolphin-llama3:8b          # legacy key, kept for backward compat
+  model: Llama-3.1-8B + Qwen-2.5-1.5B  # display name for dual-model pipeline
   host: http://localhost:11434
   temperature: 0.72
   max_tokens: 8192
@@ -739,6 +739,7 @@ STIS engine environment variables:
 | `STIS_PORT` | `8100` | Server port |
 | `STIS_MODEL_ID` | `Qwen/Qwen2.5-1.5B` | HuggingFace model ID |
 | `STIS_IDLE_TIMEOUT` | `120` | Seconds before auto-unloading model from GPU |
+| `STIS_MAX_ITERATIONS` | `20` | Max convergence iterations per token |
 | `STIS_SEED` | `42` | Random seed for reproducibility |
 
 ---
@@ -845,6 +846,9 @@ backend/
     federated.py           # Differential privacy, FedAvg delta aggregation
     add_batch_episodes.py  # Seed replay buffer with synthetic episodes
     generate_training_data.py  # CoT trace extraction
+    train_real_episodes.py # Training from real interaction episodes
+    train_from_db.py       # Training from SQLite replay buffer
+    train_supervised.py    # Supervised fine-tuning pipeline
   tools/
     base.py                # BaseTool protocol, ToolInput/ToolOutput types
     registry.py            # Thread-safe registry with per-tool rate limiting
@@ -885,7 +889,7 @@ scripts/
   grafana/dashboard.json   # Grafana dashboard template
   compatibility/
     fix_blackwell.sh       # NVIDIA Blackwell (RTX 50-series) CUDA fix
-tests/                     # 623 tests across 11 files
+tests/                     # 623 tests across 12 files
   benchmarks/              # Ground-truth evaluation framework
     ragchecker.py          # Retrieval precision/recall/F1@k
     hotpotqa.py            # Multi-hop QA (exact-match + token-F1)
@@ -897,7 +901,7 @@ tests/                     # 623 tests across 11 files
 
 ## Test Suite
 
-**623 tests** across 11 test files. Run the full suite:
+**623 tests** across 12 test files. Run the full suite:
 
 ```bash
 python -m pytest tests/ -v
