@@ -799,8 +799,8 @@ async def upload_documents(request: Request) -> Dict[str, Any]:
 @app.post("/api/reindex")
 @limiter.limit("3/minute")
 async def reindex_documents(request: Request) -> Dict[str, Any]:
-    """Rebuild the RAG FAISS index from documents in data/docs/."""
-    from backend.core.retrievers import build_rag_index, _get_docs_path, _get_metadata_path
+    """Rebuild the RAG FAISS index and entity graph from documents in data/docs/."""
+    from backend.core.retrievers import build_rag_index, build_entity_graph, _get_docs_path, _get_metadata_path
     import time
 
     docs_path = _get_docs_path()
@@ -818,10 +818,14 @@ async def reindex_documents(request: Request) -> Dict[str, Any]:
 
     t0 = time.time()
     index = build_rag_index()
-    elapsed = round(time.time() - t0, 2)
 
     meta_path = _get_metadata_path()
     chunk_count = len(json.loads(meta_path.read_text())) if meta_path.exists() else 0
+
+    # rebuild entity graph from the same chunks
+    chunks = json.loads(meta_path.read_text()) if meta_path.exists() else []
+    entity_count = build_entity_graph(chunks) if chunks else 0
+    elapsed = round(time.time() - t0, 2)
 
     # report image index stats if multimodal is enabled
     image_count = 0
@@ -831,13 +835,14 @@ async def reindex_documents(request: Request) -> Dict[str, Any]:
 
     total_files = len(supported) + len(image_files)
     logger.info(
-        "Reindex complete: %d text files, %d images, %d chunks, %.2fs",
-        len(supported), len(image_files), chunk_count, elapsed,
+        "Reindex complete: %d text files, %d images, %d chunks, %d entities, %.2fs",
+        len(supported), len(image_files), chunk_count, entity_count, elapsed,
     )
     return {
         "status": "reindexed",
         "files_processed": total_files,
         "chunks_indexed": chunk_count,
+        "entities_extracted": entity_count,
         "images_indexed": image_count,
         "elapsed_seconds": elapsed,
     }

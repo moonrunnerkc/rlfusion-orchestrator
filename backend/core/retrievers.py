@@ -789,6 +789,54 @@ def _load_graph() -> nx.DiGraph:
     return G
 
 
+# chunk embedding cache for semantic search over doc chunks
+_chunk_embed_cache: dict[str, Any] = {"embeddings": None, "chunks": None, "mtime": 0.0}
+
+
+def _retrieve_doc_chunks(query: str, top_k: int = 5) -> list[dict[str, Any]]:
+    """Semantic search over document chunks using embedding cosine similarity.
+
+    Loads chunk metadata from disk, embeds them once, caches for reuse.
+    Returns ranked chunks with scores, text, and source.
+    """
+    meta_path = _get_metadata_path()
+    if not meta_path.exists():
+        return []
+
+    mtime = meta_path.stat().st_mtime
+    if _chunk_embed_cache["mtime"] != mtime or _chunk_embed_cache["chunks"] is None:
+        chunks = json.loads(meta_path.read_text())
+        if not chunks:
+            return []
+        texts = [c.get("text", "") for c in chunks]
+        embeddings = embed_batch(texts)
+        _chunk_embed_cache["embeddings"] = embeddings
+        _chunk_embed_cache["chunks"] = chunks
+        _chunk_embed_cache["mtime"] = mtime
+        logger.info("Cached embeddings for %d doc chunks", len(chunks))
+
+    chunks = _chunk_embed_cache["chunks"]
+    embeddings = _chunk_embed_cache["embeddings"]
+    q_emb = embed_text(query)
+
+    scores = []
+    for i, emb in enumerate(embeddings):
+        sim = float(cosine_sim(q_emb, emb))
+        scores.append((i, sim))
+    scores.sort(key=lambda x: x[1], reverse=True)
+
+    results = []
+    for idx, score in scores[:top_k]:
+        chunk = chunks[idx]
+        results.append({
+            "text": chunk.get("text", ""),
+            "score": score,
+            "source": chunk.get("source", "doc"),
+            "id": f"chunk_{idx}",
+        })
+    return results
+
+
 def retrieve_graph(query: str, max_hops: int = 2) -> List[Dict[str, Any]]:
     """Retrieve from knowledge graph. Uses GraphEngine (Phase 2) with Qdrant hybrid
     search when available, falls back to legacy ontology traversal."""
@@ -859,8 +907,24 @@ def retrieve(query: str, cag_weight: float = 1.0,
             "images": [], "web_status": "disabled",
         }
 
-    # GraphRAG: entity traversal via graph_engine
-    graph = retrieve_graph(query, 2)
+    # GraphRAG: entity traversal + doc chunk semantic search
+    graph_entities = retrieve_graph(query, 2)
+    doc_chunks = _retrieve_doc_chunks(query, top_k=top_k)
+
+    # merge: entity context from graph + full doc chunks for grounding
+    # use doc chunks as graph results (they carry the actual text the LLM needs)
+    seen_texts: set[str] = set()
+    graph: list[dict[str, Any]] = []
+    for r in doc_chunks:
+        text_key = r.get("text", "")[:100]
+        if text_key not in seen_texts:
+            seen_texts.add(text_key)
+            graph.append(r)
+    for r in graph_entities:
+        text_key = r.get("text", "")[:100]
+        if text_key not in seen_texts:
+            seen_texts.add(text_key)
+            graph.append(r)
 
     # multimodal image retrieval (kept, not on critical path)
     images: list[dict[str, object]] = []

@@ -347,13 +347,15 @@ export default function App() {
         setIsLoading(false);
 
         // Replace streamed text with cleaned response (strips critique block)
+        // Also handles blocked queries where no streaming chunks were sent
         if (data.response) {
           setMessages((prev) => {
             const last = prev[prev.length - 1];
             if (last?.role === 'rlfusion') {
               return [...prev.slice(0, -1), { ...last, text: data.response }];
             }
-            return prev;
+            // no assistant message yet (e.g. safety-blocked before any streaming)
+            return [...prev, { id: Date.now().toString(), text: data.response, role: 'rlfusion' }];
           });
         }
 
