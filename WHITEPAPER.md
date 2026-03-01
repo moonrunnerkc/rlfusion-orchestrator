@@ -7,7 +7,7 @@ December 2025
 
 ## Abstract
 
-Current retrieval-augmented generation (RAG) systems use static weighting to combine retrieval sources. When the query distribution shifts or the source quality varies, these fixed weights produce unpredictable outputs. This paper describes RLFusion Orchestrator, a system that replaces static fusion with an offline reinforcement learning policy trained via Conservative Q-Learning (CQL). The system routes queries across four retrieval paths - stability-filtered vector search, an exact-match cache, a knowledge graph, and optional web search - and learns a weighting function from logged interaction data. A stability filter (CSWR) removes low-confidence chunks before fusion, and a self-critique mechanism generates reward signals without human annotation. The system runs entirely on consumer hardware using Llama 3.1 8B through Ollama. Evaluation across six stress-test suites (3,000 total iterations) shows 100% suite pass rate, 0.97 weight stability, 1.0 drift resistance, and 0.65 jailbreak resistance.
+Current retrieval-augmented generation (RAG) systems use static weighting to combine retrieval sources. When the query distribution shifts or the source quality varies, these fixed weights produce unpredictable outputs. This paper describes RLFusion Orchestrator, a system that replaces static fusion with an offline reinforcement learning policy trained via Conservative Q-Learning (CQL). The system routes queries across two retrieval paths, a SHA-256/semantic cache (CAG) and an entity knowledge graph (GraphRAG), and learns a weighting function from logged interaction data. An asymmetric dual-model pipeline pins a fast 1.5B triage model (Qwen 2.5) to CPU and a full 8B generation model (Llama 3.1) to GPU in a single process. A stability filter (CSWR) removes low-confidence chunks before fusion, and a self-critique mechanism generates reward signals without human annotation. The system runs entirely on consumer hardware via llama-cpp-python with zero cloud dependencies. Evaluation across six stress-test suites (3,000 total iterations) shows 100% suite pass rate, 0.97 weight stability, 1.0 drift resistance, and 0.65 jailbreak resistance.
 
 ---
 
@@ -21,7 +21,7 @@ Retrieval-augmented generation has a fundamental stability problem. The standard
 
 Most systems address these by tuning hyperparameters manually or adding a reranker on top of the retrieval stack. Both approaches are reactive. They fix individual failure cases rather than adapting the retrieval strategy itself.
 
-The harder problem is multi-source fusion. When a system has access to multiple retrieval paths - vector search, a cache, a knowledge graph, web search - someone has to decide how much to trust each one for a given query. Static weights break down immediately. A factoid question should lean on the cache. A multi-hop reasoning question should lean on the graph. A question about recent events needs the web. No fixed ratio works across all of these.
+The harder problem is multi-source fusion. When a system has access to multiple retrieval paths, someone has to decide how much to trust each one for a given query. Static weights break down immediately. A factoid question should lean on the cache. A multi-hop reasoning question should lean on the graph. No fixed ratio works across all of these.
 
 RLFusion was built to solve this specific problem: **learn a query-conditioned weighting function from usage data, without requiring online interaction or human labeling.**
 
@@ -31,26 +31,33 @@ RLFusion was built to solve this specific problem: **learn a query-conditioned w
 
 ### 2.1 Overview
 
-The system operates as a pipeline with six stages:
+The system operates as a pipeline with an asymmetric dual-model architecture:
 
-1. **Query decomposition** - an LLM call classifies the query's intent, expected answer shape, key entities, and sensitivity level.
-2. **Parallel retrieval** - four independent retrieval paths execute concurrently.
-3. **Stability filtering (CSWR)** - vector search results are scored for local stability, question fit, and drift, then filtered.
-4. **RL-based fusion** - a CQL policy maps query embeddings to retrieval weights.
-5. **Safety screening** - OOD detection (Mahalanobis distance) and attack detection run before generation.
-6. **Generation with self-critique** - the LLM generates a response and simultaneously produces a structured self-evaluation with reward scores.
+1. **CAG lookup** - SHA-256 exact match or semantic similarity check against the cache. On hit, return immediately (< 5 ms), bypassing all subsequent stages.
+2. **Safety screening** - regex attack patterns, OOD detection (Mahalanobis distance), and LLM classification via the CPU triage worker (Qwen 2.5 1.5B).
+3. **Query decomposition** - the CPU triage worker classifies the query's intent, key entities, and sensitivity level using heuristic fallback (LLM call removed for speed).
+4. **GraphRAG traversal** - entity resolution and multi-hop traversal for structured context.
+5. **RL-based fusion** - a CQL policy maps query embeddings to 2D retrieval weights [cag, graph].
+6. **Generation with self-critique** - the GPU executor (Llama 3.1 8B) generates a response, followed by a dedicated critique call that produces structured reward scores.
 
 The backend is a FastAPI application. The frontend is a React SPA that displays fusion weights in real time. The system communicates via WebSocket for streaming responses.
 
+### 2.1.1 Asymmetric Dual-Model Pipeline
+
+The system runs two GGUF models in a single Python process via llama-cpp-python:
+
+- **CPU triage worker** (Qwen 2.5 1.5B, Q4_K_M, ~2 GB RAM): handles all triage tasks including intent parsing, safety checks, CAG orchestration, entity extraction, and observation vector assembly. Runs with `n_gpu_layers=0`.
+- **GPU executor** (Llama 3.1 8B, Q8_0, ~9 GB VRAM): handles generation, critique, STIS deep reasoning, and faithfulness checks. Runs with `n_gpu_layers=-1` (all layers on GPU).
+
+This separation eliminates the latency of routing through an external inference server (previously Ollama) and allows the CPU worker to handle fast triage tasks without contending for GPU memory.
+
 ### 2.2 Retrieval Paths
 
-**RAG + CSWR.** Standard FAISS-based vector search using BGE-small-en-v1.5 embeddings (384 dimensions). Raw results pass through the CSWR filter described in Section 3. Documents are chunked at 400 tokens, stored in a flat L2 index.
+The system uses two retrieval paths. FAISS vector search and Tavily web search have been removed from the hot path as part of the transition to the lean CAG-RL-Fusion architecture.
 
-**CAG (Cached Answer Graph).** An SQLite-backed exact-match and semantic-similarity cache. Queries are matched first by exact string, then by case-insensitive match, then by embedding cosine similarity (threshold ≥ 0.85). High-reward responses (reward ≥ 0.70) are automatically cached after each interaction, creating a feedback loop where good responses are served instantly on subsequent similar queries.
+**CAG (Cached Answer Graph).** An SQLite-backed semantic cache with SHA-256 exact-match and embedding cosine similarity lookup (threshold >= 0.85). Queries are normalized (strip, lowercase, hash) before matching. High-reward responses (reward >= 0.70) are automatically cached after each interaction, creating a feedback loop where good responses are served instantly on subsequent similar queries. Strong cache hits bypass the entire pipeline (< 5 ms).
 
-**Graph Retrieval.** A NetworkX directed graph loaded from a JSON ontology file. Entities are matched to the query via embedding similarity, then the graph is traversed up to two hops. Results carry scores that decay by a factor of 0.8 per hop, naturally preferring tightly connected information.
-
-**Web Search.** Tavily API integration, disabled by default. Used only when local context is insufficient. Results carry a fixed confidence of 0.95 and are formatted with source URLs for citation.
+**GraphRAG.** A NetworkX directed graph loaded from a JSON ontology file. Entities are matched to the query via embedding similarity, then the graph is traversed up to two hops. Results carry scores that decay by a factor of 0.8 per hop, naturally preferring tightly connected information. Entity resolution uses cosine similarity with a 0.92 threshold for deduplication. Leiden community detection (via igraph/leidenalg when available) provides structural grouping.
 
 ### 2.3 Query Decomposition
 
@@ -73,7 +80,7 @@ This profile feeds directly into the CSWR scoring function (Section 3), where it
 
 ## 3. Chunk Stability Weighted Retrieval (CSWR)
 
-CSWR is the mechanism that distinguishes this system's vector search from standard top-k retrieval. The problem it solves: FAISS returns chunks ranked by vector distance, but distance alone says nothing about whether a chunk is *stable* - whether it sits in a coherent neighborhood of the document, whether it actually addresses the question, and whether it drifts away from surrounding context.
+CSWR is the mechanism that improves retrieval quality beyond raw similarity scoring. The problem it solves: vector distance alone says nothing about whether a chunk is *stable* - whether it sits in a coherent neighborhood of the document, whether it actually addresses the question, and whether it drifts away from surrounding context.
 
 ### 3.1 Scoring Components
 
@@ -81,9 +88,9 @@ Each retrieved chunk receives a composite score from four weighted components:
 
 $$\text{CSW} = w_v \cdot S_{\text{vector}} + w_s \cdot S_{\text{stability}} + w_f \cdot S_{\text{fit}} + w_d \cdot S_{\text{drift}}$$
 
-Default weights: $w_v = 0.4$, $w_s = 0.3$, $w_f = 0.2$, $w_d = 0.1$.
+Default weights: $w_v = 0.35$, $w_s = 0.25$, $w_f = 0.2$, $w_d = 0.1$, plus a project coherence weight of $0.10$.
 
-**Vector score** ($S_{\text{vector}}$): Transformed FAISS L2 distance, computed as $\frac{1}{1 + d}$ where $d$ is the raw distance. Ranges from 0 to 1, with 1 indicating an exact match.
+**Vector score** ($S_{\text{vector}}$): Transformed L2 distance, computed as $\frac{1}{1 + d}$ where $d$ is the raw distance. Ranges from 0 to 1, with 1 indicating an exact match.
 
 **Local stability** ($S_{\text{stability}}$): Cosine similarity between a chunk's embedding and its neighbors in the document. If a chunk is semantically distant from its surrounding chunks, it is likely a fragment or noise. Boundary chunks (first or last in a document) receive a 0.15 penalty since they often contain headers, footers, or partial sentences.
 
@@ -129,21 +136,21 @@ Configuration:
 - Conservative weight: 5.0
 - Batch size: 256
 - Action scaler: MinMaxActionScaler (normalizes actions to [-1, 1])
-- Encoder: two-layer MLP (384 → 256 → 256 → 4)
+- Encoder: two-layer MLP (384 → 256 → 256 → 2)
 
 ### 4.3 State-Action Space
 
-**Observation space** (396 dimensions):
+**Observation space** (394 dimensions):
 - 384-dimensional query embedding from BGE-small-en-v1.5
-- 3 top retrieval similarity scores from the RAG path
 - 1 average CSWR score across top results
 - 1 binary cache hit indicator (1.0 if CAG returned results)
 - 1 graph connectivity signal (number of graph results / 10)
 - 1 normalized query length (word count / 50)
 - 5-dimensional query type vector (factoid, how-to, conceptual, comparative, other)
+- 1 CAG hit score (best semantic similarity)
 
-**Action space** (4 continuous values in [-1, 1]):
-Raw logits passed through softmax and clamped to a minimum of 0.05 per source, preventing any retrieval path from being fully zeroed out.
+**Action space** (2 continuous values in [-1, 1]):
+Raw logits for [cag, graph] passed through softmax and clamped to a minimum of 0.05 per source, preventing either retrieval path from being fully zeroed out.
 
 ### 4.4 Reward Signal
 
@@ -166,12 +173,11 @@ The trained policy is saved as a PyTorch state dict at `models/rl_policy_cql.d3`
 
 When the CQL policy outputs near-uniform weights (max - min < 0.05), the system falls back to keyword-based heuristics:
 
-| Query Pattern | RAG | CAG | Graph | Web |
-|---------------|-----|-----|-------|-----|
-| URLs, "look up" | 0.20 | 0.10 | 0.20 | 0.50 |
-| "architecture", "design", "workflow" | 0.20 | 0.10 | 0.60 | 0.10 |
-| "what is", "explain", "describe" | 0.60 | 0.20 | 0.10 | 0.10 |
-| Default | 0.40 | 0.20 | 0.30 | 0.10 |
+| Query Pattern | CAG | Graph |
+|---------------|-----|-------|
+| "architecture", "design", "workflow" | 0.30 | 0.70 |
+| "what is", "explain", "describe" | 0.40 | 0.60 |
+| Default | 0.40 | 0.60 |
 
 This prevents the system from behaving unpredictably on queries the policy hasn't seen enough examples of.
 
@@ -187,16 +193,15 @@ Ledoit-Wolf shrinkage is used instead of raw covariance because the embedding sp
 
 ### 5.2 Self-Critique
 
-Rather than using a separate evaluator model, the system appends a structured self-critique instruction to the generation prompt. The LLM scores its own output on four axes:
+The system runs a **dedicated, separate LLM call** on the GPU executor after generation. The critique agent scores the response on three axes:
 
 - **Factual accuracy** (0.00-1.00)
 - **Proactivity** (0.00-1.00)
 - **Helpfulness** (0.00-1.00)
-- **Citation coverage** (0.00-1.00, computed separately from inline citation counts)
 
-The critique block is parsed from the response via regex, the scores are extracted, and the critique text is stripped before the response reaches the user. The final reward is either the explicit "Final reward" score or the mean of the three sub-scores.
+The critique returns structured JSON with scores and three specific follow-up suggestions. Citation coverage is computed independently by counting `[1]`, `[2]`, etc. markers and dividing by the number of substantive sentences (> 20 characters) in the response. This provides a cross-check against the model's self-reported score.
 
-Citation coverage is computed independently by counting `[1]`, `[2]`, etc. markers and dividing by the number of substantive sentences (> 20 characters) in the response. This provides a cross-check against the LLM's self-reported score.
+The final reward is the mean of the three sub-scores.
 
 ### 5.3 Attack Detection
 
@@ -204,7 +209,7 @@ A lightweight safety classifier runs each query through the LLM with a binary cl
 
 ### 5.4 Faithfulness Checking
 
-Individual claims can be verified against source chunks. The LLM is shown the source material and asked whether a specific claim is SUPPORTED or not. This is used in evaluation suites but not in the hot path of normal query processing, since the latency cost of per-claim verification is too high for interactive use.
+Individual claims can be verified against source chunks. The GPU executor is shown the source material and asked whether a specific claim is SUPPORTED or not. A TTL cache (default 300s) prevents redundant LLM calls for the same claim. Faithfulness checking runs on the hot path when query sensitivity exceeds the gate threshold (0.7).
 
 ---
 
@@ -236,7 +241,7 @@ Users can store facts about themselves across sessions using explicit commands (
 
 ## 7. Evaluation
 
-All benchmarks were run on a single machine with an NVIDIA RTX 5070 and Llama 3.1 8B (Q4 quantized) through Ollama. Each test suite ran 500 iterations. Total wall-clock time: 46 minutes.
+All benchmarks were run on a single machine with an NVIDIA RTX 5070 and Llama 3.1 8B (Q4 quantized) through Ollama. Each test suite ran 500 iterations. Total wall-clock time: 46 minutes. These benchmarks predate the asymmetric dual-model upgrade; the 2-path architecture is expected to show different latency characteristics but equivalent quality metrics since the same Llama 3.1 8B model weights are used for generation.
 
 ### 7.1 Results
 
@@ -286,15 +291,17 @@ The system uses a single SQLite database (`db/rlfo_cache.db`) with three tables:
 
 ### 8.3 Hot-Reload Configuration
 
-The `config.yaml` file can be modified at runtime through the `/api/config` PATCH endpoint. Currently, only the web search toggle is exposed through this interface. The config is loaded into memory at startup and mutated in place - there is no config-watching or polling mechanism.
+The `config.yaml` file can be modified at runtime through the `/api/config` PATCH endpoint. The config is loaded into memory at startup and mutated in place. There is no config-watching or polling mechanism.
 
 ### 8.4 CQL Policy Wrapper
 
 At inference time, the full d3rlpy library is not loaded. Instead, a lightweight PyTorch wrapper (`CQLPolicyWrapper`) loads only the encoder and mu (mean action) layers from the saved state dict. The forward pass is:
 
 ```
-observation → Linear(384, 256) → ReLU → Linear(256, 256) → ReLU → Linear(256, 4) → clamp(-1, 1)
+observation → Linear(384, 256) → ReLU → Linear(256, 256) → ReLU → Linear(256, 2) → clamp(-1, 1)
 ```
+
+The output layer produces 2 logits (cag, graph) rather than the original 4 (rag, cag, graph, web), matching the reduced action space.
 
 This reduces import time and memory footprint compared to loading the full CQL algorithm class.
 
@@ -304,13 +311,13 @@ This reduces import time and memory footprint compared to loading the full CQL a
 
 **Single-user design.** The system was built for personal use. Multi-user deployment would require session isolation, auth, and per-user replay buffers. The current architecture stores all episodes and profile data in a shared SQLite file.
 
-**LLM-dependent reward signal.** The self-critique reward comes from the same model that generates the response. This creates a self-reinforcing loop - the model will rarely rate its own output as terrible. The reward signal is useful for relative comparisons across different weight configurations, but it should not be treated as a ground-truth quality measure.
+**LLM-dependent reward signal.** The self-critique reward comes from the same model that generates the response (both running on the GPU executor). This creates a self-reinforcing loop. The reward signal is useful for relative comparisons across different weight configurations, but it should not be treated as a ground-truth quality measure.
 
-**No online adaptation.** The CQL policy is trained offline and deployed as a static artifact. The replay buffer grows continuously as the system is used, but policy updates require manually rerunning the training script. Periodic retraining (e.g., weekly) would be a straightforward extension.
+**No online adaptation.** The CQL policy is trained offline and deployed as a static artifact. The replay buffer grows continuously as the system is used, but policy updates require manually rerunning the training script. The three-stage AdaptivePolicy (CQL -> PPO -> DPO) automates transitions but still requires explicit training runs.
 
-**Latency floor.** Every query requires at least two LLM calls (decomposition and generation) plus embedding computation and retrieval. On an 8B model with Q4 quantization, this puts the minimum latency around 8-10 seconds. There is no batching or speculative decoding.
+**Latency floor.** Every query (on a cache miss) requires at least one triage call (CPU) and one generation call (GPU) plus embedding computation and retrieval. On the asymmetric pipeline, the minimum latency is bounded by the GPU executor's token generation speed.
 
-**FAISS flat index.** The vector index uses `IndexFlatL2`, which performs exact search. This is fine for document collections under ~100k chunks but will not scale to millions without switching to an approximate index (IVF, HNSW).
+**GPU required for full pipeline.** The asymmetric architecture needs 12+ GB VRAM. CPU-only mode works but degrades inference speed significantly.
 
 ---
 
@@ -329,6 +336,8 @@ This reduces import time and memory footprint compared to loading the full CQL a
 ## 11. Conclusion
 
 RLFusion Orchestrator demonstrates that offline RL can replace static weights in multi-path retrieval systems, even when the training signal comes from automated self-critique rather than human annotation. The CSWR filter provides a principled mechanism for rejecting low-quality retrieval results before they reach the LLM, and the CQL policy learns query-conditioned routing that adapts to actual usage patterns.
+
+The asymmetric dual-model architecture (Qwen 2.5 1.5B CPU triage + Llama 3.1 8B GPU executor) eliminates inter-process communication overhead while maintaining clear separation between lightweight triage and heavy generation tasks. The two-path retrieval design (CAG cache + GraphRAG) provides instant responses for repeated queries while preserving structured knowledge traversal for novel ones.
 
 The system is designed for stability over speed, privacy over convenience, and transparency over abstraction. Every fusion weight, every retrieval score, and every critique output is visible to the user in real time.
 

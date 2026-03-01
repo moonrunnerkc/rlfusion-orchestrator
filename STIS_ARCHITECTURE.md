@@ -2,22 +2,22 @@
 
 Author: Bradley R. Kinnard
 Version: 0.1.0
-Status: Implemented (Phases 1-5)
+Status: Implemented (Phases 1-9)
 
 ## Overview
 
 STIS (Sub-Token Intuition Swarms) is a secondary generation engine that activates
-when the primary Ollama pipeline encounters irreconcilable contradictions between
+when the primary asymmetric pipeline encounters irreconcilable contradictions between
 retrieval sources. Instead of forcing a language model to arbitrarily pick one
 source over another, STIS achieves consensus through mathematical convergence
 in continuous latent space, before any discrete token is sampled.
 
 ## Problem Statement
 
-When RAG (document retrieval) and Graph (knowledge graph) return conflicting
-factual claims, the primary LLM has no principled way to resolve the conflict.
-It typically picks whichever claim appears more prominent in the fused context,
-which is an arbitrary and unreliable heuristic. STIS replaces this with
+When CAG (cached answers) and GraphRAG (knowledge graph traversal) return conflicting
+factual claims, the GPU executor (Llama 3.1 8B) has no principled way to resolve
+the conflict. It typically picks whichever claim appears more prominent in the fused
+context, which is an arbitrary and unreliable heuristic. STIS replaces this with
 mathematically forced agreement.
 
 ## Architecture
@@ -28,63 +28,72 @@ mathematically forced agreement.
                            +--------+---------+
                                     |
                            +--------v---------+
-                           |  Safety Gate     |
+                           |  CAG Lookup      |
+                           | (< 5ms on hit)   |
                            +--------+---------+
-                                    |
-                    +---------------v---------------+
-                    |       Parallel Retrieval       |
-                    |  RAG | CAG | Graph | Web       |
-                    +---------------+---------------+
-                                    |
-                           +--------v---------+
-                           |  RL Fusion        |
-                           +--------+---------+
-                                    |
-                     +--------------v--------------+
-                     |   Contradiction Detector     |
-                     |   (detect_contradiction)     |
-                     |                              |
-                     |  Checks:                     |
-                     |  1. RAG/Graph cosine sim     |
-                     |  2. CSWR confidence score    |
-                     +---------+----------+---------+
-                               |          |
-                     sim >= 0.40    sim < 0.40
-                     OR cswr >= 0.70   AND cswr < 0.70
-                               |          |
-                    +----------v--+    +--v-----------+
-                    |   Ollama    |    |  STIS Engine  |
-                    |   (default) |    |  (fallback)   |
-                    +----------+--+    +--+-----------+
-                               |          |
-                               +----+-----+
-                                    |
-                           +--------v---------+
-                           |  Self-Critique    |
-                           +--------+---------+
-                                    |
-                           +--------v---------+
-                           |  Response         |
-                           +------------------+
+                              hit /    \ miss
+                             /          \
+                    [return]    +--------v---------+
+                                |  Safety Gate     |
+                                | (CPU triage)     |
+                                +--------+---------+
+                                         |
+                         +---------------v---------------+
+                         |       GraphRAG Retrieval       |
+                         |  Entity resolution + 2-hop    |
+                         +---------------+---------------+
+                                         |
+                                +--------v---------+
+                                |  RL Fusion        |
+                                | [cag, graph]      |
+                                +--------+---------+
+                                         |
+                          +--------------v--------------+
+                          |   Contradiction Detector     |
+                          |   (detect_contradiction)     |
+                          |                              |
+                          |  Checks:                     |
+                          |  1. CAG/Graph cosine sim     |
+                          |  2. CSWR confidence score    |
+                          +---------+----------+---------+
+                                    |          |
+                          sim >= 0.40    sim < 0.40
+                          OR cswr >= 0.70   AND cswr < 0.70
+                                    |          |
+                         +----------v--+    +--v-----------+
+                         | GPU Executor|    |  STIS Engine  |
+                         | (Llama 8B) |    |  (fallback)   |
+                         +----------+--+    +--+-----------+
+                                    |          |
+                                    +----+-----+
+                                         |
+                                +--------v---------+
+                                |  Critique Agent   |
+                                | (GPU Executor)    |
+                                +--------+---------+
+                                         |
+                                +--------v---------+
+                                |  Response         |
+                                +------------------+
 ```
 
 ## Dual-Condition Gate
 
 STIS routing requires BOTH conditions to be true simultaneously:
 
-1. **Contradiction detected**: Cosine similarity between the top RAG chunk and
-   top Graph chunk falls below `STIS_SIMILARITY_FLOOR` (0.40). This indicates
+1. **Contradiction detected**: Cosine similarity between the top CAG result and
+   top Graph result falls below `STIS_SIMILARITY_FLOOR` (0.40). This indicates
    the two sources are discussing fundamentally different or opposing topics.
 
 2. **Low CSWR confidence**: The best CSWR (Contextual Stability-Weighted Ranking)
    score across all retrieval results falls below `STIS_CSWR_THRESHOLD` (0.70).
    This confirms the retrieval pipeline lacks confidence in its results.
 
-If only one condition is met, Ollama proceeds normally:
+If only one condition is met, the GPU executor proceeds normally:
 - Contradiction without low CSWR: likely a topic mismatch, not a real conflict.
   The retrieval pipeline is confident enough to handle it.
 - Low CSWR without contradiction: weak retrieval, but sources agree on what
-  little they found. Ollama can work with that.
+  little they found. The GPU executor can work with that.
 
 ## STIS Swarm Engine
 
@@ -93,17 +102,17 @@ If only one condition is met, Ollama proceeds normally:
 The swarm engine operates on transformer hidden states (the continuous vectors
 before the lm_head projection). At each token generation step:
 
-1. **Extract**: Run N agents (default 4) through the model. Each agent maintains
+1. **Extract**: Run N agents (default 2) through the model. Each agent maintains
    its own input sequence. Extract the final-layer hidden state at the last
    token position from each agent.
 
 2. **Measure**: Compute pairwise cosine similarity across all N agent hidden
    state vectors. Calculate mean similarity and maximum deviation.
 
-3. **Converge**: If mean similarity < threshold (default 0.95), blend each
+3. **Converge**: If mean similarity < threshold (default 0.92), blend each
    agent's state toward the centroid:
    `state_new = (1 - alpha) * state + alpha * centroid`
-   Repeat until convergence or max iterations (default 50).
+   Repeat until convergence or max iterations (default 30).
 
 4. **Sample**: Once converged, project the unified centroid through lm_head
    to get logits. Apply temperature + nucleus (top-p) sampling to select
@@ -130,7 +139,8 @@ Three invariants are enforced and tested:
 
 Qwen2.5-1.5B loaded in float16 for a 3GB VRAM footprint. The model runs
 as a standalone FastAPI microservice on port 8100, independent of the main
-Ollama-based pipeline.
+asymmetric dual-model pipeline. Lazy-loaded on first `/generate` request
+and auto-unloaded after 120s of inactivity to free VRAM.
 
 ## Components
 
@@ -149,11 +159,11 @@ Ollama-based pipeline.
 
 | File | Symbol | Role |
 |------|--------|------|
-| `critique.py` | `detect_contradiction()` | Compares top RAG vs Graph chunks via cosine similarity |
+| `critique.py` | `detect_contradiction()` | Compares top CAG vs Graph results via cosine similarity |
 | `critique.py` | `should_route_to_stis()` | Dual-condition gate: contradiction AND low CSWR |
 | `critique.py` | `STIS_CSWR_THRESHOLD` | 0.70, hard threshold for CSWR confidence |
 | `critique.py` | `STIS_SIMILARITY_FLOOR` | 0.40, cosine similarity floor for contradiction |
-| `stis_client.py` | `format_axiom_prompt()` | Formats RAG/Graph claims as opposing axioms |
+| `stis_client.py` | `format_axiom_prompt()` | Formats CAG/Graph claims as opposing axioms |
 | `stis_client.py` | `request_stis_consensus()` | httpx POST to /generate with 45s timeout |
 | `stis_client.py` | `log_stis_resolution()` | SQLite audit trail in stis_resolutions table |
 | `stis_client.py` | `check_stis_health()` | Non-blocking health probe |
@@ -170,9 +180,9 @@ Ollama-based pipeline.
 
 The /ws WebSocket pipeline checks for contradictions after fusion (Step 3.5)
 and before LLM generation (Step 4). If STIS resolves the contradiction, the
-Ollama streaming loop is skipped entirely. The STIS response is sent as a
+GPU executor streaming loop is skipped entirely. The STIS response is sent as a
 single chunk. If STIS fails (timeout, unreachable, HTTP error), the pipeline
-falls back to Ollama with a logged warning.
+falls back to the GPU executor with a logged warning.
 
 Prometheus counter `rlfusion_stis_routing_total` tracks events by outcome:
 `resolved`, `failed`, or `skipped`.
@@ -186,23 +196,24 @@ stis:
   enabled: true
   host: http://localhost:8100
   timeout_secs: 45
-  max_new_tokens: 512
-  num_agents: null          # override engine default (4)
-  similarity_threshold: null # override engine default (0.95)
-  alpha: null               # override engine default (0.3)
+  max_new_tokens: 128
+  num_agents: null          # override engine default (2)
+  similarity_threshold: null # override engine default (0.92)
+  alpha: null               # override engine default (0.5)
 ```
 
 STIS engine itself is configured via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `STIS_NUM_AGENTS` | 4 | Number of swarm agents |
-| `STIS_SIM_THRESHOLD` | 0.95 | Convergence similarity threshold |
-| `STIS_ALPHA` | 0.3 | Centroid blending rate |
+| `STIS_NUM_AGENTS` | 2 | Number of swarm agents |
+| `STIS_SIM_THRESHOLD` | 0.92 | Convergence similarity threshold |
+| `STIS_ALPHA` | 0.5 | Centroid blending rate |
 | `STIS_PORT` | 8100 | Server port |
 | `STIS_SEED` | 42 | Random seed for reproducibility |
 | `STIS_MODEL` | Qwen/Qwen2.5-1.5B | HuggingFace model ID |
 | `STIS_TIMEOUT` | 45 | Server request timeout (seconds) |
+| `STIS_IDLE_TIMEOUT` | 120 | Seconds before auto-unloading model from GPU |
 
 ## SQLite Audit Trail
 
@@ -233,7 +244,7 @@ Every STIS routing event (successful or failed) is logged to
 |-----------|-------|-------|
 | `tests/test_stis_engine.py` | 29 | Convergence invariants, sampling, schemas, config |
 | `tests/test_stis_contradiction.py` | 26 | Contradiction detection, routing logic, BGE embeddings |
-| `tests/test_stis_integration.py` | 27 | Client fallbacks, SQLite logging, orchestrator wiring |
+| `tests/test_stis_integration.py` | 29 | Client fallbacks, SQLite logging, orchestrator wiring |
 
 ## Running
 
@@ -247,13 +258,13 @@ uvicorn stis_engine.server:app --host 0.0.0.0 --port 8100
 
 The main RLFO backend will automatically route contradictions to the STIS
 engine when `stis.enabled: true` in config.yaml. If the STIS engine is
-unreachable, the backend falls back to Ollama silently.
+unreachable, the backend falls back to the GPU executor silently.
 
 ## Backward Compatibility
 
 - No existing function signatures changed
 - No existing response fields removed or renamed
-- No existing tests broken (168 core + 66 agent tests pass unchanged)
+- All 623 tests pass (168 core + 49 asymmetric + 66 agent + 340 others)
 - `PreparedContext` gained one new field (`retrieval_results`) with a safe default
 - New config key `stis` added with safe defaults (no manual config required)
-- STIS is opt-in: disabled by default in fresh installations
+- STIS is opt-in: enabled by default but degrades gracefully when the engine is unreachable

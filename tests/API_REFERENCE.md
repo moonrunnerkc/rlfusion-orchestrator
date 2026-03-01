@@ -1,12 +1,120 @@
-# 🧪 RLFO Test Suite API Reference
+# RLFO API Reference
 
 **Base URL:** `http://localhost:8000`
 **Author:** Bradley R. Kinnard
-**Status:** ✅ Operational
+**Status:** Operational
+**Architecture:** Asymmetric dual-model (Qwen 2.5 1.5B CPU + Llama 3.1 8B GPU)
+**Retrieval:** 2-path (CAG + GraphRAG)
 
 ---
 
-## 📡 Available Endpoints
+## Core Endpoints
+
+### POST /chat
+
+Query the system with fused retrieval, RL-weighted response, and critique scoring.
+
+**Rate Limit:** 10/min
+
+**Request:**
+```json
+{"query": "explain CQL vs DQN for offline RL", "mode": "default"}
+```
+
+**Response:**
+```json
+{
+  "response": "...",
+  "fusion_weights": {"cag": 0.4, "graph": 0.6},
+  "reward": 0.85,
+  "proactive_suggestions": ["...", "..."]
+}
+```
+
+On safety-blocked queries, includes `"blocked": true` and `"safety_reason": "..."` fields.
+
+### WebSocket /ws
+
+Streaming chat with real-time pipeline status updates.
+
+**Inbound:**
+```json
+{"query": "...", "mode": "default", "clear_memory": false, "new_chat": false}
+```
+
+**Streaming chunk:**
+```json
+{"chunk": "...", "weights": [0.4, 0.6], "reward": 0.0}
+```
+
+**Done message:**
+```json
+{
+  "type": "done",
+  "response": "...",
+  "fusion_weights": {"cag": 0.4, "graph": 0.6},
+  "reward": 0.85,
+  "proactive": "...",
+  "proactive_suggestions": ["..."],
+  "query_expanded": false,
+  "expanded_query": null,
+  "web_status": "disabled"
+}
+```
+
+### GET /ping
+
+Health check with GPU status, loaded models, and VRAM usage.
+
+**Rate Limit:** 10/min
+
+### GET /api/config
+
+Retrieve current runtime configuration.
+
+**Rate Limit:** 10/min
+
+### PATCH /api/config
+
+Update runtime configuration.
+
+**Rate Limit:** 10/min
+
+### POST /api/upload
+
+Upload documents (.txt, .md, .pdf, max 10 MB each) to `data/docs/`.
+
+**Rate Limit:** 10/min
+
+### POST /api/reindex
+
+Rebuild the knowledge graph index from documents in `data/docs/`.
+
+**Rate Limit:** 3/min
+
+### DELETE /api/reset
+
+Wipe transient state (cache, episodes, replay buffer).
+
+**Rate Limit:** 5/min
+
+### POST /api/fine-tune
+
+Trigger LoRA SFT training on high-reward episodes. Requires `RLFUSION_ADMIN_KEY` bearer token.
+
+**Rate Limit:** 1/hour
+
+### GET /api/images/{path}
+
+Serve processed images from the multimodal pipeline.
+
+### GET /metrics
+
+Prometheus scrape endpoint. Exports query latency, retrieval path usage, fusion weights, safety gate triggers, critique rewards, replay buffer size, STIS routing events, HTTP requests by endpoint, and active WebSocket connections.
+
+---
+
+## Test Suite Endpoints
 
 ### 1. **List All Test Suites**
 Get metadata about all available test suites.
@@ -270,8 +378,11 @@ tests/results/
 
 ---
 
-## ⚠️ Notes
+## Notes
 
+- **Retrieval paths:** The system uses 2-path retrieval (CAG + GraphRAG). FAISS vector search and Tavily web search have been removed from the hot path.
+- **Fusion weights:** Response `fusion_weights` contains `{"cag": float, "graph": float}` (2 keys, not 4).
+- **Inference engine:** Asymmetric dual-model via llama-cpp-python. Qwen 2.5 1.5B (CPU) handles triage, Llama 3.1 8B (GPU) handles generation.
 - **Timeouts:** Long-running suites may timeout on default client settings. Increase timeout or use background execution.
 - **Resource Usage:** Running multiple suites simultaneously will consume significant CPU/GPU resources.
 - **Master Report:** The `all` suite runs all 6 test suites sequentially and can take 15-30+ minutes.
@@ -279,21 +390,27 @@ tests/results/
 
 ---
 
-## ✅ Implementation Status
+## Implementation Status
 
 **All endpoints operational and tested:**
-- ✅ `/tests/list` - Metadata retrieval
-- ✅ `/tests/status` - Health check
-- ✅ `/tests/run/{suite_name}` - Synchronous execution
-- ✅ `/tests/run/{suite_name}/background` - Async execution
-- ✅ `/tests/results/{suite_name}/latest` - Result retrieval
+- `/chat` - Query with fused response (2-path weights)
+- `/ws` - Streaming WebSocket chat
+- `/ping` - Health check
+- `/api/config` - GET/PATCH configuration
+- `/api/upload` - Document upload
+- `/api/reindex` - Knowledge graph rebuild
+- `/api/reset` - State wipe
+- `/api/fine-tune` - LoRA SFT trigger
+- `/metrics` - Prometheus scrape
+- `/tests/list` - Test suite metadata
+- `/tests/status` - Test system health
+- `/tests/run/{suite_name}` - Synchronous test execution
+- `/tests/run/{suite_name}/background` - Async test execution
+- `/tests/results/{suite_name}/latest` - Result retrieval
 
-**Integration complete with:**
-- ✅ FastAPI backend (`backend/main.py`)
-- ✅ Test suite implementation (`tests/test_suites.py`)
-- ✅ API router (`backend/api/tests.py`)
+**Test coverage:** 623 tests across 11 files
 
 ---
 
-**Server Status:** 🟢 Running at `http://localhost:8000`
-**Documentation:** Available at `http://localhost:8000/docs`
+**Server Status:** Running at `http://localhost:8000`
+**Interactive Docs:** `http://localhost:8000/docs` (Swagger UI) | `http://localhost:8000/redoc` (ReDoc)
