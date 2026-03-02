@@ -15,10 +15,13 @@ mkdir -p "$PROJECT_ROOT/db"
 sqlite3 "$DB_PATH" << 'EOF'
 CREATE TABLE IF NOT EXISTS cache (
     key TEXT PRIMARY KEY,
+    key_hash TEXT,
     value TEXT,
     score REAL DEFAULT 1.0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS idx_cache_key_hash ON cache(key_hash);
 
 CREATE TABLE IF NOT EXISTS episodes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

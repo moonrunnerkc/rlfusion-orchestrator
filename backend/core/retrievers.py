@@ -612,7 +612,7 @@ def retrieve_cag(query: str, threshold: float = 0.75) -> list:
             sims = key_embs @ q_emb
             best_idx = int(np.argmax(sims))
             best_sim = float(sims[best_idx])
-            if best_sim >= 0.85:
+            if best_sim >= 0.92:
                 _, v, s = rows[best_idx]
                 logger.debug(f"[CAG] SEMANTIC HIT: sim={best_sim:.2f}")
                 return [{"text": v, "source": "cag", "score": s}]
@@ -896,7 +896,7 @@ def retrieve(query: str, cag_weight: float = 1.0,
     """
     # CAG-first: check cache before anything else
     cag = retrieve_cag(query)
-    if cag and cag[0].get("score", 0) >= 0.85:
+    if cag and cag[0].get("score", 0) >= 0.90:
         # strong CAG hit, bypass GraphRAG entirely
         for r in cag:
             r["score"] *= cag_weight

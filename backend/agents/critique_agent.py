@@ -72,14 +72,13 @@ class CritiqueAgent:
             )
 
         # log to replay buffer for future RL training
-        actual_weights = state.get("actual_weights", [0.25, 0.25, 0.25, 0.25])
+        actual_weights = state.get("actual_weights", [0.5, 0.5])
         log_episode_to_replay_buffer({
             "query": query,
             "response": clean_response,
             "weights": {
-                "rag": actual_weights[0] if len(actual_weights) > 0 else 0.0,
-                "cag": actual_weights[1] if len(actual_weights) > 1 else 0.0,
-                "graph": actual_weights[2] if len(actual_weights) > 2 else 0.0,
+                "cag": actual_weights[0] if len(actual_weights) > 0 else 0.0,
+                "graph": actual_weights[1] if len(actual_weights) > 1 else 0.0,
             },
             "reward": critique_result["reward"],
             "proactive_suggestions": critique_result.get("proactive_suggestions", []),

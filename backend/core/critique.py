@@ -2,6 +2,7 @@
 # critique.py - inline self-critique + episode logging for RL training
 # Originally built for personal offline use, now open-sourced for public benefit.
 
+import hashlib
 import logging
 import re
 import sqlite3
@@ -406,8 +407,18 @@ def log_episode_to_replay_buffer(episode: dict) -> bool:
             response_val = episode.get("response", "")
             if query_key and response_val:
                 cache_score = max(0.90, reward)
-                conn.execute("INSERT OR REPLACE INTO cache (key, value, score) VALUES (?, ?, ?)",
-                           (query_key, response_val, cache_score))
+                key_hash = hashlib.sha256(query_key.strip().lower().encode("utf-8")).hexdigest()
+                try:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO cache (key, key_hash, value, score) VALUES (?, ?, ?, ?)",
+                        (query_key, key_hash, response_val, cache_score),
+                    )
+                except sqlite3.OperationalError:
+                    # fallback if key_hash column doesn't exist yet
+                    conn.execute(
+                        "INSERT OR REPLACE INTO cache (key, value, score) VALUES (?, ?, ?)",
+                        (query_key, response_val, cache_score),
+                    )
                 logger.info("High-quality episode cached in CAG (reward=%.2f, cached as %.2f)", reward, cache_score)
 
         conn.commit()

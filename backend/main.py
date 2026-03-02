@@ -476,6 +476,31 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 if count > 0:
                     RETRIEVAL_PATH_USAGE.labels(path=path_label).inc()
 
+            # CAG fast-path: strong cache hit skips fusion + generation entirely
+            cag_results = rr.get("cag", [])
+            if cag_n > 0 and graph_n == 0 and cag_results[0].get("score", 0) >= 0.90:
+                cached_text = cag_results[0].get("text", "")
+                _t_cag = _time_mod.perf_counter()
+                logger.info("[CAG FAST-PATH] cache hit in %.0f ms, skipping generation",
+                            (_t_cag - _t0) * 1000)
+                await websocket.send_json({"type": "pipeline", "agents": [
+                    {"name": "safety", "status": "done", "detail": safety_detail},
+                    {"name": "retrieval", "status": "done", "detail": f"{cag_n} CAG (cache hit)"},
+                    {"name": "fusion", "status": "skipped", "detail": "CAG hit"},
+                    {"name": "generation", "status": "skipped", "detail": "Served from cache"},
+                ]})
+                await websocket.send_json({
+                    "type": "done",
+                    "response": cached_text,
+                    "fusion_weights": {"cag": 1.0, "graph": 0.0},
+                    "reward": cag_results[0].get("score", 0.9),
+                    "proactive_suggestions": [],
+                })
+                # record the turn for memory context
+                await asyncio.to_thread(record_turn, session_id, "user", query)
+                await asyncio.to_thread(record_turn, session_id, "assistant", cached_text)
+                continue
+
             # Step 3: Fusion
             await websocket.send_json({"type": "pipeline", "agents": [
                 {"name": "safety", "status": "done", "detail": safety_detail},

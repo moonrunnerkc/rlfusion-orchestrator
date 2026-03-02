@@ -552,6 +552,25 @@ class Orchestrator:
                 web_status=prepared["web_status"],
             )
 
+        # CAG fast-path: strong cache hit skips generation entirely
+        rr = prepared.get("retrieval_results", {})
+        cag_hits = rr.get("cag", [])
+        graph_hits = rr.get("graph", [])
+        if cag_hits and not graph_hits and cag_hits[0].get("score", 0) >= 0.90:
+            cached_text = cag_hits[0].get("text", "")
+            logger.info("[CAG FAST-PATH] /chat cache hit, skipping generation")
+            record_turn(session_id, "user", query)
+            record_turn(session_id, "assistant", cached_text)
+            return OrchestrationResult(
+                response=cached_text,
+                fusion_weights={"cag": 1.0, "graph": 0.0},
+                reward=cag_hits[0].get("score", 0.9),
+                proactive_suggestions=[],
+                blocked=False,
+                safety_reason="Safe",
+                web_status="disabled",
+            )
+
         # STIS contradiction check before LLM generation
         stis_decision = self.step_stis_check(prepared["retrieval_results"])
 
