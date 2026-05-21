@@ -4,6 +4,7 @@
 
 import os
 from pathlib import Path
+
 import yaml
 
 # Project root is two levels up from this file
@@ -19,6 +20,7 @@ _DOTENV_PATH = PROJECT_ROOT / ".env"
 if _DOTENV_PATH.exists():
     try:
         from dotenv import load_dotenv
+
         load_dotenv(_DOTENV_PATH, override=False)
     except ImportError:
         # graceful fallback: parse KEY=VAL lines ourselves
@@ -86,15 +88,28 @@ def get_inference_config() -> dict[str, str | int]:
     """
     inf: dict[str, object] = cfg.get("inference", {})
     return {
-        "engine": os.environ.get("INFERENCE_ENGINE") or str(inf.get("engine", "ollama")),
-        "base_url": os.environ.get("INFERENCE_BASE_URL") or str(inf.get("base_url", "http://localhost:11434")),
+        "engine": os.environ.get("INFERENCE_ENGINE")
+        or str(inf.get("engine", "ollama")),
+        "base_url": os.environ.get("INFERENCE_BASE_URL")
+        or str(inf.get("base_url", "http://localhost:11434")),
         # empty string is fine — the resolver picks an installed model in that case
         "model": os.environ.get("INFERENCE_MODEL", str(inf.get("model", ""))),
-        "max_concurrent": int(os.environ.get("INFERENCE_MAX_CONCURRENT", str(inf.get("max_concurrent", 4)))),
-        "timeout_secs": int(os.environ.get("INFERENCE_TIMEOUT", str(inf.get("timeout_secs", 30)))),
-        "openai_api_key": os.environ.get("INFERENCE_API_KEY") or str(inf.get("openai_api_key", "")),
-        "cpu_model_path": str(inf.get("cpu_model_path", "models/qwen2.5-1.5b-instruct-q4_k_m.gguf")),
-        "gpu_model_path": str(inf.get("gpu_model_path", "models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf")),
+        "max_concurrent": int(
+            os.environ.get(
+                "INFERENCE_MAX_CONCURRENT", str(inf.get("max_concurrent", 4))
+            )
+        ),
+        "timeout_secs": int(
+            os.environ.get("INFERENCE_TIMEOUT", str(inf.get("timeout_secs", 30)))
+        ),
+        "openai_api_key": os.environ.get("INFERENCE_API_KEY")
+        or str(inf.get("openai_api_key", "")),
+        "cpu_model_path": str(
+            inf.get("cpu_model_path", "models/qwen2.5-1.5b-instruct-q4_k_m.gguf")
+        ),
+        "gpu_model_path": str(
+            inf.get("gpu_model_path", "models/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf")
+        ),
         "cpu_ctx_size": int(inf.get("cpu_ctx_size", 8192)),
         "gpu_ctx_size": int(inf.get("gpu_ctx_size", 8192)),
         "seed": int(inf.get("seed", 42)),
@@ -110,5 +125,13 @@ def _to_bool(val: object) -> bool:
     return bool(val)
 
 
-__all__ = ["cfg", "PROJECT_ROOT", "get_project_root", "get_data_path",
-           "get_db_path", "get_index_path", "get_web_api_key", "get_inference_config"]
+__all__ = [
+    "cfg",
+    "PROJECT_ROOT",
+    "get_project_root",
+    "get_data_path",
+    "get_db_path",
+    "get_index_path",
+    "get_web_api_key",
+    "get_inference_config",
+]

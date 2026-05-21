@@ -4,14 +4,14 @@
 Wraps pynvml for GPU memory and psutil for system RAM. Designed to run
 as a background task logging every N seconds, parsed with jq in production.
 """
+
 from __future__ import annotations
 
 import json
 import logging
-import os
-import time
 import threading
-from dataclasses import asdict, dataclass, field
+import time
+from dataclasses import dataclass, field
 from typing import TypedDict
 
 logger = logging.getLogger(__name__)
@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 class MemorySnapshot(TypedDict):
     """Single point-in-time memory reading."""
+
     timestamp: float
     vram_used_mb: float
     vram_total_mb: float
@@ -35,6 +36,7 @@ class MemoryMonitor:
     Safe to call even without a GPU or pynvml installed: gracefully
     falls back to ram-only metrics.
     """
+
     interval_seconds: int = 10
     _running: bool = field(default=False, init=False)
     _thread: threading.Thread | None = field(default=None, init=False)
@@ -44,6 +46,7 @@ class MemoryMonitor:
         """Read VRAM usage via pynvml. Returns (used_mb, total_mb)."""
         try:
             import pynvml
+
             pynvml.nvmlInit()
             handle = pynvml.nvmlDeviceGetHandleByIndex(0)
             mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
@@ -74,6 +77,7 @@ class MemoryMonitor:
         # Darwin / Windows / anywhere /proc isn't available
         try:
             import psutil
+
             vm = psutil.virtual_memory()
             return vm.used / (1024 * 1024), vm.total / (1024 * 1024)
         except Exception:
@@ -116,7 +120,9 @@ class MemoryMonitor:
             return
         self._running = True
         self._thread = threading.Thread(
-            target=self._monitor_loop, daemon=True, name="mem-monitor",
+            target=self._monitor_loop,
+            daemon=True,
+            name="mem-monitor",
         )
         self._thread.start()
         logger.info("Memory monitor started (interval=%ds)", self.interval_seconds)

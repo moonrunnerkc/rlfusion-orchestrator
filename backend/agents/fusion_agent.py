@@ -5,6 +5,7 @@ Owns the CQL policy prediction step and the fusion of scored retrieval
 results into a single context string for the LLM. Two-path architecture:
 CAG + Graph only (RAG and Web removed in Step 3).
 """
+
 from __future__ import annotations
 
 import logging
@@ -14,7 +15,6 @@ import numpy as np
 
 from backend.agents.base import PipelineState, RLPolicy
 from backend.api.injection_filter import scrub_chunks, wrap_untrusted
-from backend.config import cfg
 from backend.core.utils import embed_text
 from backend.rl.obs_builder import build_observation, project_to_simplex
 
@@ -47,7 +47,12 @@ def compute_rl_weights(
             obs = build_observation(query, embed, retrieval_results)
             if hasattr(policy, "predict"):
                 raw = policy.predict(np.array([obs]))
-                action = raw[0] if isinstance(raw, (tuple, list)) or (hasattr(raw, 'ndim') and raw.ndim > 1) else raw
+                action = (
+                    raw[0]
+                    if isinstance(raw, (tuple, list))
+                    or (hasattr(raw, "ndim") and raw.ndim > 1)
+                    else raw
+                )
             else:
                 action = np.array([0.5, 0.5])
 
@@ -92,13 +97,19 @@ def compute_rl_weights(
 
     logger.info(
         "RL weights: CAG=%.2f Graph=%.2f (policy=[%.2f,%.2f], rebalance=%s)",
-        effective_weights[0], effective_weights[1],
-        policy_weights[0], policy_weights[1], had_empty_path,
+        effective_weights[0],
+        effective_weights[1],
+        policy_weights[0],
+        policy_weights[1],
+        had_empty_path,
     )
     if return_telemetry:
         telemetry: dict[str, Any] = {
             "policy_weights": [float(policy_weights[0]), float(policy_weights[1])],
-            "effective_weights": [float(effective_weights[0]), float(effective_weights[1])],
+            "effective_weights": [
+                float(effective_weights[0]),
+                float(effective_weights[1]),
+            ],
             "had_empty_path": had_empty_path,
             "policy_action": raw_action,
         }
@@ -110,7 +121,17 @@ def _heuristic_weights(query: str) -> np.ndarray:
     """Keyword-based 2-path heuristics when RL policy returns uniform outputs."""
     q = query.lower()
     # entity/relationship queries favor graph
-    if any(kw in q for kw in ["how does", "architecture", "design", "workflow", "system", "relationship"]):
+    if any(
+        kw in q
+        for kw in [
+            "how does",
+            "architecture",
+            "design",
+            "workflow",
+            "system",
+            "relationship",
+        ]
+    ):
         return np.array([0.3, 0.7])
     # factual lookups favor cache
     if any(kw in q for kw in ["what is", "explain", "describe", "define"]):
@@ -129,9 +150,9 @@ def _csw_rerank_graph(
     `csw_score`, `local_stability`, `question_fit`, `drift_penalty` onto
     each item.
     """
+    from backend.config import cfg as _cfg
     from backend.core.decomposer import decompose_query
     from backend.core.retrievers import score_chunks
-    from backend.config import cfg as _cfg
 
     if not graph_items:
         return graph_items
@@ -174,9 +195,7 @@ def build_fusion_context(
     # can be poisoned by upstream high-reward turns that contained payloads.
     cag_raw = scrub_chunks(list(retrieval_results.get("cag", [])))
     cache_thresh = float(_cfg.get("cag", {}).get("cache_threshold", 0.85))
-    cag_items = [
-        c for c in cag_raw if c.get("score", 0) >= cache_thresh
-    ][:cag_take]
+    cag_items = [c for c in cag_raw if c.get("score", 0) >= cache_thresh][:cag_take]
 
     # CSWR re-rank graph results, gate by min_csw_score
     raw_graph = scrub_chunks(list(retrieval_results.get("graph", [])))
@@ -189,15 +208,12 @@ def build_fusion_context(
     else:
         # no query supplied: fall back to raw cosine gate so we still emit
         # something on training-time / replay paths that do not pass query
-        graph_items = [
-            g for g in raw_graph if g.get("score", 0) >= 0.50
-        ][:graph_take]
+        graph_items = [g for g in raw_graph if g.get("score", 0) >= 0.50][:graph_take]
 
     # global relevance gate: best across paths must clear 0.52
-    all_scores = (
-        [float(c.get("score", 0)) for c in cag_items]
-        + [float(g.get("csw_score", g.get("score", 0))) for g in graph_items]
-    )
+    all_scores = [float(c.get("score", 0)) for c in cag_items] + [
+        float(g.get("csw_score", g.get("score", 0))) for g in graph_items
+    ]
     best_score = max(all_scores) if all_scores else 0.0
     if best_score < 0.52:
         logger.info(
@@ -216,7 +232,9 @@ def build_fusion_context(
 
     logger.info(
         "Fusion stats: %d CAG, %d Graph (min_csw=%.2f)",
-        len(cag_items), len(graph_items), min_csw,
+        len(cag_items),
+        len(graph_items),
+        min_csw,
     )
     body = "\n\n".join(parts) if parts else ""
     fused = wrap_untrusted(body) if body else ""
@@ -232,6 +250,7 @@ class FusionAgent:
     Pipeline role: takes retrieval results + RL policy, produces fused context
     string with per-path weight allocation.
     """
+
     _NAME: ClassVar[str] = "fusion"
 
     def __init__(self, rl_policy: RLPolicy | None = None) -> None:
@@ -261,7 +280,10 @@ class FusionAgent:
         retrieval_results = state.get("retrieval_results", {})
 
         rl_weights, telemetry = compute_rl_weights(
-            query, self._rl_policy, retrieval_results, return_telemetry=True,
+            query,
+            self._rl_policy,
+            retrieval_results,
+            return_telemetry=True,
         )
         fused_context = build_fusion_context(retrieval_results, rl_weights, query=query)
         actual_weights = [float(w) for w in rl_weights[:2]]
@@ -282,12 +304,14 @@ class FusionAgent:
         if weights:
             max_w = max(weights)
             if max_w > 0.90:
-                logger.warning("[%s] Single path dominates: max_weight=%.2f",
-                               self._NAME, max_w)
+                logger.warning(
+                    "[%s] Single path dominates: max_weight=%.2f", self._NAME, max_w
+                )
             fused = state.get("fused_context", "")
             if not fused.strip():
-                logger.warning("[%s] Empty fusion context, all sources below threshold",
-                               self._NAME)
+                logger.warning(
+                    "[%s] Empty fusion context, all sources below threshold", self._NAME
+                )
         return {}  # type: ignore[return-value]
 
     def __call__(self, state: PipelineState) -> PipelineState:

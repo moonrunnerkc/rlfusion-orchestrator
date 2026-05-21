@@ -5,6 +5,7 @@ Every agent follows plan() -> act() -> reflect(). The orchestrator wires
 agents into a LangGraph DAG and classifies query complexity to pick the
 right pipeline shape.
 """
+
 from __future__ import annotations
 
 import logging
@@ -20,6 +21,7 @@ QueryComplexity = Literal["simple", "complex", "adversarial"]
 
 class RetrieverItem(TypedDict, total=False):
     """Single chunk/result from any retriever path."""
+
     text: str
     score: float
     source: str
@@ -35,6 +37,7 @@ class RetrieverItem(TypedDict, total=False):
 
 class RetrievalResults(TypedDict):
     """Aggregated results from the 2-path retrieval pipeline."""
+
     cag: list[RetrieverItem]
     graph: list[RetrieverItem]
 
@@ -45,6 +48,7 @@ class PipelineState(TypedDict, total=False):
     total=False because nodes progressively fill fields as they execute.
     LangGraph merges each node's return dict into this accumulated state.
     """
+
     # ----- Input -----
     query: str
     mode: str
@@ -93,6 +97,7 @@ class PipelineState(TypedDict, total=False):
 
 class OrchestrationResult(TypedDict):
     """Final output consumed by endpoint handlers. Matches frozen API contract."""
+
     response: str
     fusion_weights: dict[str, float]
     reward: float
@@ -103,6 +108,7 @@ class OrchestrationResult(TypedDict):
 
 class PreparedContext(TypedDict):
     """Pre-generation context for /ws streaming. Everything needed to call the LLM."""
+
     system_prompt: str
     user_prompt: str
     actual_weights: list[float]
@@ -120,6 +126,7 @@ class PreparedContext(TypedDict):
 @runtime_checkable
 class RLPolicy(Protocol):
     """Protocol for RL policies (CQL, PPO) that predict fusion weights."""
+
     def predict(self, obs: np.ndarray) -> np.ndarray: ...
 
 

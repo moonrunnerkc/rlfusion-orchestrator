@@ -37,7 +37,9 @@ jobs:
         run: isort --check-only backend/ tests/ --profile black --quiet
 
       - name: Lint (flake8)
-        run: flake8 backend/ tests/ --ignore=E501,W503,E402 --max-line-length=120 --count --show-source --statistics
+        # E203 (whitespace before ':') and E704 (def stub on one line) are
+        # intentional Black formatting; PEP 8 and PEP 257 agree.
+        run: flake8 backend/ tests/ --ignore=E501,W503,E402,E203,E704 --max-line-length=120 --count --show-source --statistics
 
   test:
     runs-on: ubuntu-latest

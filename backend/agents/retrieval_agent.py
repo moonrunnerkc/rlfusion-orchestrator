@@ -3,6 +3,7 @@
 
 Wraps retrieve() from backend.core.retrievers. CAG-first with GraphRAG fallback.
 """
+
 from __future__ import annotations
 
 import logging
@@ -26,6 +27,7 @@ class RetrievalAgent:
     Pipeline role: converts a query into scored, ranked retrieval results
     via CAG-first with GraphRAG fallback. Depth scales with query complexity.
     """
+
     _NAME: ClassVar[str] = "retrieval"
 
     @property
@@ -37,8 +39,13 @@ class RetrievalAgent:
         complexity = state.get("complexity", "complex")
         multiplier = _DEPTH_MULTIPLIERS.get(complexity, 1)
         query = state.get("expanded_query", state.get("query", ""))
-        logger.debug("[%s] Planning retrieval: complexity=%s, depth_mult=%d, query_len=%d",
-                     self._NAME, complexity, multiplier, len(query))
+        logger.debug(
+            "[%s] Planning retrieval: complexity=%s, depth_mult=%d, query_len=%d",
+            self._NAME,
+            complexity,
+            multiplier,
+            len(query),
+        )
         return {}  # type: ignore[return-value]
 
     def act(self, state: PipelineState) -> PipelineState:
@@ -68,8 +75,9 @@ class RetrievalAgent:
         if total == 0:
             logger.warning("[%s] No retrieval results for query", self._NAME)
         else:
-            logger.info("[%s] Retrieval: %d CAG, %d Graph",
-                        self._NAME, cag_count, graph_count)
+            logger.info(
+                "[%s] Retrieval: %d CAG, %d Graph", self._NAME, cag_count, graph_count
+            )
         return {}  # type: ignore[return-value]
 
     def __call__(self, state: PipelineState) -> PipelineState:

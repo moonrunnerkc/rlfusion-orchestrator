@@ -8,10 +8,10 @@ call sites use generate() or stream() instead of touching SDK clients directly.
 The ModelRouter class handles MoE task-to-model routing. The InferenceEngine
 handles the actual LLM call, keyed by `inference.engine` in config.yaml.
 """
+
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Generator
 from typing import Literal, TypedDict
 
@@ -21,18 +21,35 @@ logger = logging.getLogger(__name__)
 
 # Task types produced by decomposer + internal pipeline stages
 TaskType = Literal[
-    "explain", "compare", "troubleshoot", "list", "design", "summarize",
-    "critique", "retrieval", "generation", "decomposition",
+    "explain",
+    "compare",
+    "troubleshoot",
+    "list",
+    "design",
+    "summarize",
+    "critique",
+    "retrieval",
+    "generation",
+    "decomposition",
 ]
 
 _ALL_TASK_TYPES: list[str] = [
-    "explain", "compare", "troubleshoot", "list", "design", "summarize",
-    "critique", "retrieval", "generation", "decomposition",
+    "explain",
+    "compare",
+    "troubleshoot",
+    "list",
+    "design",
+    "summarize",
+    "critique",
+    "retrieval",
+    "generation",
+    "decomposition",
 ]
 
 
 class ModelEntry(TypedDict):
     """Single model in the pool with task routing metadata."""
+
     name: str
     task_types: list[str]
     priority: int
@@ -41,6 +58,7 @@ class ModelEntry(TypedDict):
 # ---------------------------------------------------------------------------
 # Inference engine abstraction
 # ---------------------------------------------------------------------------
+
 
 class InferenceEngine:
     """Unified LLM interface. Delegates to Ollama, vLLM, or TensorRT-LLM.
@@ -59,7 +77,10 @@ class InferenceEngine:
         self._resolution: str = str(inf.get("resolution", f"config: {self._engine}"))
         logger.info(
             "InferenceEngine: engine=%s, base_url=%s, model=%s, source=%s",
-            self._engine, self._base_url, self._model, self._resolution,
+            self._engine,
+            self._base_url,
+            self._model,
+            self._resolution,
         )
 
     @property
@@ -91,14 +112,21 @@ class InferenceEngine:
 
         if self._engine == "ollama":
             return self._ollama_generate(
-                messages, model=model, temperature=temperature,
-                num_ctx=num_ctx, num_predict=num_predict,
-                timeout=timeout, images=images,
+                messages,
+                model=model,
+                temperature=temperature,
+                num_ctx=num_ctx,
+                num_predict=num_predict,
+                timeout=timeout,
+                images=images,
             )
         # vLLM and TensorRT-LLM both expose OpenAI-compatible endpoints
         return self._openai_generate(
-            messages, model=model, temperature=temperature,
-            max_tokens=num_predict, timeout=timeout,
+            messages,
+            model=model,
+            temperature=temperature,
+            max_tokens=num_predict,
+            timeout=timeout,
         )
 
     def stream(
@@ -115,12 +143,17 @@ class InferenceEngine:
 
         if self._engine == "ollama":
             yield from self._ollama_stream(
-                messages, model=model, temperature=temperature,
-                num_ctx=num_ctx, num_predict=num_predict,
+                messages,
+                model=model,
+                temperature=temperature,
+                num_ctx=num_ctx,
+                num_predict=num_predict,
             )
         else:
             yield from self._openai_stream(
-                messages, model=model, temperature=temperature,
+                messages,
+                model=model,
+                temperature=temperature,
                 max_tokens=num_predict,
             )
 
@@ -181,8 +214,11 @@ class InferenceEngine:
             opts["num_predict"] = num_predict
 
         for chunk in client.chat(  # type: ignore[arg-type]
-            model=model, messages=messages, options=opts,
-            stream=True, think=False,
+            model=model,
+            messages=messages,
+            options=opts,
+            stream=True,
+            think=False,
         ):
             yield chunk["message"]["content"]
 
@@ -242,15 +278,18 @@ class InferenceEngine:
             headers["Authorization"] = f"Bearer {self._api_key}"
 
         url = f"{self._base_url}/v1/chat/completions"
-        with httpx.stream("POST", url, json=payload, headers=headers, timeout=self._timeout) as resp:
+        with httpx.stream(
+            "POST", url, json=payload, headers=headers, timeout=self._timeout
+        ) as resp:
             resp.raise_for_status()
             for line in resp.iter_lines():
                 if not line or not line.startswith("data: "):
                     continue
-                data_str = line[len("data: "):]
+                data_str = line[len("data: ") :]
                 if data_str.strip() == "[DONE]":
                     break
                 import json
+
                 chunk = json.loads(data_str)
                 delta = chunk.get("choices", [{}])[0].get("delta", {})
                 content = delta.get("content")
@@ -271,6 +310,7 @@ class InferenceEngine:
 
     def _check_ollama_health(self) -> bool:
         import httpx
+
         resp = httpx.get(f"{self._base_url}/api/tags", timeout=5.0)
         resp.raise_for_status()
         models = [m["name"] for m in resp.json().get("models", [])]
@@ -279,6 +319,7 @@ class InferenceEngine:
 
     def _check_openai_health(self) -> bool:
         import httpx
+
         headers: dict[str, str] = {}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
@@ -304,6 +345,7 @@ def get_engine() -> InferenceEngine:
     global _engine
     if _engine is None:
         from backend.core.engine_detect import resolve_inference_config
+
         inf = resolve_inference_config()
         if str(inf["engine"]) == "llama_cpp_dual":
             _engine = _build_asymmetric_adapter(inf)
@@ -312,7 +354,9 @@ def get_engine() -> InferenceEngine:
     return _engine
 
 
-def _build_asymmetric_adapter(resolved: dict[str, object] | None = None) -> InferenceEngine:
+def _build_asymmetric_adapter(
+    resolved: dict[str, object] | None = None,
+) -> InferenceEngine:
     """Wrap AsymmetricLLMOrchestrator in an InferenceEngine-compatible shell.
 
     This lets existing code call engine.generate() / engine.stream() without
@@ -329,7 +373,9 @@ def _build_asymmetric_adapter(resolved: dict[str, object] | None = None) -> Infe
     adapter._model = "dual-model"
     adapter._timeout = 60
     adapter._api_key = ""
-    adapter._resolution = str((resolved or {}).get("resolution", "config: llama_cpp_dual"))
+    adapter._resolution = str(
+        (resolved or {}).get("resolution", "config: llama_cpp_dual")
+    )
 
     def generate_adapter(
         messages: list[dict[str, str]],
@@ -347,7 +393,9 @@ def _build_asymmetric_adapter(resolved: dict[str, object] | None = None) -> Infe
             "You are a helpful assistant.",
         )
         return orch.execute(
-            prompt, system=system, temperature=temperature,
+            prompt,
+            system=system,
+            temperature=temperature,
             max_tokens=num_predict or 2048,
         )
 
@@ -366,7 +414,9 @@ def _build_asymmetric_adapter(resolved: dict[str, object] | None = None) -> Infe
             "You are a helpful assistant.",
         )
         return orch.stream_execute(
-            prompt, system=system, temperature=temperature,
+            prompt,
+            system=system,
+            temperature=temperature,
             max_tokens=num_predict or 2048,
         )
 
@@ -392,28 +442,38 @@ class ModelRouter:
     def __init__(self) -> None:
         router_cfg = cfg.get("model_router", {})
         self._enabled = bool(router_cfg.get("enabled", True))
-        self._general = str(router_cfg.get("general_model", cfg.get("llm", {}).get("model", "dolphin-llama3:8b")))
+        self._general = str(
+            router_cfg.get(
+                "general_model", cfg.get("llm", {}).get("model", "dolphin-llama3:8b")
+            )
+        )
         self._auto_fallback = bool(router_cfg.get("auto_fallback", True))
         self._pool: list[ModelEntry] = []
 
         for entry in router_cfg.get("models", []):
-            self._pool.append(ModelEntry(
-                name=str(entry["name"]),
-                task_types=[str(t) for t in entry.get("task_types", [])],
-                priority=int(entry.get("priority", 100)),
-            ))
+            self._pool.append(
+                ModelEntry(
+                    name=str(entry["name"]),
+                    task_types=[str(t) for t in entry.get("task_types", [])],
+                    priority=int(entry.get("priority", 100)),
+                )
+            )
 
         # if no models configured, register the general model as a catch-all
         if not self._pool:
-            self._pool.append(ModelEntry(
-                name=self._general,
-                task_types=list(_ALL_TASK_TYPES),
-                priority=100,
-            ))
+            self._pool.append(
+                ModelEntry(
+                    name=self._general,
+                    task_types=list(_ALL_TASK_TYPES),
+                    priority=100,
+                )
+            )
 
         logger.info(
             "ModelRouter: %d models, general=%s, enabled=%s",
-            len(self._pool), self._general, self._enabled,
+            len(self._pool),
+            self._general,
+            self._enabled,
         )
 
     @property
@@ -431,16 +491,14 @@ class ModelRouter:
         if not self._enabled:
             return self._general
 
-        candidates = [
-            m for m in self._pool
-            if task_type in m["task_types"]
-        ]
+        candidates = [m for m in self._pool if task_type in m["task_types"]]
 
         if not candidates:
             if self._auto_fallback:
                 logger.debug(
                     "No specialist for '%s', falling back to %s",
-                    task_type, self._general,
+                    task_type,
+                    self._general,
                 )
                 return self._general
             raise ValueError(
@@ -475,14 +533,18 @@ class ModelRouter:
         clean_name = name.strip()
         # deduplicate: remove existing entry with same name
         self._pool = [m for m in self._pool if m["name"] != clean_name]
-        self._pool.append(ModelEntry(
-            name=clean_name,
-            task_types=[t.strip() for t in task_types],
-            priority=priority,
-        ))
+        self._pool.append(
+            ModelEntry(
+                name=clean_name,
+                task_types=[t.strip() for t in task_types],
+                priority=priority,
+            )
+        )
         logger.info(
             "Registered model '%s' for tasks %s (priority=%d)",
-            clean_name, task_types, priority,
+            clean_name,
+            task_types,
+            priority,
         )
 
     def unregister_model(self, name: str) -> bool:
@@ -502,7 +564,8 @@ class ModelRouter:
         except (ImportError, ConnectionError, OSError, KeyError, TypeError) as exc:
             logger.warning(
                 "Availability check failed for '%s': %s",
-                model_name, exc,
+                model_name,
+                exc,
             )
             return False
 
@@ -517,6 +580,8 @@ class ModelRouter:
 
         logger.warning(
             "Model '%s' unavailable for task '%s', falling back to '%s'",
-            preferred, task_type, self._general,
+            preferred,
+            task_type,
+            self._general,
         )
         return self._general

@@ -4,6 +4,7 @@
 Evaluates arithmetic expressions safely using Python's ast module (no eval).
 Supports basic unit conversions for common engineering/science quantities.
 """
+
 from __future__ import annotations
 
 import ast
@@ -13,7 +14,7 @@ import operator
 import time
 from typing import ClassVar
 
-from backend.tools.base import BaseTool, ToolInput, ToolOutput, ToolSchema, make_output
+from backend.tools.base import ToolInput, ToolOutput, ToolSchema, make_output
 
 logger = logging.getLogger(__name__)
 
@@ -50,21 +51,40 @@ _MATH_FUNCS: dict[str, object] = {
 # unit conversion factors (all relative to a base unit per category)
 _CONVERSIONS: dict[str, dict[str, float]] = {
     "length": {
-        "m": 1.0, "km": 1000.0, "cm": 0.01, "mm": 0.001,
-        "mi": 1609.344, "ft": 0.3048, "in": 0.0254, "yd": 0.9144,
+        "m": 1.0,
+        "km": 1000.0,
+        "cm": 0.01,
+        "mm": 0.001,
+        "mi": 1609.344,
+        "ft": 0.3048,
+        "in": 0.0254,
+        "yd": 0.9144,
     },
     "mass": {
-        "kg": 1.0, "g": 0.001, "mg": 1e-6, "lb": 0.453592,
-        "oz": 0.0283495, "ton": 907.185, "tonne": 1000.0,
+        "kg": 1.0,
+        "g": 0.001,
+        "mg": 1e-6,
+        "lb": 0.453592,
+        "oz": 0.0283495,
+        "ton": 907.185,
+        "tonne": 1000.0,
     },
     "temperature": {},  # handled separately (non-linear)
     "data": {
-        "b": 1.0, "kb": 1024.0, "mb": 1048576.0, "gb": 1073741824.0,
+        "b": 1.0,
+        "kb": 1024.0,
+        "mb": 1048576.0,
+        "gb": 1073741824.0,
         "tb": 1099511627776.0,
     },
     "time": {
-        "s": 1.0, "ms": 0.001, "us": 1e-6, "ns": 1e-9,
-        "min": 60.0, "hr": 3600.0, "day": 86400.0,
+        "s": 1.0,
+        "ms": 0.001,
+        "us": 1e-6,
+        "ns": 1e-9,
+        "min": 60.0,
+        "hr": 3600.0,
+        "day": 86400.0,
     },
 }
 
@@ -87,7 +107,9 @@ def _eval_node(node: ast.expr) -> float:
             val = _MATH_FUNCS[node.id]
             if isinstance(val, float):
                 return val
-            raise ValueError(f"'{node.id}' is a function, not a constant. Use {node.id}(...).")
+            raise ValueError(
+                f"'{node.id}' is a function, not a constant. Use {node.id}(...)."
+            )
         raise ValueError(f"Unknown name: '{node.id}'")
 
     if isinstance(node, ast.UnaryOp) and type(node.op) in _OPS:
@@ -171,6 +193,7 @@ class CalculatorTool:
     Expression evaluation uses AST parsing (no eval/exec).
     Unit conversion covers length, mass, temperature, data sizes, and time.
     """
+
     _NAME: ClassVar[str] = "calculator"
     _DESCRIPTION: ClassVar[str] = (
         "Evaluate math expressions and convert between units. "

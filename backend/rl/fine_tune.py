@@ -12,6 +12,7 @@ Key pieces:
     export_gguf()             - convert adapter to GGUF for local inference
     SFTJobConfig / SFTJobResult - typed config and result structs
 """
+
 from __future__ import annotations
 
 import json
@@ -21,7 +22,7 @@ import time
 from pathlib import Path
 from typing import TypedDict
 
-from backend.config import cfg, PROJECT_ROOT
+from backend.config import PROJECT_ROOT, cfg
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,8 +49,10 @@ _DEFAULT_OUTPUT_DIR = str(_ft_cfg.get("output_dir", "models/fine_tuned"))
 
 # ── Typed structures ─────────────────────────────────────────────────────
 
+
 class TrainingEpisode(TypedDict):
     """Single episode extracted from the replay buffer."""
+
     query: str
     response: str
     reward: float
@@ -59,6 +62,7 @@ class TrainingEpisode(TypedDict):
 
 class SFTJobConfig(TypedDict):
     """Configuration for a fine-tuning job."""
+
     base_model: str
     lora_rank: int
     lora_alpha: int
@@ -75,6 +79,7 @@ class SFTJobConfig(TypedDict):
 
 class SFTJobResult(TypedDict):
     """Result of a completed fine-tuning job."""
+
     status: str
     model_path: str
     episodes_used: int
@@ -106,6 +111,7 @@ def default_config() -> SFTJobConfig:
 
 
 # ── Data loading ─────────────────────────────────────────────────────────
+
 
 def load_training_episodes(
     min_reward: float = _DEFAULT_MIN_REWARD,
@@ -146,17 +152,21 @@ def load_training_episodes(
     for query, response, reward, cag_w, graph_w in rows:
         if not query or not response:
             continue
-        episodes.append(TrainingEpisode(
-            query=str(query),
-            response=str(response)[:4000],
-            reward=float(reward or 0.0),
-            cag_weight=float(cag_w or 0.0),
-            graph_weight=float(graph_w or 0.0),
-        ))
+        episodes.append(
+            TrainingEpisode(
+                query=str(query),
+                response=str(response)[:4000],
+                reward=float(reward or 0.0),
+                cag_weight=float(cag_w or 0.0),
+                graph_weight=float(graph_w or 0.0),
+            )
+        )
 
     logger.info(
         "Loaded %d episodes (reward >= %.2f) from %s",
-        len(episodes), min_reward, resolved,
+        len(episodes),
+        min_reward,
+        resolved,
     )
     return episodes
 
@@ -178,15 +188,17 @@ def prepare_sft_dataset(
 
     formatted = []
     for ep in episodes:
-        formatted.append({
-            "instruction": ep["query"],
-            "output": ep["response"],
-        })
+        formatted.append(
+            {
+                "instruction": ep["query"],
+                "output": ep["response"],
+            }
+        )
 
     # deterministic split: tail becomes validation
     val_count = max(1, int(len(formatted) * val_split)) if val_split > 0 else 0
-    train_data = formatted[:len(formatted) - val_count] if val_count else formatted
-    val_data = formatted[len(formatted) - val_count:] if val_count else []
+    train_data = formatted[: len(formatted) - val_count] if val_count else formatted
+    val_data = formatted[len(formatted) - val_count :] if val_count else []
 
     logger.info("Dataset split: %d train, %d val", len(train_data), len(val_data))
     return train_data, val_data
@@ -201,6 +213,7 @@ def _format_prompt(example: dict[str, str]) -> str:
 
 
 # ── Training ─────────────────────────────────────────────────────────────
+
 
 def run_sft(job_config: SFTJobConfig | None = None) -> SFTJobResult:
     """Run LoRA fine-tuning on high-reward replay episodes.
@@ -266,8 +279,10 @@ def run_sft(job_config: SFTJobConfig | None = None) -> SFTJobResult:
     try:
         logger.info(
             "Starting SFT: base=%s, lora_r=%d, alpha=%d, episodes=%d",
-            config["base_model"], config["lora_rank"],
-            config["lora_alpha"], len(episodes),
+            config["base_model"],
+            config["lora_rank"],
+            config["lora_alpha"],
+            len(episodes),
         )
 
         # 4-bit quantization config for memory efficiency
@@ -304,7 +319,9 @@ def run_sft(job_config: SFTJobConfig | None = None) -> SFTJobResult:
         total = sum(p.numel() for p in model.parameters())
         logger.info(
             "LoRA params: %d trainable / %d total (%.2f%%)",
-            trainable, total, 100 * trainable / total,
+            trainable,
+            total,
+            100 * trainable / total,
         )
 
         # format datasets
@@ -331,6 +348,7 @@ def run_sft(job_config: SFTJobConfig | None = None) -> SFTJobResult:
         )
 
         from peft import PeftModel as _PeftModel
+
         trainer = SFTTrainer(
             model=model if isinstance(model, _PeftModel) else model,  # type: ignore[arg-type]
             args=training_args,
@@ -381,6 +399,7 @@ def run_sft(job_config: SFTJobConfig | None = None) -> SFTJobResult:
 
 # ── GGUF export ──────────────────────────────────────────────────────────
 
+
 def export_gguf(
     adapter_path: str,
     output_path: str | None = None,
@@ -395,14 +414,16 @@ def export_gguf(
     if not adapter_dir.exists():
         raise FileNotFoundError(f"Adapter not found: {adapter_dir}")
 
-    resolved_output = Path(output_path) if output_path else (
-        adapter_dir.parent / f"model-{quantization.lower()}.gguf"
+    resolved_output = (
+        Path(output_path)
+        if output_path
+        else (adapter_dir.parent / f"model-{quantization.lower()}.gguf")
     )
 
     try:
+        import torch
         from peft import AutoPeftModelForCausalLM
         from transformers import AutoTokenizer
-        import torch
 
         logger.info("Merging LoRA adapter from %s", adapter_dir)
         model = AutoPeftModelForCausalLM.from_pretrained(
@@ -422,18 +443,19 @@ def export_gguf(
         logger.info(
             "To convert to GGUF, run: "
             "python llama.cpp/convert_hf_to_gguf.py %s --outtype %s --outfile %s",
-            merged_dir, quantization.lower(), resolved_output,
+            merged_dir,
+            quantization.lower(),
+            resolved_output,
         )
 
         return resolved_output
 
     except ImportError as exc:
-        raise ImportError(
-            f"GGUF export requires peft and transformers: {exc}"
-        ) from exc
+        raise ImportError(f"GGUF export requires peft and transformers: {exc}") from exc
 
 
 # ── CLI entry point ──────────────────────────────────────────────────────
+
 
 def main() -> None:
     """CLI for running fine-tuning jobs."""
@@ -446,7 +468,8 @@ def main() -> None:
         description="Run LoRA fine-tuning on high-reward replay episodes"
     )
     parser.add_argument(
-        "--base-model", default=_DEFAULT_BASE_MODEL,
+        "--base-model",
+        default=_DEFAULT_BASE_MODEL,
         help="HuggingFace model ID for the base model",
     )
     parser.add_argument("--lora-rank", type=int, default=_DEFAULT_LORA_RANK)
@@ -457,11 +480,13 @@ def main() -> None:
     parser.add_argument("--min-reward", type=float, default=_DEFAULT_MIN_REWARD)
     parser.add_argument("--max-episodes", type=int, default=_DEFAULT_MAX_EPISODES)
     parser.add_argument(
-        "--output", default=_DEFAULT_OUTPUT_DIR,
+        "--output",
+        default=_DEFAULT_OUTPUT_DIR,
         help="Output directory for trained adapter",
     )
     parser.add_argument(
-        "--export-gguf", action="store_true",
+        "--export-gguf",
+        action="store_true",
         help="Export merged model to GGUF after training",
     )
     args = parser.parse_args()

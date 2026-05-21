@@ -2,12 +2,12 @@
 # utils.py - embedding, chunking, hashing, softmax, OOD detection
 # Originally built for personal offline use, now open-sourced for public benefit.
 
-import functools
 import hashlib
 import logging
 import os
 from pathlib import Path
 from typing import List
+
 import numpy as np
 import yaml
 from sentence_transformers import SentenceTransformer
@@ -30,15 +30,21 @@ def _resolve_to_torch(requested: str) -> str:
         return "cpu"
     try:
         import torch
+
         cuda_ok = torch.cuda.is_available()
-        mps_ok = bool(getattr(torch.backends, "mps", None)) and torch.backends.mps.is_available()
+        mps_ok = (
+            bool(getattr(torch.backends, "mps", None))
+            and torch.backends.mps.is_available()
+        )
     except Exception:
         return "cpu"
 
     if requested == "cuda":
         if cuda_ok:
             return "cuda"
-        logger.info("embedding.device=cuda requested but CUDA unavailable; falling back")
+        logger.info(
+            "embedding.device=cuda requested but CUDA unavailable; falling back"
+        )
     if requested == "mps":
         if mps_ok:
             return "mps"
@@ -66,10 +72,13 @@ def _get_device() -> str:
             cfg_path = Path(__file__).parent.parent / "config.yaml"
             with open(cfg_path) as f:
                 cfg = yaml.safe_load(f)
-            requested = str(cfg.get("embedding", {}).get("device", "auto")).strip().lower()
+            requested = (
+                str(cfg.get("embedding", {}).get("device", "auto")).strip().lower()
+            )
         except Exception:
             requested = "auto"
     return _resolve_to_torch(requested)
+
 
 _device = _get_device()
 logger.info("Embedding device: %s", _device)
@@ -86,8 +95,9 @@ def embed_text(text: str) -> np.ndarray:
     cache_key = hashlib.sha256(text.encode()).hexdigest()
     if cache_key in _embed_cache:
         return _embed_cache[cache_key]
-    result = embedder.encode(text, convert_to_numpy=True, normalize_embeddings=True,
-                             show_progress_bar=False).astype(np.float32)
+    result = embedder.encode(
+        text, convert_to_numpy=True, normalize_embeddings=True, show_progress_bar=False
+    ).astype(np.float32)
     # evict oldest if cache is full
     if len(_embed_cache) >= _EMBED_CACHE_MAX:
         oldest = next(iter(_embed_cache))
@@ -102,8 +112,13 @@ def clear_embed_cache() -> None:
 
 
 def embed_batch(texts: List[str]) -> np.ndarray:
-    return embedder.encode(texts, batch_size=32, show_progress_bar=False,
-                          convert_to_numpy=True, normalize_embeddings=True).astype(np.float32)
+    return embedder.encode(
+        texts,
+        batch_size=32,
+        show_progress_bar=False,
+        convert_to_numpy=True,
+        normalize_embeddings=True,
+    ).astype(np.float32)
 
 
 def chunk_text(text: str, max_tokens: int = 300) -> List[str]:
@@ -147,6 +162,7 @@ _ood_cache = {"mean": None, "precision": None, "fitted": False}
 
 def fit_ood_detector(embeddings: np.ndarray) -> None:
     from sklearn.covariance import LedoitWolf
+
     logger.info("Fitting OOD detector on %d samples", embeddings.shape[0])
     _ood_cache["mean"] = np.mean(embeddings, axis=0)
     lw = LedoitWolf()

@@ -6,6 +6,7 @@ sizing, and auto-selection of quantization levels based on detected hardware.
 Safety tasks preempt everything else. The scheduler probes GPU/CPU/RAM on init
 and adjusts throughput knobs accordingly.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -13,11 +14,10 @@ import enum
 import logging
 import os
 import platform
-import shutil
 import struct
 import time
-from dataclasses import dataclass, field
-from typing import Callable, Coroutine, TypedDict
+from dataclasses import dataclass
+from typing import Coroutine, TypedDict
 
 import numpy as np
 
@@ -28,8 +28,10 @@ logger = logging.getLogger(__name__)
 
 # ── Priority lanes (lower value = higher priority) ───────────────────
 
+
 class TaskLane(enum.IntEnum):
     """Pipeline task categories ordered by scheduling priority."""
+
     SAFETY = 0
     RETRIEVAL = 1
     FUSION = 2
@@ -39,8 +41,10 @@ class TaskLane(enum.IntEnum):
 
 # ── Hardware detection ───────────────────────────────────────────────
 
+
 class HardwareProfile(TypedDict):
     """Snapshot of the host's compute resources."""
+
     gpu_available: bool
     gpu_name: str
     vram_total_mb: int
@@ -62,12 +66,15 @@ def detect_hardware() -> HardwareProfile:
 
     try:
         import torch
+
         if torch.cuda.is_available():
             gpu_available = True
             gpu_name = torch.cuda.get_device_name(0)
             props = torch.cuda.get_device_properties(0)
             vram_total = props.total_memory // (1024 * 1024)
-            vram_free = (props.total_memory - torch.cuda.memory_allocated(0)) // (1024 * 1024)
+            vram_free = (props.total_memory - torch.cuda.memory_allocated(0)) // (
+                1024 * 1024
+            )
     except (ImportError, RuntimeError, AssertionError) as exc:
         logger.debug("GPU probe failed: %s", exc)
 
@@ -110,6 +117,7 @@ def _probe_ram() -> tuple[int, int]:
     # macOS / generic fallback
     try:
         import psutil
+
         mem = psutil.virtual_memory()
         return mem.total // (1024 * 1024), mem.available // (1024 * 1024)
     except ImportError:
@@ -122,15 +130,36 @@ def _probe_ram() -> tuple[int, int]:
 
 # GGUF quant levels for Ollama LLM models, ordered by VRAM requirement
 _QUANT_LEVELS = [
-    {"name": "Q4_K_M", "min_vram_mb": 4000, "quality": 0.82, "description": "4-bit mixed, balanced quality/speed"},
-    {"name": "Q5_K_M", "min_vram_mb": 5500, "quality": 0.90, "description": "5-bit mixed, good quality"},
-    {"name": "Q8_0",   "min_vram_mb": 8000, "quality": 0.97, "description": "8-bit, near-lossless"},
-    {"name": "F16",    "min_vram_mb": 16000, "quality": 1.00, "description": "Full fp16 precision"},
+    {
+        "name": "Q4_K_M",
+        "min_vram_mb": 4000,
+        "quality": 0.82,
+        "description": "4-bit mixed, balanced quality/speed",
+    },
+    {
+        "name": "Q5_K_M",
+        "min_vram_mb": 5500,
+        "quality": 0.90,
+        "description": "5-bit mixed, good quality",
+    },
+    {
+        "name": "Q8_0",
+        "min_vram_mb": 8000,
+        "quality": 0.97,
+        "description": "8-bit, near-lossless",
+    },
+    {
+        "name": "F16",
+        "min_vram_mb": 16000,
+        "quality": 1.00,
+        "description": "Full fp16 precision",
+    },
 ]
 
 
 class QuantRecommendation(TypedDict):
     """Suggested quantization level with rationale."""
+
     level: str
     quality: float
     description: str
@@ -176,8 +205,10 @@ def recommend_quantization(profile: HardwareProfile) -> QuantRecommendation:
 
 # ── RL policy quantization (torch dynamic int8 / float16) ───────────
 
+
 class PolicyQuantInfo(TypedDict):
     """Info about a quantized RL policy variant."""
+
     precision: str
     size_reduction: float
     path: str
@@ -194,7 +225,9 @@ def quantize_policy_weights(
     """
     valid_precisions = {"float16", "float32", "int8"}
     if precision not in valid_precisions:
-        raise ValueError(f"Unsupported precision '{precision}'. Choose from {valid_precisions}")
+        raise ValueError(
+            f"Unsupported precision '{precision}'. Choose from {valid_precisions}"
+        )
 
     quantized: dict[str, object] = {}
     for key, val in weights.items():
@@ -223,7 +256,9 @@ def quantize_policy_weights(
 def dequantize_int8(packed: dict[str, object]) -> np.ndarray:
     """Restore a float32 array from int8-quantized packed dict."""
     if not isinstance(packed, dict) or "data" not in packed:
-        raise ValueError("Expected a packed int8 dict with 'data', 'scale', 'zero' keys")
+        raise ValueError(
+            "Expected a packed int8 dict with 'data', 'scale', 'zero' keys"
+        )
 
     data: np.ndarray = packed["data"]  # type: ignore[assignment]
     scale: float = packed["scale"]  # type: ignore[assignment]
@@ -251,7 +286,7 @@ def recommend_policy_precision(profile: HardwareProfile) -> str:
 
 # baseline batch sizes per lane, scaled by available memory
 _LANE_BASE_BATCH: dict[TaskLane, int] = {
-    TaskLane.SAFETY: 1,       # always process safety checks one at a time
+    TaskLane.SAFETY: 1,  # always process safety checks one at a time
     TaskLane.RETRIEVAL: 8,
     TaskLane.FUSION: 4,
     TaskLane.CRITIQUE: 2,
@@ -267,7 +302,9 @@ def recommend_batch_size(profile: HardwareProfile, lane: TaskLane) -> int:
         return 1  # safety is always serial
 
     # scale by available memory (use VRAM if GPU, else RAM)
-    avail = profile["vram_free_mb"] if profile["gpu_available"] else profile["ram_free_mb"]
+    avail = (
+        profile["vram_free_mb"] if profile["gpu_available"] else profile["ram_free_mb"]
+    )
 
     if avail <= 0:
         return max(1, base // 2)
@@ -279,9 +316,11 @@ def recommend_batch_size(profile: HardwareProfile, lane: TaskLane) -> int:
 
 # ── Task scheduler with priority lanes ───────────────────────────────
 
+
 @dataclass
 class _QueuedTask:
     """Internal representation of a scheduled task."""
+
     lane: TaskLane
     created_at: float
     task_id: str
@@ -297,6 +336,7 @@ class _QueuedTask:
 @dataclass
 class LaneStats(TypedDict):
     """Stats for a single priority lane."""
+
     pending: int
     completed: int
     avg_latency_ms: float
@@ -323,7 +363,9 @@ class TaskScheduler:
 
         logger.info(
             "TaskScheduler: max_concurrent=%d, safety_preempt=%s, gpu=%s",
-            self._max_concurrent, self._safety_preempt, self._profile["gpu_available"],
+            self._max_concurrent,
+            self._safety_preempt,
+            self._profile["gpu_available"],
         )
 
     @property

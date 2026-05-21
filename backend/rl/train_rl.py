@@ -30,9 +30,9 @@ from d3rlpy.dataset import MDPDataset
 from d3rlpy.models.encoders import DefaultEncoderFactory
 from d3rlpy.preprocessing import MinMaxActionScaler
 
+from backend.core.utils import embed_text
 from backend.rl.fusion_env import FusionEnv
 from backend.rl.obs_builder import OBS_DIM, build_observation
-from backend.core.utils import embed_text
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,6 +65,7 @@ def set_seeds(seed: int = 42) -> None:
     # d3rlpy >= 2.6 exposes a top-level seed helper; older versions ignore it.
     try:
         import d3rlpy as _d3
+
         if hasattr(_d3, "seed"):
             _d3.seed(seed)
     except Exception:  # pragma: no cover
@@ -92,14 +93,21 @@ def _row_to_obs_action(row: dict) -> tuple[np.ndarray, np.ndarray] | None:
     if feats_raw:
         try:
             feats = json.loads(feats_raw)
-            obs = build_observation(
-                query, embed,
-                retrieval_results=None,  # unused when feats are supplied
-            ) if not isinstance(feats, list) else np.concatenate(
-                [embed.astype(np.float32), np.asarray(feats, dtype=np.float32)]
+            obs = (
+                build_observation(
+                    query,
+                    embed,
+                    retrieval_results=None,  # unused when feats are supplied
+                )
+                if not isinstance(feats, list)
+                else np.concatenate(
+                    [embed.astype(np.float32), np.asarray(feats, dtype=np.float32)]
+                )
             )
         except (json.JSONDecodeError, ValueError, TypeError):
-            obs = np.concatenate([embed.astype(np.float32), np.zeros(10, dtype=np.float32)])
+            obs = np.concatenate(
+                [embed.astype(np.float32), np.zeros(10, dtype=np.float32)]
+            )
     else:
         # legacy row: zero-pad to 394 so the trainer dataset is rectangular.
         obs = np.concatenate([embed.astype(np.float32), np.zeros(10, dtype=np.float32)])
@@ -137,8 +145,14 @@ def _load_episodes_two_path(db_path: Path) -> MDPDataset | None:
     cols = {r[1] for r in cur.execute("PRAGMA table_info(episodes)").fetchall()}
 
     select_cols = ["query", "cag_weight", "graph_weight", "reward"]
-    for opt in ("obs_features", "policy_weights", "policy_action", "from_cache",
-                "had_empty_path", "schema_version"):
+    for opt in (
+        "obs_features",
+        "policy_weights",
+        "policy_action",
+        "from_cache",
+        "had_empty_path",
+        "schema_version",
+    ):
         if opt in cols:
             select_cols.append(opt)
 
@@ -238,7 +252,9 @@ def train_cql_offline(
         val_reward = float(np.mean(ep_rewards))
         logger.info(
             "Epoch %d | val_reward=%.3f (mean of %d evals)",
-            epoch + 1, val_reward, eval_episodes,
+            epoch + 1,
+            val_reward,
+            eval_episodes,
         )
 
         if val_reward > best_reward + 0.01:
@@ -249,8 +265,11 @@ def train_cql_offline(
         else:
             wait += 1
             if wait >= patience:
-                logger.info("Early stop at epoch %d (no improvement for %d epochs)",
-                            epoch + 1, patience)
+                logger.info(
+                    "Early stop at epoch %d (no improvement for %d epochs)",
+                    epoch + 1,
+                    patience,
+                )
                 break
 
     return {

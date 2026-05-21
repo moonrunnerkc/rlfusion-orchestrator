@@ -7,6 +7,7 @@ request check uses hmac.compare_digest to avoid timing side channels and
 raises HTTPException(401) on failure (never returns a 200 with an "error"
 body, since that breaks monitoring).
 """
+
 from __future__ import annotations
 
 import hmac
@@ -33,7 +34,9 @@ def enforce_admin_key_at_boot() -> None:
     """
     key = get_admin_key()
     allow_weak = os.environ.get("RLFUSION_ALLOW_WEAK_ADMIN_KEY", "").lower() in (
-        "1", "true", "yes",
+        "1",
+        "true",
+        "yes",
     )
     if not key:
         raise RuntimeError(
@@ -44,7 +47,7 @@ def enforce_admin_key_at_boot() -> None:
         raise RuntimeError(
             f"RLFUSION_ADMIN_KEY is too short ({len(key)} chars, need "
             f">= {_MIN_ADMIN_KEY_LEN}). Generate a longer one, e.g. "
-            "`python -c \"import secrets; print(secrets.token_urlsafe(48))\"`."
+            '`python -c "import secrets; print(secrets.token_urlsafe(48))"`.'
         )
 
 
@@ -52,7 +55,7 @@ def _extract_bearer(request: Request) -> str:
     header = request.headers.get("Authorization", "")
     if not header.startswith("Bearer "):
         return ""
-    return header[len("Bearer "):].strip()
+    return header[len("Bearer ") :].strip()
 
 
 def require_admin(request: Request) -> None:

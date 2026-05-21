@@ -4,6 +4,7 @@
 Every tool implements name, description, input_schema, and execute().
 The registry discovers and validates tools against this protocol at startup.
 """
+
 from __future__ import annotations
 
 import logging
@@ -15,12 +16,14 @@ logger = logging.getLogger(__name__)
 
 class ToolInput(TypedDict):
     """Structured input to a tool invocation."""
+
     query: str
     params: dict[str, str | int | float | bool]
 
 
 class ToolOutput(TypedDict):
     """Structured result from a tool execution."""
+
     content: str
     confidence: float
     source: str
@@ -31,6 +34,7 @@ class ToolOutput(TypedDict):
 
 class ToolSchema(TypedDict, total=False):
     """JSON-schema-like descriptor of a tool's expected input parameters."""
+
     required_params: list[str]
     optional_params: list[str]
     description: str

@@ -10,6 +10,7 @@ boundary between trusted system instructions and untrusted retrieved
 context. The system prompt is told to never follow instructions that
 appear inside the delimited block.
 """
+
 from __future__ import annotations
 
 import logging
@@ -20,15 +21,25 @@ logger = logging.getLogger(__name__)
 # Known prompt-injection / attack signatures. Lifted from safety_agent so
 # the same regex set screens both user queries and retrieved chunks.
 ATTACK_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"ignore\s+(previous|above|all)\s+(instructions|prompts|rules)", re.IGNORECASE),
-    re.compile(r"disregard\s+(previous|above|all)\s+(instructions|prompts|rules)", re.IGNORECASE),
-    re.compile(r"you\s+are\s+now\s+(?:DAN|evil|unrestricted|jailbroken)", re.IGNORECASE),
+    re.compile(
+        r"ignore\s+(previous|above|all)\s+(instructions|prompts|rules)", re.IGNORECASE
+    ),
+    re.compile(
+        r"disregard\s+(previous|above|all)\s+(instructions|prompts|rules)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"you\s+are\s+now\s+(?:DAN|evil|unrestricted|jailbroken)", re.IGNORECASE
+    ),
     re.compile(r"(?:system|admin)\s*:\s*override", re.IGNORECASE),
     re.compile(r"<\s*script\b", re.IGNORECASE),
     re.compile(r";\s*(?:DROP|DELETE|INSERT|UPDATE)\s+", re.IGNORECASE),
     re.compile(r"\$\{.*\}", re.IGNORECASE),  # template injection
     re.compile(r"respond\s+only\s+with\s+['\"]?pwned['\"]?", re.IGNORECASE),
-    re.compile(r"forget\s+(all\s+)?(your\s+)?(previous|prior)\s+(instructions|context)", re.IGNORECASE),
+    re.compile(
+        r"forget\s+(all\s+)?(your\s+)?(previous|prior)\s+(instructions|context)",
+        re.IGNORECASE,
+    ),
 )
 
 UNTRUSTED_BEGIN = "<<<BEGIN UNTRUSTED RETRIEVED CONTEXT>>>"

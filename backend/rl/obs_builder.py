@@ -7,6 +7,7 @@ Single source of truth for:
     weights with a 0.05 floor (used by both `FusionEnv.step` and the live
     `compute_rl_weights`).
 """
+
 from __future__ import annotations
 
 from typing import Any, Iterable
@@ -32,9 +33,7 @@ def build_observation(
     """
     embed = np.asarray(query_embedding, dtype=np.float32).flatten()
     if embed.shape[0] != EMBED_DIM:
-        raise ValueError(
-            f"query_embedding must be {EMBED_DIM}-d, got {embed.shape[0]}"
-        )
+        raise ValueError(f"query_embedding must be {EMBED_DIM}-d, got {embed.shape[0]}")
 
     rr = retrieval_results or {}
     cag_results = rr.get("cag", []) or []
@@ -51,7 +50,9 @@ def build_observation(
     query_type = [0.0, 0.0, 0.0]
     if any(w in q_lower for w in ("what is", "who is", "define", "explain")):
         query_type[0] = 1.0
-    elif any(w in q_lower for w in ("how does", "architecture", "design", "relationship")):
+    elif any(
+        w in q_lower for w in ("how does", "architecture", "design", "relationship")
+    ):
         query_type[1] = 1.0
     else:
         query_type[2] = 1.0

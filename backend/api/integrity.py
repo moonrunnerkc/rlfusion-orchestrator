@@ -5,6 +5,7 @@ models/CHECKSUMS.txt is a flat list of `<hex digest>  <basename>` lines
 (the same format `sha256sum` emits). At boot we verify every GGUF listed
 matches; mismatches refuse to start the server with a named error.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -65,7 +66,9 @@ def verify_model_checksums(models_dir: Path) -> None:
 
     expected = _parse_checksums(manifest.read_text())
     if not expected:
-        logger.warning("Model checksum manifest at %s is empty; skipping check.", manifest)
+        logger.warning(
+            "Model checksum manifest at %s is empty; skipping check.", manifest
+        )
         return
 
     for name, want in expected.items():

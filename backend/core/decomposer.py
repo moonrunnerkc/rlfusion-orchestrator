@@ -5,6 +5,7 @@
 import json
 import logging
 import re
+
 from backend.config import cfg
 
 logger = logging.getLogger(__name__)
@@ -35,13 +36,18 @@ def _llm_decompose(query: str, mode: str = "chat") -> dict:
     """Full LLM roundtrip for structured decomposition. Slow (~4.8s) but precise."""
     try:
         from backend.core.model_router import get_engine
+
         engine = get_engine()
         content = engine.generate(
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f'Mode: {mode}\nQuery: "{query}"\n\nAnalyze and respond with JSON only:'}
+                {
+                    "role": "user",
+                    "content": f'Mode: {mode}\nQuery: "{query}"\n\nAnalyze and respond with JSON only:',
+                },
             ],
-            temperature=0.1, num_predict=200,
+            temperature=0.1,
+            num_predict=200,
         ).strip()
         if content.startswith("```"):
             content = content.split("```")[1]
@@ -54,9 +60,13 @@ def _llm_decompose(query: str, mode: str = "chat") -> dict:
             "primary_intent": parsed.get("primary_intent", "explain"),
             "required_facts": parsed.get("required_facts", []),
             "key_entities": parsed.get("key_entities", []),
-            "temporal_focus": parsed.get("temporal_focus") if parsed.get("temporal_focus") != "null" else None,
+            "temporal_focus": (
+                parsed.get("temporal_focus")
+                if parsed.get("temporal_focus") != "null"
+                else None
+            ),
             "expected_shape": parsed.get("expected_shape", "insight"),
-            "sensitivity_level": float(parsed.get("sensitivity_level", 0.5))
+            "sensitivity_level": float(parsed.get("sensitivity_level", 0.5)),
         }
 
     except (json.JSONDecodeError, KeyError, ValueError, ConnectionError) as e:
@@ -84,8 +94,8 @@ def _heuristic_decompose(query: str) -> dict:
         intent, shape = "explain", "insight"
 
     # entity extraction
-    entities = re.findall(r'\b[A-Z][a-z]+(?:[A-Z][a-z]+)*\b', query)
-    entities.extend(re.findall(r'\b[A-Z]{2,6}\b', query))
+    entities = re.findall(r"\b[A-Z][a-z]+(?:[A-Z][a-z]+)*\b", query)
+    entities.extend(re.findall(r"\b[A-Z]{2,6}\b", query))
     entities = list(set(entities))[:5]
 
     # temporal focus
@@ -104,5 +114,5 @@ def _heuristic_decompose(query: str) -> dict:
         "key_entities": entities,
         "temporal_focus": temporal,
         "expected_shape": shape,
-        "sensitivity_level": 0.8 if intent == "troubleshoot" else 0.5
+        "sensitivity_level": 0.8 if intent == "troubleshoot" else 0.5,
     }

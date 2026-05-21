@@ -23,35 +23,47 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module="gym")
 import numpy as np
 import torch
 import yaml
-from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from prometheus_client import (
-    Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST,
+    CONTENT_TYPE_LATEST,
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
 )
 from pydantic import ValidationError
 from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
-from backend.config import cfg, PROJECT_ROOT
+from backend.agents.orchestrator import Orchestrator
 from backend.api.auth import enforce_admin_key_at_boot, get_admin_key, require_admin
 from backend.api.integrity import ChecksumError, verify_model_checksums
 from backend.api.models import (
     ChatRequest,
     ConfigPatch,
     FineTuneRequest,
-    UploadResponse,
     WsControlFrame,
     magic_bytes_for,
 )
+from backend.config import PROJECT_ROOT, cfg
+from backend.core.critique import (
+    log_episode_to_replay_buffer,
+)
+from backend.core.memory import (
+    clear_memory,
+    record_turn,
+)
 from backend.core.model_router import get_engine
-from backend.core.critique import critique, log_episode_to_replay_buffer, get_critique_instruction, strip_critique_block, check_safety
-from backend.core.memory import expand_query_with_context, record_turn, get_context_for_prompt, clear_memory
-from backend.core.profile import detect_and_save_memory, get_user_profile
-from backend.core.retrievers import retrieve
-from backend.core.utils import embed_text
-from backend.agents.orchestrator import Orchestrator, apply_markdown_formatting
 
 # Max upload size per file (10 MB)
 _MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -62,7 +74,9 @@ _MAX_QUERY_LEN = 4000
 _CAG_FAST_PATH = float(cfg.get("cag", {}).get("fast_path_threshold", 0.90))
 _CAG_CACHE_THRESHOLD = float(cfg.get("cag", {}).get("cache_threshold", 0.85))
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(name)s | %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+)
 logger = logging.getLogger(__name__)
 limiter = Limiter(key_func=get_remote_address)
 
@@ -106,14 +120,17 @@ WS_CONNECTIONS = Gauge(
     "Number of active WebSocket connections",
 )
 # numpy._core shim for stable-baselines3
-if not hasattr(np, '_core'):
-    _core_module = types.ModuleType('numpy._core')
+if not hasattr(np, "_core"):
+    _core_module = types.ModuleType("numpy._core")
     _core_module.numeric = np
-    sys.modules['numpy._core'] = _core_module
-    sys.modules['numpy._core.numeric'] = np
+    sys.modules["numpy._core"] = _core_module
+    sys.modules["numpy._core.numeric"] = np
 
 # Device configuration - supports both GPU and CPU
-USE_CUDA = torch.cuda.is_available() and os.environ.get("RLFUSION_FORCE_CPU", "").lower() != "true"
+USE_CUDA = (
+    torch.cuda.is_available()
+    and os.environ.get("RLFUSION_FORCE_CPU", "").lower() != "true"
+)
 if USE_CUDA:
     torch.cuda.empty_cache()
     torch.set_default_device("cuda")
@@ -135,17 +152,19 @@ class CQLPolicyWrapper:
     retrieval features) as produced by FusionEnv. Output dim is detected
     from the saved tensor so legacy 4-output policies still load.
     """
+
     def __init__(self, policy_weights):
         import torch.nn as nn
+
         dev = "cuda" if USE_CUDA else "cpu"
 
-        mu_shape = policy_weights['_mu.weight'].shape[0]
+        mu_shape = policy_weights["_mu.weight"].shape[0]
         self.output_dim = mu_shape
 
         # detect encoder input width from the saved tensor; warn loudly if it
         # disagrees with the current obs shape so silent shape mismatches
         # become visible at boot rather than at first prediction.
-        enc_in = int(policy_weights['_encoder._layers.0.weight'].shape[1])
+        enc_in = int(policy_weights["_encoder._layers.0.weight"].shape[1])
         if enc_in != 394:
             logger.warning(
                 "Loaded CQL policy has encoder input width %d (expected 394). "
@@ -156,16 +175,18 @@ class CQLPolicyWrapper:
             )
         self._input_dim = enc_in
         self.encoder = nn.Sequential(
-            nn.Linear(enc_in, 256), nn.ReLU(),
-            nn.Linear(256, 256), nn.ReLU(),
+            nn.Linear(enc_in, 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
         ).to(dev)
         self.mu = nn.Linear(256, mu_shape).to(dev)
-        self.encoder[0].weight.data = policy_weights['_encoder._layers.0.weight']
-        self.encoder[0].bias.data = policy_weights['_encoder._layers.0.bias']
-        self.encoder[2].weight.data = policy_weights['_encoder._layers.2.weight']
-        self.encoder[2].bias.data = policy_weights['_encoder._layers.2.bias']
-        self.mu.weight.data = policy_weights['_mu.weight']
-        self.mu.bias.data = policy_weights['_mu.bias']
+        self.encoder[0].weight.data = policy_weights["_encoder._layers.0.weight"]
+        self.encoder[0].bias.data = policy_weights["_encoder._layers.0.bias"]
+        self.encoder[2].weight.data = policy_weights["_encoder._layers.2.weight"]
+        self.encoder[2].bias.data = policy_weights["_encoder._layers.2.bias"]
+        self.mu.weight.data = policy_weights["_mu.weight"]
+        self.mu.bias.data = policy_weights["_mu.bias"]
         self.encoder.eval()
         self.mu.eval()
         self._device = dev
@@ -220,13 +241,15 @@ async def lifespan(app: FastAPI):
         if engine.check_health():
             logger.info(
                 "Inference health check passed: engine=%s, model=%s",
-                engine.engine, engine.model,
+                engine.engine,
+                engine.model,
             )
         else:
             logger.warning(
                 "Inference engine '%s' is running but model '%s' not found. "
                 "Queries will fail until the model is available.",
-                engine.engine, engine.model,
+                engine.engine,
+                engine.model,
             )
     except Exception as e:
         logger.error(
@@ -234,7 +257,10 @@ async def lifespan(app: FastAPI):
             "  Configured engine: %s\n"
             "  Configured model:  %s\n"
             "  The server will start but queries will fail until the engine is available.",
-            engine.base_url, e, engine.engine, engine.model,
+            engine.base_url,
+            e,
+            engine.engine,
+            engine.model,
         )
 
     logger.info("Retrieval paths: CAG + GraphRAG (2-path architecture)")
@@ -250,9 +276,11 @@ async def lifespan(app: FastAPI):
             # weights_only=True forbids arbitrary pickle classes inside the
             # checkpoint. d3rlpy v2 saves plain tensor dicts so this is safe.
             state_dict = torch.load(
-                str(cql_path), weights_only=True, map_location=map_location,
+                str(cql_path),
+                weights_only=True,
+                map_location=map_location,
             )
-            _rl_policy = CQLPolicyWrapper(state_dict['policy'])
+            _rl_policy = CQLPolicyWrapper(state_dict["policy"])
             policy_status = "CQL loaded"
             logger.info("CQL policy loaded successfully")
         except Exception as e:
@@ -261,6 +289,7 @@ async def lifespan(app: FastAPI):
         logger.info("Loading PPO policy (fallback)...")
         try:
             from stable_baselines3 import PPO
+
             _rl_policy = PPO.load(str(ppo_path), device=map_location)
             policy_status = "PPO loaded"
         except Exception as e:
@@ -282,6 +311,7 @@ async def lifespan(app: FastAPI):
 
     # Start background memory monitoring (Step 8)
     from backend.core.metrics import get_monitor
+
     mem_monitor = get_monitor(interval=10)
     mem_monitor.start()
 
@@ -303,15 +333,23 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_credentials=bool(_cors_cfg.get("allow_credentials", True)),
-    allow_methods=list(_cors_cfg.get("allowed_methods", ["GET", "POST", "PATCH", "DELETE", "OPTIONS"])),
-    allow_headers=list(_cors_cfg.get("allowed_headers", ["Authorization", "Content-Type", "X-Correlation-ID"])),
+    allow_methods=list(
+        _cors_cfg.get("allowed_methods", ["GET", "POST", "PATCH", "DELETE", "OPTIONS"])
+    ),
+    allow_headers=list(
+        _cors_cfg.get(
+            "allowed_headers", ["Authorization", "Content-Type", "X-Correlation-ID"]
+        )
+    ),
 )
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 @app.exception_handler(ValidationError)
-async def _on_pydantic_validation(_request: Request, exc: ValidationError) -> JSONResponse:
+async def _on_pydantic_validation(
+    _request: Request, exc: ValidationError
+) -> JSONResponse:
     """Surface Pydantic validation failures as 422 instead of 500."""
     return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
@@ -319,7 +357,9 @@ async def _on_pydantic_validation(_request: Request, exc: ValidationError) -> JS
 @app.middleware("http")
 async def correlation_id_middleware(request: Request, call_next: object) -> Response:
     """Inject correlation ID into every request for structured log tracing."""
-    corr_header = cfg.get("monitoring", {}).get("correlation_id_header", "X-Correlation-ID")
+    corr_header = cfg.get("monitoring", {}).get(
+        "correlation_id_header", "X-Correlation-ID"
+    )
     corr_id = request.headers.get(corr_header, uuid.uuid4().hex[:12])
     request.state.correlation_id = corr_id
 
@@ -334,7 +374,13 @@ async def correlation_id_middleware(request: Request, call_next: object) -> Resp
     response.headers[corr_header] = corr_id
     logger.info(
         "request.complete",
-        extra={"corr_id": corr_id, "path": endpoint, "method": method, "status": response.status_code, "took_ms": round(elapsed * 1000, 1)},
+        extra={
+            "corr_id": corr_id,
+            "path": endpoint,
+            "method": method,
+            "status": response.status_code,
+            "took_ms": round(elapsed * 1000, 1),
+        },
     )
     return response
 
@@ -345,6 +391,7 @@ async def prometheus_metrics() -> Response:
     # update replay buffer gauge on each scrape
     try:
         import sqlite3
+
         db_path = PROJECT_ROOT / cfg["paths"]["db"]
         if db_path.exists():
             conn = sqlite3.connect(str(db_path))
@@ -356,12 +403,8 @@ async def prometheus_metrics() -> Response:
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-# Import prompts from orchestrator (single source of truth)
-from backend.agents.orchestrator import (
-    generate_system_prompt as _generate_system_prompt,
-    generate_user_prompt as _generate_user_prompt,
-    NUM_PREDICT,
-)
+# Import NUM_PREDICT here (avoids a circular import at module top).
+from backend.agents.orchestrator import NUM_PREDICT
 
 
 @app.post("/chat")
@@ -438,7 +481,8 @@ async def _ws_authenticate(websocket: WebSocket) -> tuple[bool, str]:
 
     try:
         raw = await asyncio.wait_for(
-            websocket.receive_text(), timeout=_WS_AUTH_TIMEOUT,
+            websocket.receive_text(),
+            timeout=_WS_AUTH_TIMEOUT,
         )
     except asyncio.TimeoutError:
         return False, "auth handshake timed out"
@@ -454,7 +498,8 @@ async def _ws_authenticate(websocket: WebSocket) -> tuple[bool, str]:
     if not bearer.startswith("Bearer "):
         return False, "auth frame missing bearer"
     import hmac as _hmac
-    if not _hmac.compare_digest(bearer[len("Bearer "):], admin_key):
+
+    if not _hmac.compare_digest(bearer[len("Bearer ") :], admin_key):
         return False, "bearer mismatch"
     return True, "bearer ok"
 
@@ -479,7 +524,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 raise
             if len(data) > _WS_FRAME_MAX_BYTES:
                 logger.warning("WS frame too large: %d bytes", len(data))
-                await websocket.close(code=_WS_FRAME_TOO_LARGE, reason="frame too large")
+                await websocket.close(
+                    code=_WS_FRAME_TOO_LARGE, reason="frame too large"
+                )
                 return
 
             now = _time_mod.monotonic()
@@ -513,10 +560,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
             query = query.strip()
             if not query:
-                await websocket.send_json({"type": "done", "response": "Please provide a query."})
+                await websocket.send_json(
+                    {"type": "done", "response": "Please provide a query."}
+                )
                 continue
             if len(query) > _MAX_QUERY_LEN:
-                await websocket.send_json({"type": "done", "response": f"Query too long ({len(query)} chars, max {_MAX_QUERY_LEN})."})
+                await websocket.send_json(
+                    {
+                        "type": "done",
+                        "response": f"Query too long ({len(query)} chars, max {_MAX_QUERY_LEN}).",
+                    }
+                )
                 continue
 
             await websocket.send_json({"type": "start"})
@@ -528,53 +582,88 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             # between steps, giving the frontend real-time status transitions.
 
             # Step 0: Preprocess (memory expansion, complexity classification)
-            pre = await asyncio.to_thread(_orchestrator.step_preprocess, query, session_id)
+            pre = await asyncio.to_thread(
+                _orchestrator.step_preprocess, query, session_id
+            )
             expanded_query = pre["expanded_query"]
             query_expanded = pre["query_expanded"]
             complexity = pre["complexity"]
 
             # Memory request: short-circuit before any agents run
             if pre["is_memory_request"]:
-                await websocket.send_json({"type": "pipeline", "agents": [
-                    {"name": "safety", "status": "skipped", "detail": "Memory request"},
-                    {"name": "retrieval", "status": "skipped", "detail": ""},
-                    {"name": "fusion", "status": "skipped", "detail": ""},
-                    {"name": "generation", "status": "skipped", "detail": ""},
-                ]})
+                await websocket.send_json(
+                    {
+                        "type": "pipeline",
+                        "agents": [
+                            {
+                                "name": "safety",
+                                "status": "skipped",
+                                "detail": "Memory request",
+                            },
+                            {"name": "retrieval", "status": "skipped", "detail": ""},
+                            {"name": "fusion", "status": "skipped", "detail": ""},
+                            {"name": "generation", "status": "skipped", "detail": ""},
+                        ],
+                    }
+                )
                 preview = str(pre["memory_content"])[:100]
                 if len(str(pre["memory_content"])) > 100:
                     preview += "..."
-                await websocket.send_json({"type": "token", "token": f"\u2705 **Remembered:**\n\n> {preview}"})
+                await websocket.send_json(
+                    {"type": "token", "token": f"\u2705 **Remembered:**\n\n> {preview}"}
+                )
                 await websocket.send_json({"type": "done"})
                 continue
 
             # Step 1: Safety gate
-            await websocket.send_json({"type": "pipeline", "agents": [
-                {"name": "safety", "status": "running", "detail": "Scanning attack patterns + OOD check"},
-                {"name": "retrieval", "status": "pending", "detail": ""},
-                {"name": "fusion", "status": "pending", "detail": ""},
-                {"name": "generation", "status": "pending", "detail": ""},
-            ]})
-            safety_result = await asyncio.to_thread(_orchestrator.step_safety, query, complexity)
+            await websocket.send_json(
+                {
+                    "type": "pipeline",
+                    "agents": [
+                        {
+                            "name": "safety",
+                            "status": "running",
+                            "detail": "Scanning attack patterns + OOD check",
+                        },
+                        {"name": "retrieval", "status": "pending", "detail": ""},
+                        {"name": "fusion", "status": "pending", "detail": ""},
+                        {"name": "generation", "status": "pending", "detail": ""},
+                    ],
+                }
+            )
+            safety_result = await asyncio.to_thread(
+                _orchestrator.step_safety, query, complexity
+            )
 
             if safety_result.get("blocked", False):
                 SAFETY_GATE_TRIGGERS.inc()
                 block_reason = safety_result.get("safety_reason", "Unknown")
                 logger.warning("Query blocked by safety filter: %s", block_reason)
-                await websocket.send_json({"type": "pipeline", "agents": [
-                    {"name": "safety", "status": "blocked", "detail": f"Blocked: {block_reason[:60]}"},
-                    {"name": "retrieval", "status": "skipped", "detail": ""},
-                    {"name": "fusion", "status": "skipped", "detail": ""},
-                    {"name": "generation", "status": "skipped", "detail": ""},
-                ]})
-                await websocket.send_json({
-                    "type": "done",
-                    "response": "I can't help with that request. " + block_reason,
-                    "fusion_weights": {"cag": 0, "graph": 0},
-                    "reward": 0.0,
-                    "blocked": True,
-                    "safety_reason": block_reason,
-                })
+                await websocket.send_json(
+                    {
+                        "type": "pipeline",
+                        "agents": [
+                            {
+                                "name": "safety",
+                                "status": "blocked",
+                                "detail": f"Blocked: {block_reason[:60]}",
+                            },
+                            {"name": "retrieval", "status": "skipped", "detail": ""},
+                            {"name": "fusion", "status": "skipped", "detail": ""},
+                            {"name": "generation", "status": "skipped", "detail": ""},
+                        ],
+                    }
+                )
+                await websocket.send_json(
+                    {
+                        "type": "done",
+                        "response": "I can't help with that request. " + block_reason,
+                        "fusion_weights": {"cag": 0, "graph": 0},
+                        "reward": 0.0,
+                        "blocked": True,
+                        "safety_reason": block_reason,
+                    }
+                )
                 continue
 
             safety_detail = f"Passed ({complexity} query)"
@@ -582,12 +671,21 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             logger.info("[TIMING] safety: %.0f ms", (_t_safety - _t0) * 1000)
 
             # Step 2: Retrieval
-            await websocket.send_json({"type": "pipeline", "agents": [
-                {"name": "safety", "status": "done", "detail": safety_detail},
-                {"name": "retrieval", "status": "running", "detail": f"Querying all paths (depth: {complexity})"},
-                {"name": "fusion", "status": "pending", "detail": ""},
-                {"name": "generation", "status": "pending", "detail": ""},
-            ]})
+            await websocket.send_json(
+                {
+                    "type": "pipeline",
+                    "agents": [
+                        {"name": "safety", "status": "done", "detail": safety_detail},
+                        {
+                            "name": "retrieval",
+                            "status": "running",
+                            "detail": f"Querying all paths (depth: {complexity})",
+                        },
+                        {"name": "fusion", "status": "pending", "detail": ""},
+                        {"name": "generation", "status": "pending", "detail": ""},
+                    ],
+                }
+            )
             retrieval_result = await asyncio.to_thread(
                 _orchestrator.step_retrieval,
                 query=query,
@@ -602,7 +700,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             graph_n = len(rr.get("graph", []))
             retrieval_detail = f"{cag_n} CAG, {graph_n} Graph"
             _t_retrieval = _time_mod.perf_counter()
-            logger.info("[TIMING] retrieval: %.0f ms", (_t_retrieval - _t_safety) * 1000)
+            logger.info(
+                "[TIMING] retrieval: %.0f ms", (_t_retrieval - _t_safety) * 1000
+            )
 
             # record retrieval path usage
             for path_label, count in [("cag", cag_n), ("graph", graph_n)]:
@@ -611,51 +711,99 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
             # CAG fast-path: strong cache hit skips fusion + generation entirely
             cag_results = rr.get("cag", [])
-            if cag_n > 0 and graph_n == 0 and cag_results[0].get("score", 0) >= _CAG_FAST_PATH:
+            if (
+                cag_n > 0
+                and graph_n == 0
+                and cag_results[0].get("score", 0) >= _CAG_FAST_PATH
+            ):
                 cached_text = cag_results[0].get("text", "")
                 _t_cag = _time_mod.perf_counter()
-                logger.info("[CAG FAST-PATH] cache hit in %.0f ms, skipping generation",
-                            (_t_cag - _t0) * 1000)
-                await websocket.send_json({"type": "pipeline", "agents": [
-                    {"name": "safety", "status": "done", "detail": safety_detail},
-                    {"name": "retrieval", "status": "done", "detail": f"{cag_n} CAG (cache hit)"},
-                    {"name": "fusion", "status": "skipped", "detail": "CAG hit"},
-                    {"name": "generation", "status": "skipped", "detail": "Served from cache"},
-                ]})
-                await websocket.send_json({
-                    "type": "done",
-                    "response": cached_text,
-                    "fusion_weights": {"cag": 1.0, "graph": 0.0},
-                    "reward": cag_results[0].get("score", 0.9),
-                    "proactive_suggestions": [],
-                })
+                logger.info(
+                    "[CAG FAST-PATH] cache hit in %.0f ms, skipping generation",
+                    (_t_cag - _t0) * 1000,
+                )
+                await websocket.send_json(
+                    {
+                        "type": "pipeline",
+                        "agents": [
+                            {
+                                "name": "safety",
+                                "status": "done",
+                                "detail": safety_detail,
+                            },
+                            {
+                                "name": "retrieval",
+                                "status": "done",
+                                "detail": f"{cag_n} CAG (cache hit)",
+                            },
+                            {
+                                "name": "fusion",
+                                "status": "skipped",
+                                "detail": "CAG hit",
+                            },
+                            {
+                                "name": "generation",
+                                "status": "skipped",
+                                "detail": "Served from cache",
+                            },
+                        ],
+                    }
+                )
+                await websocket.send_json(
+                    {
+                        "type": "done",
+                        "response": cached_text,
+                        "fusion_weights": {"cag": 1.0, "graph": 0.0},
+                        "reward": cag_results[0].get("score", 0.9),
+                        "proactive_suggestions": [],
+                    }
+                )
                 # record the turn for memory context
                 await asyncio.to_thread(record_turn, session_id, "user", query)
-                await asyncio.to_thread(record_turn, session_id, "assistant", cached_text)
+                await asyncio.to_thread(
+                    record_turn, session_id, "assistant", cached_text
+                )
                 try:
-                    from backend.core.critique import log_episode_to_replay_buffer
-                    await asyncio.to_thread(log_episode_to_replay_buffer, {
-                        "query": query,
-                        "response": cached_text,
-                        "weights": {"cag": 1.0, "graph": 0.0},
-                        "reward": float(cag_results[0].get("score", _CAG_FAST_PATH)),
-                        "fused_context": "",
-                        "from_cache": True,
-                        "policy_weights": [1.0, 0.0],
-                        "effective_weights": [1.0, 0.0],
-                        "had_empty_path": False,
-                    })
+                    await asyncio.to_thread(
+                        log_episode_to_replay_buffer,
+                        {
+                            "query": query,
+                            "response": cached_text,
+                            "weights": {"cag": 1.0, "graph": 0.0},
+                            "reward": float(
+                                cag_results[0].get("score", _CAG_FAST_PATH)
+                            ),
+                            "fused_context": "",
+                            "from_cache": True,
+                            "policy_weights": [1.0, 0.0],
+                            "effective_weights": [1.0, 0.0],
+                            "had_empty_path": False,
+                        },
+                    )
                 except Exception as exc:
                     logger.warning("CAG fast-path episode log failed: %s", exc)
                 continue
 
             # Step 3: Fusion
-            await websocket.send_json({"type": "pipeline", "agents": [
-                {"name": "safety", "status": "done", "detail": safety_detail},
-                {"name": "retrieval", "status": "done", "detail": retrieval_detail},
-                {"name": "fusion", "status": "running", "detail": "Computing RL policy weights"},
-                {"name": "generation", "status": "pending", "detail": ""},
-            ]})
+            await websocket.send_json(
+                {
+                    "type": "pipeline",
+                    "agents": [
+                        {"name": "safety", "status": "done", "detail": safety_detail},
+                        {
+                            "name": "retrieval",
+                            "status": "done",
+                            "detail": retrieval_detail,
+                        },
+                        {
+                            "name": "fusion",
+                            "status": "running",
+                            "detail": "Computing RL policy weights",
+                        },
+                        {"name": "generation", "status": "pending", "detail": ""},
+                    ],
+                }
+            )
             fusion_result = await asyncio.to_thread(
                 _orchestrator.step_fusion,
                 query=query,
@@ -698,12 +846,25 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             # Step 4: LLM Generation
             engine = get_engine()
             model_name = engine.model
-            await websocket.send_json({"type": "pipeline", "agents": [
-                {"name": "safety", "status": "done", "detail": safety_detail},
-                {"name": "retrieval", "status": "done", "detail": retrieval_detail},
-                {"name": "fusion", "status": "done", "detail": fusion_detail},
-                {"name": "generation", "status": "running", "detail": f"Streaming {model_name} ({ctx_len} chars context)"},
-            ]})
+            await websocket.send_json(
+                {
+                    "type": "pipeline",
+                    "agents": [
+                        {"name": "safety", "status": "done", "detail": safety_detail},
+                        {
+                            "name": "retrieval",
+                            "status": "done",
+                            "detail": retrieval_detail,
+                        },
+                        {"name": "fusion", "status": "done", "detail": fusion_detail},
+                        {
+                            "name": "generation",
+                            "status": "running",
+                            "detail": f"Streaming {model_name} ({ctx_len} chars context)",
+                        },
+                    ],
+                }
+            )
 
             full_response = ""
             token_count = 0
@@ -711,8 +872,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
             _num_predict = NUM_PREDICT.get(mode, 800)
             for text_chunk in engine.stream(
-                messages=[{"role": "system", "content": prepared["system_prompt"]}, {"role": "user", "content": prepared["user_prompt"]}],
-                temperature=0.1, num_ctx=4096, num_predict=_num_predict,
+                messages=[
+                    {"role": "system", "content": prepared["system_prompt"]},
+                    {"role": "user", "content": prepared["user_prompt"]},
+                ],
+                temperature=0.1,
+                num_ctx=4096,
+                num_predict=_num_predict,
             ):
                 if not _ttft_logged:
                     _ttft = (_time_mod.perf_counter() - _t0) * 1000
@@ -720,46 +886,69 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     _ttft_logged = True
                 full_response += text_chunk
                 token_count += 1
-                await websocket.send_json({
-                    "chunk": text_chunk,
-                    "weights": {
-                        "cag": actual_weights[0] if len(actual_weights) > 0 else 0.0,
-                        "graph": actual_weights[1] if len(actual_weights) > 1 else 0.0,
-                    },
-                    "reward": 0.0,
-                })
+                await websocket.send_json(
+                    {
+                        "chunk": text_chunk,
+                        "weights": {
+                            "cag": (
+                                actual_weights[0] if len(actual_weights) > 0 else 0.0
+                            ),
+                            "graph": (
+                                actual_weights[1] if len(actual_weights) > 1 else 0.0
+                            ),
+                        },
+                        "reward": 0.0,
+                    }
+                )
 
             gen_detail = f"{token_count} tokens via {model_name}"
             _t_gen = _time_mod.perf_counter()
-            logger.info("[TIMING] generation: %.0f ms (TTFT included)", (_t_gen - _t_prompt) * 1000)
+            logger.info(
+                "[TIMING] generation: %.0f ms (TTFT included)",
+                (_t_gen - _t_prompt) * 1000,
+            )
 
             # Step 5: Send done immediately, run critique async (Opt 6)
             # Record the turn before critique so user sees the response instantly
             record_turn(session_id, "assistant", full_response)
 
             # Show critique as running in pipeline UI
-            await websocket.send_json({"type": "pipeline", "agents": [
-                {"name": "safety", "status": "done", "detail": safety_detail},
-                {"name": "retrieval", "status": "done", "detail": retrieval_detail},
-                {"name": "fusion", "status": "done", "detail": fusion_detail},
-                {"name": "generation", "status": "done", "detail": gen_detail},
-            ]})
+            await websocket.send_json(
+                {
+                    "type": "pipeline",
+                    "agents": [
+                        {"name": "safety", "status": "done", "detail": safety_detail},
+                        {
+                            "name": "retrieval",
+                            "status": "done",
+                            "detail": retrieval_detail,
+                        },
+                        {"name": "fusion", "status": "done", "detail": fusion_detail},
+                        {"name": "generation", "status": "done", "detail": gen_detail},
+                    ],
+                }
+            )
 
             # Send done message with placeholder reward (critique runs async)
-            await websocket.send_json({
-                "type": "done", "response": full_response,
-                "fusion_weights": {
-                    "cag": actual_weights[0] if len(actual_weights) > 0 else 0.0,
-                    "graph": actual_weights[1] if len(actual_weights) > 1 else 0.0,
-                },
-                "reward": 0.0,
-                "proactive": "",
-                "proactive_suggestions": [],
-                "query_expanded": query_expanded,
-                "expanded_query": expanded_query if query_expanded else None,
-            })
+            await websocket.send_json(
+                {
+                    "type": "done",
+                    "response": full_response,
+                    "fusion_weights": {
+                        "cag": actual_weights[0] if len(actual_weights) > 0 else 0.0,
+                        "graph": actual_weights[1] if len(actual_weights) > 1 else 0.0,
+                    },
+                    "reward": 0.0,
+                    "proactive": "",
+                    "proactive_suggestions": [],
+                    "query_expanded": query_expanded,
+                    "expanded_query": expanded_query if query_expanded else None,
+                }
+            )
             _t_done = _time_mod.perf_counter()
-            logger.info("[TIMING] TOTAL (query to done): %.0f ms", (_t_done - _t0) * 1000)
+            logger.info(
+                "[TIMING] TOTAL (query to done): %.0f ms", (_t_done - _t0) * 1000
+            )
 
             # Fire-and-forget async critique
             async def _run_critique_async(
@@ -780,24 +969,33 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     critique_reward = result["reward"]
                     CRITIQUE_REWARD.observe(critique_reward)
                     for wpath in ("cag", "graph"):
-                        FUSION_WEIGHT_DIST.labels(path=wpath).observe(result["fusion_weights"].get(wpath, 0))
+                        FUSION_WEIGHT_DIST.labels(path=wpath).observe(
+                            result["fusion_weights"].get(wpath, 0)
+                        )
 
                     # send critique frame to frontend (non-blocking update)
-                    await ws.send_json({
-                        "type": "critique",
-                        "reward": critique_reward,
-                        "proactive_suggestions": result["proactive_suggestions"],
-                        "response": result["response"],
-                    })
+                    await ws.send_json(
+                        {
+                            "type": "critique",
+                            "reward": critique_reward,
+                            "proactive_suggestions": result["proactive_suggestions"],
+                            "response": result["response"],
+                        }
+                    )
                 except (WebSocketDisconnect, RuntimeError):
                     logger.debug("WS closed before critique delivery")
                 except Exception as exc:
                     logger.warning("Async critique failed: %s", exc)
 
-            asyncio.create_task(_run_critique_async(
-                websocket, query, full_response, fused_context,
-                actual_weights,
-            ))
+            asyncio.create_task(
+                _run_critique_async(
+                    websocket,
+                    query,
+                    full_response,
+                    fused_context,
+                    actual_weights,
+                )
+            )
 
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")
@@ -808,9 +1006,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 @app.get("/api/config")
 @limiter.limit("10/minute")
 async def get_config(request: Request) -> Dict[str, Any]:
-    return {"web": {"enabled": cfg.get("web", {}).get("enabled", False),
-                    "max_results": cfg.get("web", {}).get("max_results", 3),
-                    "search_timeout": cfg.get("web", {}).get("search_timeout", 10)}}
+    return {
+        "web": {
+            "enabled": cfg.get("web", {}).get("enabled", False),
+            "max_results": cfg.get("web", {}).get("max_results", 3),
+            "search_timeout": cfg.get("web", {}).get("search_timeout", 10),
+        }
+    }
 
 
 @app.patch("/api/config", dependencies=[Depends(require_admin)])
@@ -818,10 +1020,10 @@ async def get_config(request: Request) -> Dict[str, Any]:
 async def update_config(request: Request, body: ConfigPatch) -> Dict[str, Any]:
     cfg["web"]["enabled"] = body.web.enabled
     config_path = Path(__file__).parent / "config.yaml"
-    with open(config_path, 'r') as f:
+    with open(config_path, "r") as f:
         current_config = yaml.safe_load(f)
     current_config["web"]["enabled"] = cfg["web"]["enabled"]
-    with open(config_path, 'w') as f:
+    with open(config_path, "w") as f:
         yaml.dump(current_config, f, default_flow_style=False, sort_keys=False)
     return {"status": "updated", "web": {"enabled": cfg["web"]["enabled"]}}
 
@@ -887,14 +1089,14 @@ async def upload_documents(request: Request) -> Dict[str, Any]:
     allowed = {".txt", ".md", ".pdf"}
 
     for f in files:
-        if not hasattr(f, 'filename'):
+        if not hasattr(f, "filename"):
             continue
         original_name = Path(f.filename).name  # strip path components
         ext = Path(original_name).suffix.lower()
         if ext not in allowed:
             skipped.append(f.filename)
             continue
-        if '..' in original_name or original_name.startswith('.'):
+        if ".." in original_name or original_name.startswith("."):
             skipped.append(f"{f.filename} (invalid filename)")
             continue
         content = await f.read()
@@ -913,7 +1115,9 @@ async def upload_documents(request: Request) -> Dict[str, Any]:
         dest = docs_path / safe_name
         dest.write_bytes(content)
         saved.append(safe_name)
-        logger.info("Uploaded: %s -> %s (%d bytes)", f.filename, safe_name, len(content))
+        logger.info(
+            "Uploaded: %s -> %s (%d bytes)", f.filename, safe_name, len(content)
+        )
 
     return {
         "status": "uploaded",
@@ -928,12 +1132,16 @@ async def upload_documents(request: Request) -> Dict[str, Any]:
 @limiter.limit("3/minute")
 async def reindex_documents(request: Request) -> Dict[str, Any]:
     """Rechunk data/docs/ and rebuild the entity graph."""
-    from backend.core.retrievers import build_doc_chunks, _get_docs_path
     import time
 
+    from backend.core.retrievers import _get_docs_path, build_doc_chunks
+
     docs_path = _get_docs_path()
-    supported = (list(docs_path.rglob("*.txt")) + list(docs_path.rglob("*.md"))
-                  + list(docs_path.rglob("*.pdf")))
+    supported = (
+        list(docs_path.rglob("*.txt"))
+        + list(docs_path.rglob("*.md"))
+        + list(docs_path.rglob("*.pdf"))
+    )
 
     if not supported:
         return {
@@ -947,13 +1155,17 @@ async def reindex_documents(request: Request) -> Dict[str, Any]:
 
     # entity count comes from the graph engine, re-loaded after rebuild
     from backend.core.retrievers import _get_graph_engine
+
     engine = _get_graph_engine()
     entity_count = engine.node_count if engine is not None else 0
 
     elapsed = round(time.time() - t0, 2)
     logger.info(
         "Reindex complete: %d files, %d chunks, %d entities, %.2fs",
-        len(supported), chunk_count, entity_count, elapsed,
+        len(supported),
+        chunk_count,
+        entity_count,
+        elapsed,
     )
     return {
         "status": "reindexed",
@@ -970,6 +1182,7 @@ async def reset_gpu(request: Request) -> Dict[str, Any]:
     """Force-reload the GPU executor (recover from sticky OOM)."""
     try:
         from backend.core.asymmetric_llm import get_orchestrator
+
         orchestrator = get_orchestrator()
         orchestrator._gpu_offloaded = False  # exit fallback mode
         orchestrator._oom_recovery_counter = 0
@@ -984,6 +1197,7 @@ async def reset_gpu(request: Request) -> Dict[str, Any]:
 async def reset_state(request: Request) -> Dict[str, Any]:
     """Wipe all transient state: cache, episodes, replay, conversations."""
     import sqlite3
+
     db_path = PROJECT_ROOT / cfg["paths"]["db"]
     if not db_path.exists():
         return {"status": "no database"}
@@ -996,9 +1210,13 @@ async def reset_state(request: Request) -> Dict[str, Any]:
     conn.close()
     # clear in-memory conversation state
     from backend.core.memory import conversation_memory
+
     conversation_memory.clear_all_sessions()
     logger.info("Full state reset via /api/reset")
-    return {"status": "reset", "tables_cleared": ["cache", "episodes", "replay", "conversations"]}
+    return {
+        "status": "reset",
+        "tables_cleared": ["cache", "episodes", "replay", "conversations"],
+    }
 
 
 @app.post("/api/fine-tune", dependencies=[Depends(require_admin)])
@@ -1046,11 +1264,14 @@ async def fine_tune_endpoint(request: Request, body: FineTuneRequest) -> Dict[st
     corr_id = uuid.uuid4().hex[:8]
     logger.info(
         "Fine-tune job %s: status=%s episodes=%d",
-        corr_id, result["status"], result["episodes_used"],
+        corr_id,
+        result["status"],
+        result["episodes_used"],
     )
     return {**result, "job_id": corr_id}
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)

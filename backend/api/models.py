@@ -5,12 +5,12 @@ All models use ConfigDict(extra="forbid") so unknown keys raise 422 rather
 than being silently dropped. Bounded Field constraints replace the ad-hoc
 length / magic-number checks that used to live inline in main.py.
 """
+
 from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
 
 _MAX_QUERY_LEN = 4000
 

@@ -12,7 +12,10 @@ logger = logging.getLogger(__name__)
 
 
 def normalize_weights(weights: List[float]) -> List[float]:
-    clean = [max(0.0, float(w)) if w is not None and not np.isnan(w) else 0.0 for w in weights]
+    clean = [
+        max(0.0, float(w)) if w is not None and not np.isnan(w) else 0.0
+        for w in weights
+    ]
     total = sum(clean)
     return [w / total for w in clean] if total > 0 else [1.0 / len(clean)] * len(clean)
 

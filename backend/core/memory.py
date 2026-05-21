@@ -16,9 +16,18 @@ logger = logging.getLogger(__name__)
 
 # Entity patterns - business, person, location, product
 ENTITY_PATTERNS = [
-    (r"(?:restaurant|cafe|bar|store|shop|hotel|place)\s+(?:called|named|is)\s+([A-Z][A-Za-z\s']+)", "business"),
-    (r"([A-Z][A-Za-z\s']+(?:Restaurant|Cafe|Bar|Grill|Diner|Caboose|Kitchen|Bistro|Tavern))", "business"),
-    (r"(?:person|guy|man|woman|someone)\s+named\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)", "person"),
+    (
+        r"(?:restaurant|cafe|bar|store|shop|hotel|place)\s+(?:called|named|is)\s+([A-Z][A-Za-z\s']+)",
+        "business",
+    ),
+    (
+        r"([A-Z][A-Za-z\s']+(?:Restaurant|Cafe|Bar|Grill|Diner|Caboose|Kitchen|Bistro|Tavern))",
+        "business",
+    ),
+    (
+        r"(?:person|guy|man|woman|someone)\s+named\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
+        "person",
+    ),
     (r"([A-Z][a-z]+\s+[A-Z][a-z]+)\s+(?:who|that|lives|works)", "person"),
     (r"in\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?(?:,\s*[A-Z]{2})?)", "location"),
     (r"([A-Z][a-z]+,\s*[A-Z]{2})", "location"),
@@ -27,7 +36,8 @@ ENTITY_PATTERNS = [
 
 # Pronouns that need resolution
 ANAPHORA_PATTERNS = [
-    r"\b(it|its|it's)\b", r"\b(they|them|their|theirs)\b",
+    r"\b(it|its|it's)\b",
+    r"\b(they|them|their|theirs)\b",
     r"\b(he|him|his|she|her|hers)\b",
     r"\bthe\s+(restaurant|place|business|person|thing|product|item)\b",
 ]
@@ -86,13 +96,19 @@ class ConversationMemory:
 
     def _cleanup_old_sessions(self) -> None:
         now = time.time()
-        expired = [sid for sid, state in self._sessions.items() if now - state.updated_at > self._session_ttl]
+        expired = [
+            sid
+            for sid, state in self._sessions.items()
+            if now - state.updated_at > self._session_ttl
+        ]
         for sid in expired:
             del self._sessions[sid]
 
         if len(self._sessions) > self._max_sessions:
-            sorted_sessions = sorted(self._sessions.items(), key=lambda x: x[1].updated_at)
-            for sid, _ in sorted_sessions[:len(self._sessions) - self._max_sessions]:
+            sorted_sessions = sorted(
+                self._sessions.items(), key=lambda x: x[1].updated_at
+            )
+            for sid, _ in sorted_sessions[: len(self._sessions) - self._max_sessions]:
                 del self._sessions[sid]
 
     def extract_entities(self, text: str) -> Dict[str, Set[str]]:
@@ -106,10 +122,14 @@ class ConversationMemory:
 
     def extract_topics(self, text: str) -> Set[str]:
         topics = set()
-        for cap in re.findall(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)', text):
+        for cap in re.findall(r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)", text):
             if len(cap) > 3:
                 topics.add(cap)
-        domain_words = re.findall(r'\b(hours|menu|price|phone|website|address|location|schedule|contact|directions|reviews?|rating)\b', text, re.IGNORECASE)
+        domain_words = re.findall(
+            r"\b(hours|menu|price|phone|website|address|location|schedule|contact|directions|reviews?|rating)\b",
+            text,
+            re.IGNORECASE,
+        )
         topics.update(w.lower() for w in domain_words)
         return topics
 
@@ -134,31 +154,60 @@ class ConversationMemory:
 
     def expand_query(self, session_id: str, query: str) -> Tuple[str, Dict[str, Any]]:
         state = self.get_or_create_session(session_id)
-        metadata = {"original_query": query, "expanded": False, "entities_used": [], "context_added": ""}
+        metadata = {
+            "original_query": query,
+            "expanded": False,
+            "entities_used": [],
+            "context_added": "",
+        }
 
         # skip expansion if: query is self-contained, no context exists,
         # or session has zero prior turns (nothing to expand from)
         has_prior_turns = len(state.turns) >= 1
-        if not self.needs_expansion(query) or (not state.active_entities and not state.topic_stack) or not has_prior_turns:
+        if (
+            not self.needs_expansion(query)
+            or (not state.active_entities and not state.topic_stack)
+            or not has_prior_turns
+        ):
             return query, metadata
 
         query_lower = query.lower()
         context_pieces = []
 
         # business-related queries
-        if any(w in query_lower for w in ['hours', 'open', 'close', 'menu', 'phone', 'website', 'address', 'price']):
-            if 'business' in state.active_entities:
+        if any(
+            w in query_lower
+            for w in [
+                "hours",
+                "open",
+                "close",
+                "menu",
+                "phone",
+                "website",
+                "address",
+                "price",
+            ]
+        ):
+            if "business" in state.active_entities:
                 context_pieces.append(f"for {state.active_entities['business']}")
-                metadata["entities_used"].append(('business', state.active_entities['business']))
-            if 'location' in state.active_entities:
+                metadata["entities_used"].append(
+                    ("business", state.active_entities["business"])
+                )
+            if "location" in state.active_entities:
                 context_pieces.append(f"in {state.active_entities['location']}")
-                metadata["entities_used"].append(('location', state.active_entities['location']))
+                metadata["entities_used"].append(
+                    ("location", state.active_entities["location"])
+                )
 
         # person-related queries
-        elif any(w in query_lower for w in ['who', 'person', 'contact', 'email', 'social']):
-            if 'person' in state.active_entities:
+        elif any(
+            w in query_lower for w in ["who", "person", "contact", "email", "social"]
+        ):
+            if "person" in state.active_entities:
                 context_pieces.append(f"about {state.active_entities['person']}")
-                metadata["entities_used"].append(('person', state.active_entities['person']))
+                metadata["entities_used"].append(
+                    ("person", state.active_entities["person"])
+                )
 
         # fallback to most recent entity
         if not context_pieces and state.active_entities:
@@ -168,7 +217,11 @@ class ConversationMemory:
 
         if context_pieces:
             context_str = " ".join(context_pieces)
-            expanded = query.rstrip()[:-1] + " " + context_str + "?" if query.rstrip().endswith('?') else query + " " + context_str
+            expanded = (
+                query.rstrip()[:-1] + " " + context_str + "?"
+                if query.rstrip().endswith("?")
+                else query + " " + context_str
+            )
             metadata["expanded"] = True
             metadata["context_added"] = context_str
             return expanded, metadata
@@ -180,7 +233,13 @@ class ConversationMemory:
         entities = self.extract_entities(content)
         topics = self.extract_topics(content)
 
-        turn = ConversationTurn(role=role, content=content, timestamp=time.time(), entities=entities, topics=topics)
+        turn = ConversationTurn(
+            role=role,
+            content=content,
+            timestamp=time.time(),
+            entities=entities,
+            topics=topics,
+        )
         state.turns.append(turn)
 
         for entity_type, entity_values in entities.items():
@@ -193,10 +252,12 @@ class ConversationMemory:
         state.topic_stack = state.topic_stack[-10:]
 
         state.updated_at = time.time()
-        if role == 'user':
+        if role == "user":
             state.last_query = content
-        elif role == 'assistant':
-            state.last_response_summary = content[:200] + "..." if len(content) > 200 else content
+        elif role == "assistant":
+            state.last_response_summary = (
+                content[:200] + "..." if len(content) > 200 else content
+            )
 
         return state
 
@@ -207,20 +268,32 @@ class ConversationMemory:
 
         context_parts = []
         if state.active_entities:
-            entities_str = ", ".join(f"{k}: {v}" for k, v in state.active_entities.items())
-            context_parts.append(f"[CONVERSATION CONTEXT]\nActive topics: {entities_str}")
+            entities_str = ", ".join(
+                f"{k}: {v}" for k, v in state.active_entities.items()
+            )
+            context_parts.append(
+                f"[CONVERSATION CONTEXT]\nActive topics: {entities_str}"
+            )
 
         recent = state.get_context_window(4)
         if recent:
             turns_str = []
             for turn in recent:
                 role_label = "User" if turn.role == "user" else "Assistant"
-                content = turn.content[:300] + "..." if len(turn.content) > 300 else turn.content
+                content = (
+                    turn.content[:300] + "..."
+                    if len(turn.content) > 300
+                    else turn.content
+                )
                 turns_str.append(f"{role_label}: {content}")
             context_parts.append("Recent conversation:\n" + "\n".join(turns_str))
 
         full_context = "\n\n".join(context_parts)
-        return full_context[:max_chars] + "\n[...truncated]" if len(full_context) > max_chars else full_context
+        return (
+            full_context[:max_chars] + "\n[...truncated]"
+            if len(full_context) > max_chars
+            else full_context
+        )
 
     def clear_session(self, session_id: str) -> None:
         with self._lock:
@@ -237,13 +310,16 @@ class ConversationMemory:
 conversation_memory = ConversationMemory()
 
 
-def expand_query_with_context(session_id: str, query: str) -> Tuple[str, Dict[str, Any]]:
+def expand_query_with_context(
+    session_id: str, query: str
+) -> Tuple[str, Dict[str, Any]]:
     return conversation_memory.expand_query(session_id, query)
 
 
 def _get_db_path() -> Path:
     """Resolve db path from config, with lazy import to avoid circular deps."""
-    from backend.config import cfg, PROJECT_ROOT
+    from backend.config import PROJECT_ROOT, cfg
+
     return PROJECT_ROOT / cfg["paths"]["db"]
 
 

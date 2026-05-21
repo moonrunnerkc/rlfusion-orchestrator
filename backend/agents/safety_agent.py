@@ -4,6 +4,7 @@
 Wraps check_safety() and check_query_ood() from backend.core without
 rewriting proven logic. Runs as the first gate in every pipeline shape.
 """
+
 from __future__ import annotations
 
 import logging
@@ -29,6 +30,7 @@ class SafetyAgent:
     Pipeline role: always runs first. If blocked, downstream agents are skipped
     and the endpoint returns a safety-blocked response.
     """
+
     _NAME: ClassVar[str] = "safety"
 
     @property
@@ -37,8 +39,11 @@ class SafetyAgent:
 
     def plan(self, state: PipelineState) -> PipelineState:
         """Safety planning is trivial: always check everything."""
-        logger.debug("[%s] Planning safety checks for query (%d chars)",
-                     self._NAME, len(state.get("query", "")))
+        logger.debug(
+            "[%s] Planning safety checks for query (%d chars)",
+            self._NAME,
+            len(state.get("query", "")),
+        )
         return {}  # type: ignore[return-value]
 
     def act(self, state: PipelineState) -> PipelineState:
@@ -64,6 +69,7 @@ class SafetyAgent:
         # Phase 2: OOD detection (non-blocking, just logs)
         try:
             from backend.core.utils import check_query_ood
+
             is_ood, distance = check_query_ood(query)
             if is_ood:
                 logger.warning("[%s] OOD flagged (distance=%.2f)", self._NAME, distance)
@@ -72,6 +78,7 @@ class SafetyAgent:
 
         # Phase 3: LLM-based safety classification
         from backend.core.critique import check_safety
+
         is_safe, safety_reason = check_safety(query)
 
         return {  # type: ignore[return-value]
@@ -83,8 +90,11 @@ class SafetyAgent:
     def reflect(self, state: PipelineState) -> PipelineState:
         """Log safety screening outcome."""
         if state.get("blocked"):
-            logger.info("[%s] Query BLOCKED: %s", self._NAME,
-                        state.get("safety_reason", "unknown"))
+            logger.info(
+                "[%s] Query BLOCKED: %s",
+                self._NAME,
+                state.get("safety_reason", "unknown"),
+            )
         else:
             logger.debug("[%s] Query passed safety screening", self._NAME)
         return {}  # type: ignore[return-value]

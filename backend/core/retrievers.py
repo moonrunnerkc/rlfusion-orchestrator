@@ -2,33 +2,62 @@
 # retrievers.py - CAG + Graph retrieval with CSWR stability filtering
 
 import hashlib
-import sqlite3
 import json
-import uuid
 import logging
+import sqlite3
+import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Dict, Any
+from typing import TYPE_CHECKING, Any, Dict, List
+
 import numpy as np
 
-from backend.core.utils import embed_text, embed_batch
+from backend.core.utils import embed_batch, embed_text
 
 if TYPE_CHECKING:
     from backend.core.graph_engine import GraphEngine
-from backend.core.decomposer import decompose_query
-from backend.config import cfg, PROJECT_ROOT
+
+from backend.config import PROJECT_ROOT, cfg
 
 logger = logging.getLogger("cswr")
 if not logger.handlers:
     h = logging.StreamHandler()
-    h.setFormatter(logging.Formatter('[%(asctime)s] %(levelname)s - %(message)s'))
+    h.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s - %(message)s"))
     logger.addHandler(h)
     logger.setLevel(logging.INFO)
 
 DOMAIN_KW = {
-    "tech": ["api", "gpu", "cuda", "tensor", "model", "neural", "llm", "transformer",
-             "embedding", "vector", "faiss", "pytorch", "rag", "retrieval"],
-    "code": ["function", "class", "def ", "import", "return", "async", "await",
-             "try:", "except", "lambda", "self.", "print(", "for ", "while "],
+    "tech": [
+        "api",
+        "gpu",
+        "cuda",
+        "tensor",
+        "model",
+        "neural",
+        "llm",
+        "transformer",
+        "embedding",
+        "vector",
+        "faiss",
+        "pytorch",
+        "rag",
+        "retrieval",
+    ],
+    "code": [
+        "function",
+        "class",
+        "def ",
+        "import",
+        "return",
+        "async",
+        "await",
+        "try:",
+        "except",
+        "lambda",
+        "self.",
+        "print(",
+        "for ",
+        "while ",
+    ],
 }
 
 
@@ -62,18 +91,24 @@ def compute_domain_quantiles(episodes: list) -> dict:
             continue
         arr = np.array(scores)
         q25, q50, q75 = [float(np.percentile(arr, p)) for p in [25, 50, 75]]
-        quantiles[dom] = {"stability_threshold": q25, "q25": q25, "q50": q50,
-                          "q75": q75, "samples": len(scores)}
+        quantiles[dom] = {
+            "stability_threshold": q25,
+            "q25": q25,
+            "q50": q50,
+            "q75": q75,
+            "samples": len(scores),
+        }
     return quantiles
 
 
 def save_quantiles(quantiles: dict):
     import yaml
+
     path = Path(__file__).parents[1] / "config.yaml"
     with open(path) as f:
         config = yaml.safe_load(f)
     config["cswr_quantiles"] = quantiles
-    with open(path, 'w') as f:
+    with open(path, "w") as f:
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
 
 
@@ -96,7 +131,9 @@ def extract_pdf_text(path: Path) -> str:
             if match:
                 logger.warning(
                     "Dropped PDF page %d in %s for injection pattern %s",
-                    idx, path.name, match,
+                    idx,
+                    path.name,
+                    match,
                 )
                 continue
             chunks.append(page_text)
@@ -118,7 +155,9 @@ def _get_metadata_path() -> Path:
 
 
 def _compute_all_project_coherence(
-    embeddings: np.ndarray, chunks: list[dict[str, str]], k: int = 5,
+    embeddings: np.ndarray,
+    chunks: list[dict[str, str]],
+    k: int = 5,
 ) -> list[float]:
     """Compute project coherence for every chunk at index time.
 
@@ -148,7 +187,8 @@ def _compute_all_project_coherence(
 
 
 def _compute_project_centroids(
-    embeddings: np.ndarray, chunks: list[dict[str, str]],
+    embeddings: np.ndarray,
+    chunks: list[dict[str, str]],
 ) -> dict[str, np.ndarray]:
     """Compute mean embedding per project. Used for fast query routing."""
     project_vecs: dict[str, list[int]] = {}
@@ -186,19 +226,30 @@ def route_to_projects(query: str, gap_threshold: float = 0.15) -> list[str] | No
         return None  # single project, no routing needed
 
     q_emb = embed_text(query)
-    scores = {proj: float(np.dot(q_emb, centroid)) for proj, centroid in centroids.items()}
+    scores = {
+        proj: float(np.dot(q_emb, centroid)) for proj, centroid in centroids.items()
+    }
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
     best_proj, best_score = ranked[0]
     second_score = ranked[1][1] if len(ranked) > 1 else 0.0
 
     if best_score - second_score > gap_threshold:
-        logger.info("Centroid routing: '%s' (%.3f) dominates by %.3f", best_proj, best_score, best_score - second_score)
+        logger.info(
+            "Centroid routing: '%s' (%.3f) dominates by %.3f",
+            best_proj,
+            best_score,
+            best_score - second_score,
+        )
         return [best_proj]
 
     # close scores, search all qualifying projects (within gap of best)
     qualifying = [proj for proj, sc in ranked if best_score - sc <= gap_threshold]
-    logger.info("Centroid routing: multi-project %s (gap %.3f)", qualifying, best_score - second_score)
+    logger.info(
+        "Centroid routing: multi-project %s (gap %.3f)",
+        qualifying,
+        best_score - second_score,
+    )
     return qualifying
 
 
@@ -212,24 +263,35 @@ def build_doc_chunks() -> int:
     from backend.api.injection_filter import find_attack_match
 
     docs_path = _get_docs_path()
-    files = (list(docs_path.rglob("*.txt")) + list(docs_path.rglob("*.md"))
-             + list(docs_path.rglob("*.pdf")))
+    files = (
+        list(docs_path.rglob("*.txt"))
+        + list(docs_path.rglob("*.md"))
+        + list(docs_path.rglob("*.pdf"))
+    )
     all_chunks: list[dict[str, str]] = []
     for fpath in files:
         try:
-            content = extract_pdf_text(fpath) if fpath.suffix.lower() == ".pdf" else fpath.read_text()
+            content = (
+                extract_pdf_text(fpath)
+                if fpath.suffix.lower() == ".pdf"
+                else fpath.read_text()
+            )
             rel = fpath.relative_to(docs_path)
             project = rel.parts[0] if len(rel.parts) > 1 else "default"
             from backend.core.utils import chunk_text
+
             for chunk in chunk_text(content, max_tokens=400):
                 match = find_attack_match(chunk)
                 if match:
                     logger.warning(
                         "Dropped chunk from %s for injection pattern %s",
-                        rel, match,
+                        rel,
+                        match,
                     )
                     continue
-                all_chunks.append({"text": chunk, "source": str(rel), "project": project})
+                all_chunks.append(
+                    {"text": chunk, "source": str(rel), "project": project}
+                )
         except Exception as e:
             logger.warning("Failed to process %s: %s", fpath, e)
 
@@ -260,9 +322,9 @@ def compute_stability(chunk: dict, all_chunks: list, embeddings: dict) -> float:
     emb = embeddings[chunk["id"]]
     sims = []
     if idx > 0:
-        sims.append(cosine_sim(emb, embeddings[all_chunks[idx-1]["id"]]))
+        sims.append(cosine_sim(emb, embeddings[all_chunks[idx - 1]["id"]]))
     if idx < len(all_chunks) - 1:
-        sims.append(cosine_sim(emb, embeddings[all_chunks[idx+1]["id"]]))
+        sims.append(cosine_sim(emb, embeddings[all_chunks[idx + 1]["id"]]))
 
     if not sims:
         return 0.5
@@ -271,7 +333,9 @@ def compute_stability(chunk: dict, all_chunks: list, embeddings: dict) -> float:
     return min(1.0, max(0.0, avg - penalty))
 
 
-def compute_fit(chunk: dict, profile: dict, graph_context: dict[str, float] | None = None) -> float:
+def compute_fit(
+    chunk: dict, profile: dict, graph_context: dict[str, float] | None = None
+) -> float:
     text = chunk["text"].lower()
     score = 0.0
 
@@ -292,7 +356,7 @@ def compute_fit(chunk: dict, profile: dict, graph_context: dict[str, float] | No
         "troubleshoot": ["error", "fix", "issue", "solution"],
         "compare": ["versus", "vs", "difference", "unlike"],
         "list": ["include", "such as", "example", "following"],
-        "design": ["architecture", "structure", "pattern", "build"]
+        "design": ["architecture", "structure", "pattern", "build"],
     }
     kws = intent_kw.get(profile.get("primary_intent", "explain"), [])
     if kws:
@@ -323,16 +387,18 @@ def compute_drift(chunk: dict, all_chunks: list, embeddings: dict) -> float:
     emb = embeddings[chunk["id"]]
     sims = []
     if idx > 0:
-        sims.append(cosine_sim(emb, embeddings[all_chunks[idx-1]["id"]]))
+        sims.append(cosine_sim(emb, embeddings[all_chunks[idx - 1]["id"]]))
     if idx < len(all_chunks) - 1:
-        sims.append(cosine_sim(emb, embeddings[all_chunks[idx+1]["id"]]))
+        sims.append(cosine_sim(emb, embeddings[all_chunks[idx + 1]["id"]]))
 
     if not sims:
         return 0.0
     avg = sum(sims) / len(sims)
     if avg < 0.5:
         severity = (0.5 - avg) / 0.5
-        penalty = -severity * (1.5 if len(sims) == 2 and all(s < 0.5 for s in sims) else 1.0)
+        penalty = -severity * (
+            1.5 if len(sims) == 2 and all(s < 0.5 for s in sims) else 1.0
+        )
         return max(-1.0, penalty)
     return 0.0
 
@@ -369,9 +435,14 @@ def score_chunks(chunks: list, profile: dict, cswr_cfg: dict) -> list:
         if c["local_stability"] < thresh:
             c["drift_penalty"] -= (thresh - c["local_stability"]) * 0.5
 
-        c["csw_score"] = max(0.0, vw * c["score"] + sw * c["local_stability"] +
-                            fw * c["question_fit"] + dw * c["drift_penalty"] +
-                            cw * proj_coherence)
+        c["csw_score"] = max(
+            0.0,
+            vw * c["score"]
+            + sw * c["local_stability"]
+            + fw * c["question_fit"]
+            + dw * c["drift_penalty"]
+            + cw * proj_coherence,
+        )
 
     return sorted(chunks, key=lambda x: x["csw_score"], reverse=True)
 
@@ -379,6 +450,7 @@ def score_chunks(chunks: list, profile: dict, cswr_cfg: dict) -> list:
 def count_tokens(text: str) -> int:
     try:
         import tiktoken
+
         return len(tiktoken.get_encoding("cl100k_base").encode(text))
     except ImportError:
         return len(text) // 4
@@ -387,9 +459,14 @@ def count_tokens(text: str) -> int:
 def build_pack(center: dict, all_chunks: list, budget: int = 1800) -> dict:
     idx = next((i for i, c in enumerate(all_chunks) if c["id"] == center["id"]), -1)
     if idx == -1:
-        return {"pack_id": str(uuid.uuid4()), "main_text": center["text"],
-                "supporting_text": None, "section_header": "",
-                "source_chunks": [center["id"]], "pack_csw_score": center["csw_score"]}
+        return {
+            "pack_id": str(uuid.uuid4()),
+            "main_text": center["text"],
+            "supporting_text": None,
+            "section_header": "",
+            "source_chunks": [center["id"]],
+            "pack_csw_score": center["csw_score"],
+        }
 
     main, supporting, sources = [center], [], [center["id"]]
     tokens = count_tokens(center["text"])
@@ -429,14 +506,29 @@ def build_pack(center: dict, all_chunks: list, budget: int = 1800) -> dict:
         i += 1
 
     src = center.get("source", "")
-    header = src.split("/")[-1].replace(".pdf", "").replace(".txt", "").replace("_", " ").title() if src else ""
+    header = (
+        src.split("/")[-1]
+        .replace(".pdf", "")
+        .replace(".txt", "")
+        .replace("_", " ")
+        .title()
+        if src
+        else ""
+    )
     main_text = "\n\n".join(c["text"] for c in main)
     if header:
         main_text = f"[Section: {header}]\n\n{main_text}"
 
-    return {"pack_id": str(uuid.uuid4()), "main_text": main_text,
-            "supporting_text": "\n\n".join(c["text"] for c in supporting) if supporting else None,
-            "section_header": header, "source_chunks": sources, "pack_csw_score": center["csw_score"]}
+    return {
+        "pack_id": str(uuid.uuid4()),
+        "main_text": main_text,
+        "supporting_text": (
+            "\n\n".join(c["text"] for c in supporting) if supporting else None
+        ),
+        "section_header": header,
+        "source_chunks": sources,
+        "pack_csw_score": center["csw_score"],
+    }
 
 
 def check_answerable(pack: dict, profile: dict) -> tuple:
@@ -451,13 +543,13 @@ def check_answerable(pack: dict, profile: dict) -> tuple:
 
 
 def format_pack(pack: dict, rank: int) -> str:
-    conf = pack.get('answerability_confidence', 0.0)
-    csw = pack.get('pack_csw_score', 0.0)
+    conf = pack.get("answerability_confidence", 0.0)
+    csw = pack.get("pack_csw_score", 0.0)
     out = f"### Context Source #{rank+1} | Conf: {conf:.2f} | CSW: {csw:.2f}\n"
-    if pack.get('section_header'):
+    if pack.get("section_header"):
         out += f"Section: {pack['section_header']}\n\n"
     out += f"Main:\n{pack.get('main_text', '').strip()}\n\n"
-    if pack.get('supporting_text'):
+    if pack.get("supporting_text"):
         out += f"Supporting:\n{pack['supporting_text'].strip()}\n\n"
     return out + "---\n"
 
@@ -531,7 +623,9 @@ def retrieve_cag(query: str, threshold: float = 0.75) -> list:
             sims = key_embs @ q_emb
             best_idx = int(np.argmax(sims))
             best_sim = float(sims[best_idx])
-            semantic_thresh = float(cfg.get("cag", {}).get("semantic_match_threshold", 0.92))
+            semantic_thresh = float(
+                cfg.get("cag", {}).get("semantic_match_threshold", 0.92)
+            )
             if best_sim >= semantic_thresh:
                 _, v, s = rows[best_idx]
                 logger.debug(f"[CAG] SEMANTIC HIT: sim={best_sim:.2f}")
@@ -544,7 +638,10 @@ def retrieve_cag(query: str, threshold: float = 0.75) -> list:
 
 
 # GraphEngine lazy singleton
-_graph_engine_cache: dict[str, "GraphEngine | bool | None"] = {"engine": None, "attempted": False}
+_graph_engine_cache: dict[str, "GraphEngine | bool | None"] = {
+    "engine": None,
+    "attempted": False,
+}
 
 
 def _get_graph_engine() -> "GraphEngine | None":
@@ -554,6 +651,7 @@ def _get_graph_engine() -> "GraphEngine | None":
     _graph_engine_cache["attempted"] = True
     try:
         from backend.core.graph_engine import GraphEngine as _GE
+
         engine = _GE()
         _graph_engine_cache["engine"] = engine
         return engine
@@ -562,7 +660,9 @@ def _get_graph_engine() -> "GraphEngine | None":
         return None
 
 
-def _compute_graph_contexts(chunks: list[dict[str, object]], profile: dict[str, object]) -> dict[str, dict[str, float]]:
+def _compute_graph_contexts(
+    chunks: list[dict[str, object]], profile: dict[str, object]
+) -> dict[str, dict[str, float]]:
     """Compute graph-aware scoring context per chunk. Passes pre-computed query embedding."""
     engine = _get_graph_engine()
     if engine is None or engine.node_count == 0:
@@ -575,7 +675,9 @@ def _compute_graph_contexts(chunks: list[dict[str, object]], profile: dict[str, 
     contexts: dict[str, dict[str, float]] = {}
     for c in chunks:
         scores = engine.compute_chunk_graph_scores(
-            str(c["text"]), query_text, query_embedding=q_emb,
+            str(c["text"]),
+            query_text,
+            query_embedding=q_emb,
         )
         contexts[str(c["id"])] = {
             "co_occurrence_bonus": float(scores.get("co_occurrence_bonus", 0.0)),
@@ -585,9 +687,12 @@ def _compute_graph_contexts(chunks: list[dict[str, object]], profile: dict[str, 
     return contexts
 
 
-def resolve_entities(entities: list[dict[str, str | list[str]]]) -> list[dict[str, str | list[str]]]:
+def resolve_entities(
+    entities: list[dict[str, str | list[str]]],
+) -> list[dict[str, str | list[str]]]:
     """Deduplicate entities by embedding similarity. Delegates to GraphEngine."""
     from backend.core.graph_engine import GraphEngine as _GE
+
     engine = _get_graph_engine()
     if engine is None:
         engine = _GE()
@@ -652,14 +757,16 @@ def community_summarize(query: str, top_k: int = 3) -> list[dict[str, str | floa
     results: list[dict[str, str | float]] = []
     for comm_id, score in community_scores[:top_k]:
         info = engine.get_community_summary(comm_id)
-        results.append({
-            "text": f"Community {comm_id}: {info['summary']}",
-            "score": score,
-            "source": "graph_community",
-            "id": f"community_{comm_id}",
-            "member_count": info["member_count"],
-            "entities": ", ".join(info["representative_entities"]),
-        })
+        results.append(
+            {
+                "text": f"Community {comm_id}: {info['summary']}",
+                "score": score,
+                "source": "graph_community",
+                "id": f"community_{comm_id}",
+                "member_count": info["member_count"],
+                "entities": ", ".join(info["representative_entities"]),
+            }
+        )
 
     return results
 
@@ -703,12 +810,14 @@ def _retrieve_doc_chunks(query: str, top_k: int = 5) -> list[dict[str, Any]]:
     results = []
     for idx, score in scores[:top_k]:
         chunk = chunks[idx]
-        results.append({
-            "text": chunk.get("text", ""),
-            "score": score,
-            "source": chunk.get("source", "doc"),
-            "id": f"chunk_{idx}",
-        })
+        results.append(
+            {
+                "text": chunk.get("text", ""),
+                "score": score,
+                "source": chunk.get("source", "doc"),
+                "id": f"chunk_{idx}",
+            }
+        )
     return results
 
 
@@ -725,9 +834,13 @@ def retrieve_graph(query: str, max_hops: int = 2) -> List[Dict[str, Any]]:
     return [dict(r) for r in results]
 
 
-def retrieve(query: str, cag_weight: float = 1.0,
-             graph_weight: float = 1.0, top_k: int = 5,
-             project: str | None = None) -> Dict[str, Any]:
+def retrieve(
+    query: str,
+    cag_weight: float = 1.0,
+    graph_weight: float = 1.0,
+    top_k: int = 5,
+    project: str | None = None,
+) -> Dict[str, Any]:
     """Two-path retrieval: CAG cache + GraphRAG (entity graph + doc chunks).
 
     CAG is checked first. On a strong hit (score >= 0.90) we bypass GraphRAG.

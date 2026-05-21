@@ -6,6 +6,7 @@ Built for Phase 2 of the RLFusion upgrade plan. Uses NetworkX for graph
 structure, Qdrant (in-memory) for entity vector search, and leidenalg
 for community detection. All optional components degrade gracefully.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -47,20 +48,65 @@ except ImportError:
     logger.info("leidenalg/igraph not installed; using connected-components fallback")
 
 # Common capitalized words to skip during entity extraction
-_SKIP_CAPS = frozenset({
-    "THE", "AND", "FOR", "NOT", "BUT", "ARE", "WAS", "HAS", "ITS",
-    "CAN", "MAY", "ALL", "USE", "THIS", "THAT", "WITH", "FROM",
-    "WILL", "HAVE", "BEEN", "ALSO", "EACH", "WHEN", "THAN", "THEN",
-    "INTO", "JUST", "VERY", "SOME", "ONLY", "MOST", "MANY", "SUCH",
-    "NOTE", "MUST", "HERE", "DOES", "WHAT", "THEY", "THEM",
-    "TODO", "NONE", "TRUE", "FALSE", "NULL", "ELSE", "THEN",
-})
+_SKIP_CAPS = frozenset(
+    {
+        "THE",
+        "AND",
+        "FOR",
+        "NOT",
+        "BUT",
+        "ARE",
+        "WAS",
+        "HAS",
+        "ITS",
+        "CAN",
+        "MAY",
+        "ALL",
+        "USE",
+        "THIS",
+        "THAT",
+        "WITH",
+        "FROM",
+        "WILL",
+        "HAVE",
+        "BEEN",
+        "ALSO",
+        "EACH",
+        "WHEN",
+        "THAN",
+        "THEN",
+        "INTO",
+        "JUST",
+        "VERY",
+        "SOME",
+        "ONLY",
+        "MOST",
+        "MANY",
+        "SUCH",
+        "NOTE",
+        "MUST",
+        "HERE",
+        "DOES",
+        "WHAT",
+        "THEY",
+        "THEM",
+        "TODO",
+        "NONE",
+        "TRUE",
+        "FALSE",
+        "NULL",
+        "ELSE",
+        "THEN",
+    }
+)
 
 
 # ── TypedDicts ───────────────────────────────────────────────────────
 
+
 class EntityNode(TypedDict, total=False):
     """Structured entity for the knowledge graph."""
+
     id: str
     label: str
     description: str
@@ -71,6 +117,7 @@ class EntityNode(TypedDict, total=False):
 
 class CommunityInfo(TypedDict):
     """Summary of a detected community cluster."""
+
     community_id: int
     member_count: int
     summary: str
@@ -79,6 +126,7 @@ class CommunityInfo(TypedDict):
 
 class GraphSearchResult(TypedDict, total=False):
     """Single result from graph-based retrieval."""
+
     text: str
     score: float
     source: str
@@ -89,6 +137,7 @@ class GraphSearchResult(TypedDict, total=False):
 
 class ChunkGraphScores(TypedDict):
     """Graph-aware scoring components for CSWR integration."""
+
     co_occurrence_bonus: float
     coherence_penalty: float
     path_distance_weight: float
@@ -96,12 +145,14 @@ class ChunkGraphScores(TypedDict):
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
+
 def _entity_point_id(entity_id: str) -> int:
     """Stable integer ID for Qdrant point storage."""
     return int(hashlib.md5(entity_id.encode()).hexdigest()[:15], 16)
 
 
 # ── GraphEngine ──────────────────────────────────────────────────────
+
 
 class GraphEngine:
     """Knowledge graph with entity resolution, community detection, hybrid search.
@@ -148,7 +199,9 @@ class GraphEngine:
                         nid = n.get("id", "")
                         if not nid:
                             continue
-                        attrs = {k: v for k, v in n.items() if k not in ("id", "embedding")}
+                        attrs = {
+                            k: v for k, v in n.items() if k not in ("id", "embedding")
+                        }
                         self._graph.add_node(nid, **attrs)
                         if "embedding" in n:
                             emb = np.array(n["embedding"], dtype=np.float32)
@@ -158,7 +211,9 @@ class GraphEngine:
                     for e in data.get("edges", []):
                         src, tgt = e.get("from", ""), e.get("to", "")
                         if src and tgt and src in self._graph and tgt in self._graph:
-                            edge_attrs = {k: v for k, v in e.items() if k not in ("from", "to")}
+                            edge_attrs = {
+                                k: v for k, v in e.items() if k not in ("from", "to")
+                            }
                             self._graph.add_edge(src, tgt, **edge_attrs)
 
                     # rebuild community assignment from saved node attributes
@@ -173,8 +228,7 @@ class GraphEngine:
         # embed any nodes loaded without embeddings
         if self._graph.number_of_nodes() > 0:
             unembedded = [
-                nid for nid in self._graph.nodes()
-                if nid not in self._entity_embeddings
+                nid for nid in self._graph.nodes() if nid not in self._entity_embeddings
             ]
             if unembedded:
                 texts = [
@@ -189,12 +243,16 @@ class GraphEngine:
 
             logger.info(
                 "GraphEngine loaded: %d nodes, %d edges, %d communities",
-                self.node_count, self.edge_count, len(self._communities),
+                self.node_count,
+                self.edge_count,
+                len(self._communities),
             )
 
     # ── Qdrant integration ───────────────────────────────────────────
 
-    def _index_entity(self, nid: str, embedding: np.ndarray, attrs: dict[str, object]) -> None:
+    def _index_entity(
+        self, nid: str, embedding: np.ndarray, attrs: dict[str, object]
+    ) -> None:
         """Upsert entity into the Qdrant in-memory index."""
         if self._qdrant is None:
             return
@@ -202,16 +260,18 @@ class GraphEngine:
         self._qdrant_id_map[nid] = point_id
         self._qdrant.upsert(
             collection_name="entities",
-            points=[PointStruct(
-                id=point_id,
-                vector=embedding.tolist(),
-                payload={
-                    "node_id": nid,
-                    "label": str(attrs.get("label", "")),
-                    "entity_type": str(attrs.get("entity_type", "")),
-                    "community_id": int(str(attrs.get("community_id", -1) or -1)),
-                },
-            )],
+            points=[
+                PointStruct(
+                    id=point_id,
+                    vector=embedding.tolist(),
+                    payload={
+                        "node_id": nid,
+                        "label": str(attrs.get("label", "")),
+                        "entity_type": str(attrs.get("entity_type", "")),
+                        "community_id": int(str(attrs.get("community_id", -1) or -1)),
+                    },
+                )
+            ],
         )
 
     def _find_seed_entities(
@@ -270,8 +330,12 @@ class GraphEngine:
         data = {"nodes": nodes, "edges": edges, "communities": communities_data}
         self._graph_path.parent.mkdir(parents=True, exist_ok=True)
         self._graph_path.write_text(json.dumps(data, indent=2, default=str))
-        logger.info("GraphEngine saved: %d nodes, %d edges to %s",
-                     len(nodes), len(edges), self._graph_path)
+        logger.info(
+            "GraphEngine saved: %d nodes, %d edges to %s",
+            len(nodes),
+            len(edges),
+            self._graph_path,
+        )
 
     def add_entity(self, entity: EntityNode) -> str:
         """Add or update an entity node. Returns the node ID."""
@@ -325,8 +389,10 @@ class GraphEngine:
             return []
 
         graph_cfg = cfg.get("graph", {})
-        thresh = threshold if threshold is not None else graph_cfg.get(
-            "entity_similarity_threshold", 0.92
+        thresh = (
+            threshold
+            if threshold is not None
+            else graph_cfg.get("entity_similarity_threshold", 0.92)
         )
 
         texts = [e.get("description", "") or e.get("label", "") for e in entities]
@@ -374,7 +440,8 @@ class GraphEngine:
             try:
                 ig_graph = ig.Graph.from_networkx(undirected)
                 partition = leidenalg.find_partition(
-                    ig_graph, leidenalg.ModularityVertexPartition,
+                    ig_graph,
+                    leidenalg.ModularityVertexPartition,
                 )
                 node_list = list(undirected.nodes())
                 communities: dict[int, list[str]] = {}
@@ -412,10 +479,7 @@ class GraphEngine:
                 representative_entities=[],
             )
 
-        labels = [
-            self._graph.nodes[nid].get("label", nid)
-            for nid in members[:10]
-        ]
+        labels = [self._graph.nodes[nid].get("label", nid) for nid in members[:10]]
         descriptions = [
             self._graph.nodes[nid].get("description", "")
             for nid in members
@@ -463,18 +527,22 @@ class GraphEngine:
             for neighbor in self._graph.neighbors(current):
                 edge = self._graph.edges[current, neighbor]
                 neighbor_label = self._graph.nodes[neighbor].get("label", neighbor)
-                parts.append(f"-> {edge.get('label', 'relates_to')} -> {neighbor_label}")
+                parts.append(
+                    f"-> {edge.get('label', 'relates_to')} -> {neighbor_label}"
+                )
                 if neighbor not in visited:
                     queue.append((neighbor, depth + 1, path + [neighbor]))
 
-            results.append(GraphSearchResult(
-                text="\n".join(parts),
-                score=decay ** depth,
-                source="graph",
-                id=current,
-                path=list(path),
-                community_id=nd.get("community_id", -1),
-            ))
+            results.append(
+                GraphSearchResult(
+                    text="\n".join(parts),
+                    score=decay**depth,
+                    source="graph",
+                    id=current,
+                    path=list(path),
+                    community_id=nd.get("community_id", -1),
+                )
+            )
 
         return results
 
@@ -560,7 +628,9 @@ class GraphEngine:
 
         logger.info(
             "Built graph from %d chunks: %d entities, %d edges",
-            len(chunks), self.node_count, self.edge_count,
+            len(chunks),
+            self.node_count,
+            self.edge_count,
         )
         return len(resolved)
 
@@ -644,7 +714,7 @@ class GraphEngine:
                         continue
             if min_dist < float("inf"):
                 decay = graph_cfg.get("path_distance_decay", 0.8)
-                path_weight = 0.1 * (decay ** min_dist)
+                path_weight = 0.1 * (decay**min_dist)
 
         return ChunkGraphScores(
             co_occurrence_bonus=co_occurrence_bonus,
@@ -687,6 +757,7 @@ class GraphEngine:
 
 # ── Entity extraction ────────────────────────────────────────────────
 
+
 def extract_entities_heuristic(text: str, source: str = "") -> list[EntityNode]:
     """Extract entity candidates using capitalized phrases, backtick terms, and acronyms.
 
@@ -698,7 +769,7 @@ def extract_entities_heuristic(text: str, source: str = "") -> list[EntityNode]:
     min_len = cfg.get("graph", {}).get("min_entity_length", 3)
 
     # capitalized multi-word phrases (2-4 words): "Machine Learning", "Chunk Stability"
-    for match in re.finditer(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\b', text):
+    for match in re.finditer(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\b", text):
         label = match.group(1)
         normalized = label.lower()
         if normalized in seen or len(label) < min_len:
@@ -706,16 +777,18 @@ def extract_entities_heuristic(text: str, source: str = "") -> list[EntityNode]:
         seen.add(normalized)
         start = max(0, match.start() - 80)
         end = min(len(text), match.end() + 80)
-        entities.append(EntityNode(
-            id=deterministic_id(normalized),
-            label=label,
-            description=text[start:end].strip().replace("\n", " "),
-            entity_type="concept",
-            source_chunks=[source] if source else [],
-        ))
+        entities.append(
+            EntityNode(
+                id=deterministic_id(normalized),
+                label=label,
+                description=text[start:end].strip().replace("\n", " "),
+                entity_type="concept",
+                source_chunks=[source] if source else [],
+            )
+        )
 
     # backtick-quoted terms: `FusionEnv`, `embed_text`
-    for match in re.finditer(r'`([^`]{2,40})`', text):
+    for match in re.finditer(r"`([^`]{2,40})`", text):
         term = match.group(1).strip()
         normalized = term.lower()
         if normalized in seen or len(term) < min_len:
@@ -723,28 +796,32 @@ def extract_entities_heuristic(text: str, source: str = "") -> list[EntityNode]:
         seen.add(normalized)
         start = max(0, match.start() - 80)
         end = min(len(text), match.end() + 80)
-        entities.append(EntityNode(
-            id=deterministic_id(normalized),
-            label=term,
-            description=text[start:end].strip().replace("\n", " "),
-            entity_type="technical",
-            source_chunks=[source] if source else [],
-        ))
+        entities.append(
+            EntityNode(
+                id=deterministic_id(normalized),
+                label=term,
+                description=text[start:end].strip().replace("\n", " "),
+                entity_type="technical",
+                source_chunks=[source] if source else [],
+            )
+        )
 
     # ALL-CAPS acronyms (3-10 letters), skip common English words
-    for match in re.finditer(r'\b([A-Z]{3,10})\b', text):
+    for match in re.finditer(r"\b([A-Z]{3,10})\b", text):
         acronym = match.group(1)
         if acronym in _SKIP_CAPS or acronym in seen:
             continue
         seen.add(acronym)
         start = max(0, match.start() - 80)
         end = min(len(text), match.end() + 80)
-        entities.append(EntityNode(
-            id=deterministic_id(acronym.lower()),
-            label=acronym,
-            description=text[start:end].strip().replace("\n", " "),
-            entity_type="acronym",
-            source_chunks=[source] if source else [],
-        ))
+        entities.append(
+            EntityNode(
+                id=deterministic_id(acronym.lower()),
+                label=acronym,
+                description=text[start:end].strip().replace("\n", " "),
+                entity_type="acronym",
+                source_chunks=[source] if source else [],
+            )
+        )
 
     return entities

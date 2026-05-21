@@ -5,6 +5,7 @@ Classifies queries as simple/complex/adversarial, constructs the appropriate
 agent DAG, and runs it. Provides both full-pipeline (for /chat) and
 prepare+finalize (for /ws streaming) interfaces.
 """
+
 from __future__ import annotations
 
 import logging
@@ -20,19 +21,18 @@ from backend.agents.base import (
     QueryComplexity,
     RLPolicy,
 )
-from backend.core.critique import get_critique_instruction, strip_critique_block
-from backend.core.memory import (
-    clear_memory,
-    expand_query_with_context,
-    get_context_for_prompt,
-    record_turn,
-)
-from backend.core.profile import detect_and_save_memory, get_user_profile
 from backend.agents.critique_agent import CritiqueAgent
 from backend.agents.fusion_agent import FusionAgent
 from backend.agents.retrieval_agent import RetrievalAgent
 from backend.agents.safety_agent import SafetyAgent
 from backend.config import cfg
+from backend.core.critique import get_critique_instruction
+from backend.core.memory import (
+    expand_query_with_context,
+    get_context_for_prompt,
+    record_turn,
+)
+from backend.core.profile import detect_and_save_memory, get_user_profile
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +59,15 @@ def _looks_personal(query: str) -> bool:
     """True if the query looks like a personal/memory request."""
     return bool(_PERSONAL_KEYWORD_RE.search(query))
 
+
 # Adversarial indicators for complexity classification
 _ADVERSARIAL_PATTERNS = [
-    re.compile(r"ignore\s+(previous|above|all)\s+(instructions|prompts|rules)", re.IGNORECASE),
-    re.compile(r"you\s+are\s+now\s+(?:DAN|evil|unrestricted|jailbroken)", re.IGNORECASE),
+    re.compile(
+        r"ignore\s+(previous|above|all)\s+(instructions|prompts|rules)", re.IGNORECASE
+    ),
+    re.compile(
+        r"you\s+are\s+now\s+(?:DAN|evil|unrestricted|jailbroken)", re.IGNORECASE
+    ),
     re.compile(r"(?:system|admin)\s*:\s*override", re.IGNORECASE),
 ]
 
@@ -77,7 +82,9 @@ def classify_complexity(query: str) -> QueryComplexity:
     # adversarial: known injection/attack patterns
     for pattern in _ADVERSARIAL_PATTERNS:
         if pattern.search(query):
-            logger.info("Query classified as adversarial: matched %s", pattern.pattern[:40])
+            logger.info(
+                "Query classified as adversarial: matched %s", pattern.pattern[:40]
+            )
             return "adversarial"
 
     word_count = len(query.split())
@@ -98,7 +105,9 @@ def classify_complexity(query: str) -> QueryComplexity:
 def generate_system_prompt(mode: str, context_parts: list[str]) -> str:
     """Build the system prompt based on mode and context content."""
     has_cag_hit = any(p.startswith("[CAG:") for p in context_parts)
-    cag_only = has_cag_hit and len([p for p in context_parts if p.startswith("[CAG:")]) == len(context_parts)
+    cag_only = has_cag_hit and len(
+        [p for p in context_parts if p.startswith("[CAG:")]
+    ) == len(context_parts)
     critique_suffix = get_critique_instruction()
 
     if cag_only:
@@ -131,10 +140,14 @@ RULES:
 {critique_suffix}"""
 
 
-def generate_user_prompt(mode: str, query: str, fused_context: str, context_parts: list[str]) -> str:
+def generate_user_prompt(
+    mode: str, query: str, fused_context: str, context_parts: list[str]
+) -> str:
     """Build the user prompt based on mode and context."""
     has_cag_hit = any(p.startswith("[CAG:") for p in context_parts)
-    cag_only = has_cag_hit and len([p for p in context_parts if p.startswith("[CAG:")]) == len(context_parts)
+    cag_only = has_cag_hit and len(
+        [p for p in context_parts if p.startswith("[CAG:")]
+    ) == len(context_parts)
     has_context = bool(fused_context.strip())
 
     if cag_only:
@@ -142,45 +155,53 @@ def generate_user_prompt(mode: str, query: str, fused_context: str, context_part
 
     if mode == "build":
         if has_context:
-            return (f"REFERENCE MATERIAL:\n{fused_context}\n\n"
-                    f"DESIGN REQUEST: {query}\n\n"
-                    f"Produce a concrete, production-grade architecture. "
-                    f"Integrate relevant reference material where it applies:")
+            return (
+                f"REFERENCE MATERIAL:\n{fused_context}\n\n"
+                f"DESIGN REQUEST: {query}\n\n"
+                f"Produce a concrete, production-grade architecture. "
+                f"Integrate relevant reference material where it applies:"
+            )
         return f"DESIGN REQUEST: {query}\n\nProduce a concrete, production-grade architecture:"
 
     if has_context:
-        return (f"RETRIEVED CONTEXT:\n{fused_context}\n\n"
-                f"QUESTION: {query}\n\n"
-                f"Give a direct, confident answer. Weave in context where useful. "
-                f"Fill gaps from your own expertise. No disclaimers:")
+        return (
+            f"RETRIEVED CONTEXT:\n{fused_context}\n\n"
+            f"QUESTION: {query}\n\n"
+            f"Give a direct, confident answer. Weave in context where useful. "
+            f"Fill gaps from your own expertise. No disclaimers:"
+        )
     return f"QUESTION: {query}\n\nGive a direct, confident answer:"
 
 
 def apply_markdown_formatting(text: str) -> str:
     """Clean up LLM output: strip source tags, fix heading spacing."""
-    text = re.sub(r'\[RAG:[^\]]+\]\s*', '', text)
-    text = re.sub(r'\[CAG:[^\]]+\]\s*', '', text)
-    text = re.sub(r'\[GRAPH:[^\]]+\]\s*', '', text)
-    text = re.sub(r'\[WEB:[^\]]+\]\s*', '', text)
+    text = re.sub(r"\[RAG:[^\]]+\]\s*", "", text)
+    text = re.sub(r"\[CAG:[^\]]+\]\s*", "", text)
+    text = re.sub(r"\[GRAPH:[^\]]+\]\s*", "", text)
+    text = re.sub(r"\[WEB:[^\]]+\]\s*", "", text)
     # strip hedging openers that LLMs love to prepend
     text = re.sub(
-        r'^(Unfortunately,?\s*|Please note that\s*|Based on the (provided |available )?context,?\s*|'
-        r'I don\'t have (specific |direct )?information about\s*|'
-        r'The (provided |available )?context does not (explicitly |directly )?(mention|contain|include)\s*[^.]*\.\s*'
-        r'(However,?\s*)?)',
-        '', text, flags=re.IGNORECASE,
+        r"^(Unfortunately,?\s*|Please note that\s*|Based on the (provided |available )?context,?\s*|"
+        r"I don\'t have (specific |direct )?information about\s*|"
+        r"The (provided |available )?context does not (explicitly |directly )?(mention|contain|include)\s*[^.]*\.\s*"
+        r"(However,?\s*)?)",
+        "",
+        text,
+        flags=re.IGNORECASE,
     )
     # strip trailing disclaimer paragraphs
     text = re.sub(
-        r'\n\n(Please note that |Note that |It\'s worth noting that |'
-        r'Keep in mind that |However, it\'s important to note that |'
-        r'This explanation is based on )[^\n]*$',
-        '', text, flags=re.IGNORECASE,
+        r"\n\n(Please note that |Note that |It\'s worth noting that |"
+        r"Keep in mind that |However, it\'s important to note that |"
+        r"This explanation is based on )[^\n]*$",
+        "",
+        text,
+        flags=re.IGNORECASE,
     )
-    text = re.sub(r'([^\n])(#{1,3}\s)', r'\1\n\n\2', text)
-    text = re.sub(r'([.!?:])\s*(-\s)', r'\1\n\n\2', text)
-    text = re.sub(r'([.!?])\s+([A-Z#])', r'\1\n\n\2', text)
-    text = re.sub(r'\n{3,}', '\n\n', text)
+    text = re.sub(r"([^\n])(#{1,3}\s)", r"\1\n\n\2", text)
+    text = re.sub(r"([.!?:])\s*(-\s)", r"\1\n\n\2", text)
+    text = re.sub(r"([.!?])\s+([A-Z#])", r"\1\n\n\2", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
 
@@ -198,6 +219,7 @@ class Orchestrator:
         step_*() methods  - granular per-agent calls (for /ws with live status)
         finalize()        - post-generation critique and cleanup (for /ws streaming)
     """
+
     _NAME: ClassVar[str] = "orchestrator"
 
     def __init__(self, rl_policy: RLPolicy | None = None) -> None:
@@ -515,7 +537,11 @@ class Orchestrator:
         cag_hits = rr.get("cag", [])
         graph_hits = rr.get("graph", [])
         fast_path_threshold = float(cfg.get("cag", {}).get("fast_path_threshold", 0.90))
-        if cag_hits and not graph_hits and cag_hits[0].get("score", 0) >= fast_path_threshold:
+        if (
+            cag_hits
+            and not graph_hits
+            and cag_hits[0].get("score", 0) >= fast_path_threshold
+        ):
             cached_text = cag_hits[0].get("text", "")
             cached_score = float(cag_hits[0].get("score", fast_path_threshold))
             logger.info("[CAG FAST-PATH] /chat cache hit, skipping generation")
@@ -523,17 +549,20 @@ class Orchestrator:
             record_turn(session_id, "assistant", cached_text)
             try:
                 from backend.core.critique import log_episode_to_replay_buffer
-                log_episode_to_replay_buffer({
-                    "query": query,
-                    "response": cached_text,
-                    "weights": {"cag": 1.0, "graph": 0.0},
-                    "reward": cached_score,
-                    "fused_context": "",
-                    "from_cache": True,
-                    "policy_weights": [1.0, 0.0],
-                    "effective_weights": [1.0, 0.0],
-                    "had_empty_path": False,
-                })
+
+                log_episode_to_replay_buffer(
+                    {
+                        "query": query,
+                        "response": cached_text,
+                        "weights": {"cag": 1.0, "graph": 0.0},
+                        "reward": cached_score,
+                        "fused_context": "",
+                        "from_cache": True,
+                        "policy_weights": [1.0, 0.0],
+                        "effective_weights": [1.0, 0.0],
+                        "had_empty_path": False,
+                    }
+                )
             except Exception as exc:
                 logger.warning("CAG fast-path episode log failed: %s", exc)
             return OrchestrationResult(
@@ -547,6 +576,7 @@ class Orchestrator:
 
         # LLM generation via inference engine (non-streaming for /chat)
         from backend.core.model_router import get_engine
+
         engine = get_engine()
         _num_predict = NUM_PREDICT.get(mode, 800)
         llm_response = engine.generate(
@@ -554,7 +584,9 @@ class Orchestrator:
                 {"role": "system", "content": prepared["system_prompt"]},
                 {"role": "user", "content": prepared["user_prompt"]},
             ],
-            temperature=0.3, num_ctx=4096, num_predict=_num_predict,
+            temperature=0.3,
+            num_ctx=4096,
+            num_predict=_num_predict,
         )
 
         return self.finalize(

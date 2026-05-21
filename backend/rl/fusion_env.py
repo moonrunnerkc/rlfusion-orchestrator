@@ -42,17 +42,24 @@ class FusionEnv(gym.Env):
          that runs at inference, so training reward and serving reward
          come from the same scorer.
     """
+
     metadata = {"render_modes": ["human"]}
     NUM_SOURCES = 2
 
     def __init__(self, config_path: str = "backend/config.yaml") -> None:
         super().__init__()
         self.action_space = gym.spaces.Box(
-            low=-1.0, high=1.0, shape=(self.NUM_SOURCES,), dtype=np.float32,
+            low=-1.0,
+            high=1.0,
+            shape=(self.NUM_SOURCES,),
+            dtype=np.float32,
         )
         # 384 embed + 10 features = 394
         self.observation_space = gym.spaces.Box(
-            low=-np.inf, high=np.inf, shape=(OBS_DIM,), dtype=np.float32,
+            low=-np.inf,
+            high=np.inf,
+            shape=(OBS_DIM,),
+            dtype=np.float32,
         )
         self.current_query: str = ""
         self.query_embedding: Optional[np.ndarray] = None
@@ -60,7 +67,10 @@ class FusionEnv(gym.Env):
         self.conversation_history: list[str] = []
         self.config_path = PROJECT_ROOT / config_path
         # dry-run flag for CPU-only/test environments
-        self._dry_run = os.environ.get("RLFUSION_ENV_DRY_RUN", "").lower() in ("1", "true")
+        self._dry_run = os.environ.get("RLFUSION_ENV_DRY_RUN", "").lower() in (
+            "1",
+            "true",
+        )
 
     def _build_observation(self) -> np.ndarray:
         """Build 394-dim observation. Delegates to the canonical builder."""
@@ -76,6 +86,7 @@ class FusionEnv(gym.Env):
             return fused_context or "[dry-run: no context]"
 
         from backend.core.model_router import get_engine
+
         engine = get_engine()
         try:
             return engine.generate(
@@ -94,7 +105,9 @@ class FusionEnv(gym.Env):
                         ),
                     },
                 ],
-                temperature=0.2, num_predict=400, num_ctx=4096,
+                temperature=0.2,
+                num_predict=400,
+                num_ctx=4096,
             )
         except Exception as exc:
             logger.warning("FusionEnv generator call failed (%s); using fallback", exc)
@@ -119,7 +132,8 @@ class FusionEnv(gym.Env):
         return observation, {}
 
     def step(
-        self, action: np.ndarray,
+        self,
+        action: np.ndarray,
     ) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         # F1.5: train and serve share the same simplex projection.
         self.last_applied_weights = project_to_simplex(np.asarray(action).flatten())

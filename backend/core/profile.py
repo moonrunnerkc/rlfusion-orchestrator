@@ -7,7 +7,8 @@ import logging
 import re
 import sqlite3
 from pathlib import Path
-from backend.config import cfg, PROJECT_ROOT
+
+from backend.config import PROJECT_ROOT, cfg
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +25,19 @@ EXPLICIT_PATTERNS = [
 QUESTION_PATTERNS = [
     r"^(do|does|did|can|could|should|would|will|is|are|was|were|have|has|had)\s",
     r"^(what|where|when|why|how|who)\s",
-    r"\?$"
+    r"\?$",
 ]
 
-MEMORY_KEYWORDS = ["remember", "i like", "i love", "i hate", "i am", "my name is", "i prefer", "i enjoy"]
+MEMORY_KEYWORDS = [
+    "remember",
+    "i like",
+    "i love",
+    "i hate",
+    "i am",
+    "my name is",
+    "i prefer",
+    "i enjoy",
+]
 
 
 def _get_db_path() -> Path:
@@ -42,7 +52,9 @@ def get_user_profile() -> str:
     db_path = _get_db_path()
     try:
         conn = sqlite3.connect(str(db_path))
-        cursor = conn.execute("SELECT fact_key, fact_value, category FROM user_profile ORDER BY category, fact_key")
+        cursor = conn.execute(
+            "SELECT fact_key, fact_value, category FROM user_profile ORDER BY category, fact_key"
+        )
         facts = cursor.fetchall()
         conn.close()
 
@@ -59,7 +71,7 @@ def get_user_profile() -> str:
             profile_text += f"- {value}\n"
         return profile_text + "=================\n"
 
-    except Exception as e:
+    except Exception:
         # Database may not exist yet - that's fine
         return ""
 
@@ -76,8 +88,10 @@ def update_user_fact(fact_key: str, fact_value: str, category: str = "general"):
                 category TEXT
             )
         """)
-        conn.execute("INSERT OR REPLACE INTO user_profile (fact_key, fact_value, category) VALUES (?, ?, ?)",
-                    (fact_key, fact_value, category))
+        conn.execute(
+            "INSERT OR REPLACE INTO user_profile (fact_key, fact_value, category) VALUES (?, ?, ?)",
+            (fact_key, fact_value, category),
+        )
         conn.commit()
         conn.close()
     except Exception:
@@ -91,7 +105,7 @@ def detect_and_save_memory(query: str) -> tuple[bool, str | None]:
     for pattern in EXPLICIT_PATTERNS:
         match = re.match(pattern, query_lower, re.DOTALL)
         if match:
-            content = query[match.start(1):match.end(1)].strip()
+            content = query[match.start(1) : match.end(1)].strip()
             fact_key = f"user_note_{hash(content) % 100000}"
             update_user_fact(fact_key, content, category="notes")
             return (True, content)
@@ -108,6 +122,7 @@ def detect_and_save_memory(query: str) -> tuple[bool, str | None]:
     # LLM extraction for implicit memory
     try:
         from backend.core.model_router import get_engine
+
         engine = get_engine()
         prompt = f"""Is this a request to remember a fact about the user?
 "{query}"
@@ -118,15 +133,20 @@ JSON only:"""
 
         raw = engine.generate(
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.1, num_predict=150,
+            temperature=0.1,
+            num_predict=150,
         )
 
         parsed = json.loads(raw.strip())
-        if parsed.get("memory") == False:
+        if parsed.get("memory") is False:
             return (False, None)
 
         if "fact_key" in parsed and "fact_value" in parsed:
-            update_user_fact(parsed["fact_key"], parsed["fact_value"], parsed.get("category", "general"))
+            update_user_fact(
+                parsed["fact_key"],
+                parsed["fact_value"],
+                parsed.get("category", "general"),
+            )
             return (True, parsed["fact_value"])
 
         return (False, None)

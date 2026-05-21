@@ -6,9 +6,9 @@ import hashlib
 import logging
 import re
 import sqlite3
-from pathlib import Path
-from typing import Any, Dict, List, Tuple
-from backend.config import cfg, PROJECT_ROOT
+from typing import Any, Dict, Tuple
+
+from backend.config import PROJECT_ROOT, cfg
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +37,10 @@ Be harsh but fair.
 """
 
 # Regex patterns - match with or without closing tag (LLM often omits </critique>)
-_CRITIQUE_BLOCK_RE = re.compile(r"<critique>(.*?)(?:</critique>|$)", re.DOTALL | re.IGNORECASE)
-_CITATION_RE = re.compile(r'\[(\d+)\]')
+_CRITIQUE_BLOCK_RE = re.compile(
+    r"<critique>(.*?)(?:</critique>|$)", re.DOTALL | re.IGNORECASE
+)
+_CITATION_RE = re.compile(r"\[(\d+)\]")
 _NUM = r"-?[0-9]+\.?[0-9]*"
 _SCORE_RE = re.compile(rf"(?:final reward|reward)[:\s]*({_NUM})", re.IGNORECASE)
 _FACTUAL_RE = re.compile(rf"factual accuracy[:\s]*({_NUM})", re.IGNORECASE)
@@ -48,10 +50,10 @@ _SUGGESTION_RE = re.compile(r"[•\-\*]\s*(.+)")
 
 # Internal tag patterns to strip from output
 _SOURCE_TAG_PATTERNS = [
-    r'\[RAG:[^\]]+\]\s*',
-    r'\[CAG:[^\]]+\]\s*',
-    r'\[GRAPH:[^\]]+\]\s*',
-    r'\[WEB:[^\]]+\]\s*',
+    r"\[RAG:[^\]]+\]\s*",
+    r"\[CAG:[^\]]+\]\s*",
+    r"\[GRAPH:[^\]]+\]\s*",
+    r"\[WEB:[^\]]+\]\s*",
 ]
 
 
@@ -64,22 +66,33 @@ def get_critique_instruction() -> str:
 
 def count_citations(response: str) -> dict:
     citations = _CITATION_RE.findall(response)
-    sentences = [s.strip() for s in re.split(r'[.!?]+', response) if len(s.strip()) > 20]
+    sentences = [
+        s.strip() for s in re.split(r"[.!?]+", response) if len(s.strip()) > 20
+    ]
     coverage = len(citations) / max(len(sentences), 1)
-    logger.debug("Citations: %d across %d sentences (coverage=%.2f)", len(citations), len(sentences), coverage)
+    logger.debug(
+        "Citations: %d across %d sentences (coverage=%.2f)",
+        len(citations),
+        len(sentences),
+        coverage,
+    )
     return {
         "total_citations": len(citations),
         "unique_sources": len(set(citations)),
         "sentence_count": len(sentences),
-        "coverage_ratio": min(coverage, 1.0)
+        "coverage_ratio": min(coverage, 1.0),
     }
 
 
 def parse_inline_critique(response: str) -> Tuple[str, Dict[str, Any]]:
     result = {
-        "reward": 0.75, "factual": 0.75, "proactivity": 0.75, "helpfulness": 0.75,
-        "citation_coverage": 0.0, "proactive_suggestions": ["Tell me more about this topic"],
-        "reason": "No critique block found"
+        "reward": 0.75,
+        "factual": 0.75,
+        "proactivity": 0.75,
+        "helpfulness": 0.75,
+        "citation_coverage": 0.0,
+        "proactive_suggestions": ["Tell me more about this topic"],
+        "reason": "No critique block found",
     }
 
     citation_stats = count_citations(response)
@@ -93,7 +106,11 @@ def parse_inline_critique(response: str) -> Tuple[str, Dict[str, Any]]:
     cleaned = _CRITIQUE_BLOCK_RE.sub("", response).strip()
 
     # parse scores
-    for pattern, key in [(_FACTUAL_RE, "factual"), (_PROACTIVE_RE, "proactivity"), (_HELPFULNESS_RE, "helpfulness")]:
+    for pattern, key in [
+        (_FACTUAL_RE, "factual"),
+        (_PROACTIVE_RE, "proactivity"),
+        (_HELPFULNESS_RE, "helpfulness"),
+    ]:
         m = pattern.search(critique_text)
         if m:
             try:
@@ -108,14 +125,27 @@ def parse_inline_critique(response: str) -> Tuple[str, Dict[str, Any]]:
         except ValueError:
             pass
     else:
-        result["reward"] = (result["factual"] + result["proactivity"] + result["helpfulness"]) / 3.0
+        result["reward"] = (
+            result["factual"] + result["proactivity"] + result["helpfulness"]
+        ) / 3.0
 
     suggestions = _SUGGESTION_RE.findall(critique_text)
     # Filter out generic filler suggestions
-    _GENERIC = {"tell me more", "learn more", "know more", "elaborate", "explain further"}
-    filtered = [s.strip() for s in suggestions
-                if s.strip() and not any(g in s.strip().lower() for g in _GENERIC)]
-    result["proactive_suggestions"] = filtered[:3] if filtered else ["Tell me more about this topic"]
+    _GENERIC = {
+        "tell me more",
+        "learn more",
+        "know more",
+        "elaborate",
+        "explain further",
+    }
+    filtered = [
+        s.strip()
+        for s in suggestions
+        if s.strip() and not any(g in s.strip().lower() for g in _GENERIC)
+    ]
+    result["proactive_suggestions"] = (
+        filtered[:3] if filtered else ["Tell me more about this topic"]
+    )
     result["reason"] = f"Self-critique: {result['reward']:.2f}"
 
     return cleaned, result
@@ -143,14 +173,16 @@ AI response (abbreviated): {response}
 JSON only:"""
 
 # JSON extraction: greedy match for the first { ... } block
-_JSON_BLOCK_RE = re.compile(r'\{[^{}]*\}', re.DOTALL)
+_JSON_BLOCK_RE = re.compile(r"\{[^{}]*\}", re.DOTALL)
 
 
 def _run_critique_llm(query: str, fused_context: str, response: str) -> Dict[str, Any]:
     """Dedicated LLM call to evaluate a response. Returns parsed scores + suggestions."""
     import json as _json
+
     try:
         from backend.core.model_router import get_engine
+
         engine = get_engine()
 
         prompt = _CRITIQUE_EVAL_PROMPT.format(
@@ -164,7 +196,10 @@ def _run_critique_llm(query: str, fused_context: str, response: str) -> Dict[str
         critique_timeout = float(cfg.get("critique", {}).get("timeout_secs", 60))
         content = engine.generate(
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.0, num_predict=300, num_ctx=4096, timeout=critique_timeout,
+            temperature=0.0,
+            num_predict=300,
+            num_ctx=4096,
+            timeout=critique_timeout,
         ).strip()
 
         # try JSON parse, fall back to regex extraction from partial output
@@ -242,12 +277,19 @@ def _run_critique_llm(query: str, fused_context: str, response: str) -> Dict[str
             "factual": _unwrap_score(parsed.get("factual_accuracy", 0.70)),
             "proactivity": _unwrap_score(parsed.get("proactivity", 0.70)),
             "helpfulness": _unwrap_score(parsed.get("helpfulness", 0.70)),
-            "follow_up_questions": _unwrap_questions(parsed.get("follow_up_questions", []))[:3],
+            "follow_up_questions": _unwrap_questions(
+                parsed.get("follow_up_questions", [])
+            )[:3],
         }
 
     except Exception as exc:
         logger.warning("Critique LLM call failed: %s", exc)
-        return {"factual": 0.70, "proactivity": 0.70, "helpfulness": 0.70, "follow_up_questions": []}
+        return {
+            "factual": 0.70,
+            "proactivity": 0.70,
+            "helpfulness": 0.70,
+            "follow_up_questions": [],
+        }
 
 
 def _build_fallback_suggestions(query: str, response: str) -> list[str]:
@@ -258,9 +300,9 @@ def _build_fallback_suggestions(query: str, response: str) -> list[str]:
     which dumped the entire query verbatim into a generic template.
     """
     # extract capitalized multi-word phrases as candidate topics
-    candidates = re.findall(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)', response)
+    candidates = re.findall(r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)", response)
     # also grab technical terms (acronyms, terms with numbers/underscores)
-    tech_terms = re.findall(r'\b([A-Z]{2,}[a-z]*(?:\s+[A-Z][a-z]+)*)\b', response)
+    tech_terms = re.findall(r"\b([A-Z]{2,}[a-z]*(?:\s+[A-Z][a-z]+)*)\b", response)
     # filter noise: short, generic, or already in query
     q_lower = query.lower()
     seen: set[str] = set()
@@ -270,7 +312,7 @@ def _build_fallback_suggestions(query: str, response: str) -> list[str]:
         if len(t) < 4 or t.lower() in q_lower or t.lower() in seen:
             continue
         # skip articles, pronouns, generic starters
-        if re.match(r'^(?:The|This|That|These|Also|More|Your|Each)\b', t):
+        if re.match(r"^(?:The|This|That|These|Also|More|Your|Each)\b", t):
             continue
         seen.add(t.lower())
         topics.append(t)
@@ -311,12 +353,25 @@ def critique(query: str, fused_context: str, response: str) -> Dict[str, Any]:
     reward = (scores["factual"] + scores["proactivity"] + scores["helpfulness"]) / 3.0
 
     # filter generic filler and echoed template placeholders
-    _JUNK = {"tell me more", "learn more", "know more", "elaborate", "explain further",
-            "q1", "q2", "q3", "<specific question 1>", "<specific question 2>",
-            "<specific question 3>", "specific question"}
+    _JUNK = {
+        "tell me more",
+        "learn more",
+        "know more",
+        "elaborate",
+        "explain further",
+        "q1",
+        "q2",
+        "q3",
+        "<specific question 1>",
+        "<specific question 2>",
+        "<specific question 3>",
+        "specific question",
+    }
     suggestions = [
-        s.strip() for s in scores.get("follow_up_questions", [])
-        if s.strip() and not any(g in s.strip().lower() for g in _JUNK)
+        s.strip()
+        for s in scores.get("follow_up_questions", [])
+        if s.strip()
+        and not any(g in s.strip().lower() for g in _JUNK)
         and len(s.strip()) > 10  # reject very short placeholder-like strings
     ]
     if not suggestions:
@@ -332,7 +387,8 @@ def critique(query: str, fused_context: str, response: str) -> Dict[str, Any]:
 # Well-formed critique blocks only. A bare opening tag with no closing is
 # a hallucination, not a signal: strip_critique_block leaves it alone.
 _PAIRED_CRITIQUE_RE = re.compile(
-    r"<critique>.*?</critique>", re.DOTALL | re.IGNORECASE,
+    r"<critique>.*?</critique>",
+    re.DOTALL | re.IGNORECASE,
 )
 
 
@@ -347,7 +403,7 @@ def strip_critique_block(response: str) -> str:
     """
     text = _PAIRED_CRITIQUE_RE.sub("", response)
     for pattern in _SOURCE_TAG_PATTERNS:
-        text = re.sub(pattern, '', text)
+        text = re.sub(pattern, "", text)
     return text.strip()
 
 
@@ -399,18 +455,60 @@ def log_episode_to_replay_buffer(episode: dict) -> bool:
                 return name, value
             return None
 
-        columns: list[str] = ["query", "response", "reward", "cag_weight", "graph_weight",
-                              "fused_context", "proactive_suggestions"]
-        values: list[Any] = [query_val, response_val, reward, cag_w, graph_w,
-                             fused_ctx, proactive]
+        columns: list[str] = [
+            "query",
+            "response",
+            "reward",
+            "cag_weight",
+            "graph_weight",
+            "fused_context",
+            "proactive_suggestions",
+        ]
+        values: list[Any] = [
+            query_val,
+            response_val,
+            reward,
+            cag_w,
+            graph_w,
+            fused_ctx,
+            proactive,
+        ]
 
         for entry in (
-            _maybe("obs_features", _json.dumps(episode["obs_features"]) if episode.get("obs_features") is not None else None),
+            _maybe(
+                "obs_features",
+                (
+                    _json.dumps(episode["obs_features"])
+                    if episode.get("obs_features") is not None
+                    else None
+                ),
+            ),
             _maybe("from_cache", 1 if episode.get("from_cache") else 0),
-            _maybe("policy_weights", _json.dumps(episode["policy_weights"]) if episode.get("policy_weights") is not None else None),
-            _maybe("effective_weights", _json.dumps(episode["effective_weights"]) if episode.get("effective_weights") is not None else None),
+            _maybe(
+                "policy_weights",
+                (
+                    _json.dumps(episode["policy_weights"])
+                    if episode.get("policy_weights") is not None
+                    else None
+                ),
+            ),
+            _maybe(
+                "effective_weights",
+                (
+                    _json.dumps(episode["effective_weights"])
+                    if episode.get("effective_weights") is not None
+                    else None
+                ),
+            ),
             _maybe("had_empty_path", 1 if episode.get("had_empty_path") else 0),
-            _maybe("policy_action", _json.dumps(episode["policy_action"]) if episode.get("policy_action") is not None else None),
+            _maybe(
+                "policy_action",
+                (
+                    _json.dumps(episode["policy_action"])
+                    if episode.get("policy_action") is not None
+                    else None
+                ),
+            ),
         ):
             if entry is None:
                 continue
@@ -423,13 +521,17 @@ def log_episode_to_replay_buffer(episode: dict) -> bool:
         cursor = conn.execute(sql, values)
         episode_id = cursor.lastrowid
 
-        reinsert_thresh = float(_cfg.get("cag", {}).get("reinsert_reward_threshold", 0.70))
+        reinsert_thresh = float(
+            _cfg.get("cag", {}).get("reinsert_reward_threshold", 0.70)
+        )
         cache_thresh = float(_cfg.get("cag", {}).get("cache_threshold", 0.85))
         if reward >= reinsert_thresh and not episode.get("from_cache"):
             query_key = query_val.strip()
             if query_key and response_val:
                 cache_score = max(cache_thresh + 0.05, reward)
-                key_hash = hashlib.sha256(query_key.strip().lower().encode("utf-8")).hexdigest()
+                key_hash = hashlib.sha256(
+                    query_key.strip().lower().encode("utf-8")
+                ).hexdigest()
                 try:
                     conn.execute(
                         "INSERT OR REPLACE INTO cache (key, key_hash, value, score) VALUES (?, ?, ?, ?)",
@@ -442,14 +544,18 @@ def log_episode_to_replay_buffer(episode: dict) -> bool:
                     )
                 logger.info(
                     "High-quality episode cached in CAG (reward=%.2f, cached as %.2f)",
-                    reward, cache_score,
+                    reward,
+                    cache_score,
                 )
 
         conn.commit()
         conn.close()
         logger.info(
             "Episode #%d logged | reward=%.2f | from_cache=%s | query='%s...'",
-            episode_id, reward, bool(episode.get("from_cache")), query_val[:50],
+            episode_id,
+            reward,
+            bool(episode.get("from_cache")),
+            query_val[:50],
         )
         return True
 
@@ -459,14 +565,27 @@ def log_episode_to_replay_buffer(episode: dict) -> bool:
 
 
 # Unsafe content categories for fast blocklist check
-_UNSAFE_KEYWORDS: frozenset[str] = frozenset({
-    "how to make a bomb", "how to hack", "how to kill",
-    "synthesize drugs", "make methamphetamine", "build a weapon",
-    "child exploitation", "child abuse", "csam",
-    "create malware", "write ransomware", "ddos attack",
-    "suicide method", "self-harm instructions",
-    "terrorist attack", "biological weapon", "chemical weapon",
-})
+_UNSAFE_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "how to make a bomb",
+        "how to hack",
+        "how to kill",
+        "synthesize drugs",
+        "make methamphetamine",
+        "build a weapon",
+        "child exploitation",
+        "child abuse",
+        "csam",
+        "create malware",
+        "write ransomware",
+        "ddos attack",
+        "suicide method",
+        "self-harm instructions",
+        "terrorist attack",
+        "biological weapon",
+        "chemical weapon",
+    }
+)
 
 
 def _keyword_blocklist_check(query: str) -> tuple[bool, str]:
@@ -474,7 +593,7 @@ def _keyword_blocklist_check(query: str) -> tuple[bool, str]:
     q_lower = query.lower()
     for phrase in _UNSAFE_KEYWORDS:
         if phrase in q_lower:
-            return (False, f"Query matched unsafe content category")
+            return (False, "Query matched unsafe content category")
     return (True, "")
 
 
@@ -495,11 +614,17 @@ def check_safety(query: str) -> tuple:
     # Tier 3: OOD detection
     try:
         from backend.core.utils import embed_text, mahalanobis_distance
+
         q_emb = embed_text(query)
         dist = mahalanobis_distance(q_emb)
         if dist > 50.0:
-            logger.warning("Safety OOD flagged (distance=%.2f): '%s...'", dist, query[:50])
-            return (False, "Query flagged as out-of-distribution (potential adversarial input)")
+            logger.warning(
+                "Safety OOD flagged (distance=%.2f): '%s...'", dist, query[:50]
+            )
+            return (
+                False,
+                "Query flagged as out-of-distribution (potential adversarial input)",
+            )
         # amber zone: OOD detector is uncertain, but not blocking
         if dist > 20.0:
             logger.info("Safety amber zone (distance=%.2f): '%s...'", dist, query[:50])
@@ -515,6 +640,7 @@ def check_faithfulness(claim: str, chunks: list) -> tuple:
 
     try:
         from backend.core.model_router import get_engine
+
         engine = get_engine()
 
         chunk_text = "\n---\n".join([c.get("text", str(c))[:500] for c in chunks[:5]])
@@ -522,12 +648,11 @@ def check_faithfulness(claim: str, chunks: list) -> tuple:
 
         result = engine.generate(
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.0, num_ctx=2048,
+            temperature=0.0,
+            num_ctx=2048,
         ).upper()
         supported = "SUPPORTED" in result and "NOT" not in result
         return (supported, 0.9 if supported else 0.1)
 
     except Exception:
         return (False, 0.5)
-
-

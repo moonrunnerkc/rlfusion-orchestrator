@@ -16,6 +16,7 @@ For ollama, if `inference.model` is empty or not in the installed model
 list, the smallest installed local (non-cloud) model is picked. No model
 names are hard-coded; the choice comes from `/api/tags` on the daemon.
 """
+
 from __future__ import annotations
 
 import logging
@@ -34,6 +35,7 @@ def _ollama_models(base_url: str) -> list[dict[str, Any]]:
     """Return the list of locally-installed ollama models, or [] on error."""
     try:
         import httpx
+
         resp = httpx.get(f"{base_url}/api/tags", timeout=2.0)
         resp.raise_for_status()
         models = resp.json().get("models", []) or []
@@ -51,8 +53,8 @@ _NON_CHAT_HINTS = ("coder", "cline", "plan", "act", "embed", "vision", "code", "
 # default for an enthusiast laptop: not too small to be unhelpful, not
 # too big to OOM. Outside this band we still consider the model but
 # score it lower.
-_PREF_MIN_BYTES = 15 * 1024**3   # 15 GB
-_PREF_MAX_BYTES = 40 * 1024**3   # 40 GB
+_PREF_MIN_BYTES = 15 * 1024**3  # 15 GB
+_PREF_MAX_BYTES = 40 * 1024**3  # 40 GB
 
 
 def _model_score(m: dict[str, Any]) -> tuple[int, int]:
@@ -123,7 +125,9 @@ def resolve_inference_config() -> dict[str, Any]:
     if engine == "llama_cpp_dual" and not _ggufs_present(inf):
         msg = "llama_cpp_dual configured but GGUFs missing"
         if forced_engine or not auto:
-            logger.warning("%s; honoring config and letting the caller fail loudly", msg)
+            logger.warning(
+                "%s; honoring config and letting the caller fail loudly", msg
+            )
         else:
             logger.warning("%s; auto-detect probing for ollama", msg)
             ollama_url = _DEFAULT_OLLAMA_HOST
@@ -133,10 +137,10 @@ def resolve_inference_config() -> dict[str, Any]:
                 inf["engine"] = "ollama"
                 inf["base_url"] = ollama_url
                 inf["model"] = picked
-                inf["resolution"] = (
-                    f"auto: GGUFs missing -> ollama({picked})"
+                inf["resolution"] = f"auto: GGUFs missing -> ollama({picked})"
+                logger.info(
+                    "Auto-detected ollama at %s with model=%s", ollama_url, picked
                 )
-                logger.info("Auto-detected ollama at %s with model=%s", ollama_url, picked)
                 return inf
             logger.warning("ollama unreachable too; falling back to original config")
 
@@ -150,7 +154,8 @@ def resolve_inference_config() -> dict[str, Any]:
                 resolution = f"{resolution}; auto-picked model={picked}"
                 logger.info(
                     "Requested model %r not installed; using %r instead",
-                    requested, picked,
+                    requested,
+                    picked,
                 )
         else:
             resolution = f"{resolution}; ollama unreachable (will fail on use)"

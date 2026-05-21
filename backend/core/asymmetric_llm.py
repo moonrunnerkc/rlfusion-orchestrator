@@ -13,6 +13,7 @@ Note: route_task() is currently not wired into the live request path.
 The orchestrator routes work through fusion_agent/critique_agent/main.py
 directly; this class is loaded but reserved for the Phase 5 routing wire-up.
 """
+
 from __future__ import annotations
 
 import json
@@ -30,18 +31,33 @@ logger = logging.getLogger(__name__)
 _CHARS_PER_TOKEN = 4
 
 TaskType = Literal[
-    "intent_parse", "safety_check", "cag_lookup", "graph_trigger",
-    "obs_build", "generation", "critique", "faithfulness",
+    "intent_parse",
+    "safety_check",
+    "cag_lookup",
+    "graph_trigger",
+    "obs_build",
+    "generation",
+    "critique",
+    "faithfulness",
 ]
 
-_CPU_TASKS: frozenset[str] = frozenset({
-    "intent_parse", "safety_check", "cag_lookup",
-    "graph_trigger", "obs_build",
-})
+_CPU_TASKS: frozenset[str] = frozenset(
+    {
+        "intent_parse",
+        "safety_check",
+        "cag_lookup",
+        "graph_trigger",
+        "obs_build",
+    }
+)
 
-_GPU_TASKS: frozenset[str] = frozenset({
-    "generation", "critique", "faithfulness",
-})
+_GPU_TASKS: frozenset[str] = frozenset(
+    {
+        "generation",
+        "critique",
+        "faithfulness",
+    }
+)
 
 
 class AsymmetricLLMOrchestrator:
@@ -89,7 +105,8 @@ class AsymmetricLLMOrchestrator:
 
         logger.info(
             "AsymmetricLLMOrchestrator configured: cpu=%s, gpu=%s",
-            Path(self._cpu_model_path).name, Path(self._gpu_model_path).name,
+            Path(self._cpu_model_path).name,
+            Path(self._gpu_model_path).name,
         )
 
     def _ensure_cpu(self) -> None:
@@ -131,7 +148,8 @@ class AsymmetricLLMOrchestrator:
         n_layers = -1 if not self._gpu_offloaded else 0
         logger.info(
             "Loading GPU executor model: %s (n_gpu_layers=%d)",
-            Path(self._gpu_model_path).name, n_layers,
+            Path(self._gpu_model_path).name,
+            n_layers,
         )
         if not Path(self._gpu_model_path).exists():
             raise FileNotFoundError(
@@ -278,12 +296,17 @@ class AsymmetricLLMOrchestrator:
 
     def _enforce_ctx(self, prompt: str, ctx_size: int, max_tokens: int) -> str:
         """Truncate prompt to fit within context window, reserving max_tokens for output."""
-        budget = (ctx_size - max_tokens - 128) * _CHARS_PER_TOKEN  # 128 tokens for system/template overhead
+        budget = (
+            ctx_size - max_tokens - 128
+        ) * _CHARS_PER_TOKEN  # 128 tokens for system/template overhead
         if len(prompt) <= budget:
             return prompt
         logger.warning(
             "Prompt truncated: %d chars -> %d chars (ctx=%d, reserve=%d)",
-            len(prompt), budget, ctx_size, max_tokens,
+            len(prompt),
+            budget,
+            ctx_size,
+            max_tokens,
         )
         return prompt[:budget]
 
@@ -304,7 +327,10 @@ class AsymmetricLLMOrchestrator:
         with self._cpu_lock:
             response = self._cpu_worker.create_chat_completion(
                 messages=[
-                    {"role": "system", "content": "Output only valid JSON. No explanation."},
+                    {
+                        "role": "system",
+                        "content": "Output only valid JSON. No explanation.",
+                    },
                     {"role": "user", "content": retry_prompt},
                 ],
                 temperature=0.0,
@@ -317,7 +343,9 @@ class AsymmetricLLMOrchestrator:
             json.loads(repaired)
             return repaired
         except (json.JSONDecodeError, ValueError):
-            logger.error("JSON repair failed after retry. Returning raw: %s", text[:200])
+            logger.error(
+                "JSON repair failed after retry. Returning raw: %s", text[:200]
+            )
             return text
 
     def _handle_oom(
@@ -348,6 +376,7 @@ class AsymmetricLLMOrchestrator:
         }
         try:
             import pynvml
+
             pynvml.nvmlInit()
             handle = pynvml.nvmlDeviceGetHandleByIndex(0)
             mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
