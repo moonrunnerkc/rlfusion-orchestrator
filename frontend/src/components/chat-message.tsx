@@ -3,6 +3,7 @@
 // After fighting with LLMs spitting walls of text at 3am, we finally gave them proper formatting.
 import React, { useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 type MessageRole = 'user' | 'rlfusion' | 'system';
@@ -206,25 +207,18 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ text, role }) => {
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             components={{
-              // Main headers get the cyber cyan glow with left border accent
-              h1: ({ node, ...props }: {node?: unknown; [key: string]: unknown}) => (
+              h1: ({ node: _node, ...props }) => (
                 <h1 className="text-2xl font-bold text-[var(--accent)] mt-8 mb-4 border-l-4 border-[var(--accent)] pl-4" {...props} />
               ),
-
-              // Subheaders slightly dimmer but still pop
-              h2: ({ node, ...props }: {node?: unknown; [key: string]: unknown}) => (
+              h2: ({ node: _node, ...props }) => (
                 <h2 className="text-xl font-semibold text-[var(--accent)] mt-6 mb-3" {...props} />
               ),
-
-              // Bold text gets the cyan treatment for emphasis
-              strong: ({ node, ...props }: {node?: unknown; [key: string]: unknown}) => (
+              strong: ({ node: _node, ...props }) => (
                 <strong className="text-[var(--accent)] font-semibold" {...props} />
               ),
-
-              // Code styling: inline vs block
-              code({ inline, className, children, ...props }: {inline?: boolean; className?: string; children?: React.ReactNode; [key: string]: unknown}) {
-                if (inline) {
-                  // Inline code → subtle bg with cyan text for readability
+              code: ({ node: _node, className, children, ...props }) => {
+                const isBlock = className && className.startsWith('language-');
+                if (!isBlock) {
                   return (
                     <code
                       className="bg-gray-900/80 border border-gray-700 px-1.5 py-0.5 rounded text-[var(--accent)] text-sm font-mono"
@@ -234,39 +228,28 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ text, role }) => {
                     </code>
                   );
                 }
-
-                // Code blocks → full-width, darker bg, slight shadow for depth
                 return (
                   <code
-                    className="block bg-gray-900 border border-gray-700 p-4 rounded-lg overflow-x-auto my-5 shadow-lg font-mono text-sm text-[var(--accent)]"
+                    className={`block bg-gray-900 border border-gray-700 p-4 rounded-lg overflow-x-auto my-5 shadow-lg font-mono text-sm text-[var(--accent)] ${className ?? ''}`}
                     {...props}
                   >
                     {children}
                   </code>
                 );
               },
-
-              // Lists need proper spacing and bullets
-              ul: ({ node, ...props }: {node?: unknown; [key: string]: unknown}) => (
+              ul: ({ node: _node, ...props }) => (
                 <ul className="list-disc ml-6 my-4 space-y-2" {...props} />
               ),
-
-              ol: ({ node, ...props }: {node?: unknown; [key: string]: unknown}) => (
+              ol: ({ node: _node, ...props }) => (
                 <ol className="list-decimal ml-6 my-4 space-y-2" {...props} />
               ),
-
-              li: ({ node, ...props }: {node?: unknown; [key: string]: unknown}) => (
+              li: ({ node: _node, ...props }) => (
                 <li className="leading-relaxed" {...props} />
               ),
-
-              // Paragraphs get breathing room
-              p: ({ node, ...props }: {node?: unknown; [key: string]: unknown}) => (
+              p: ({ node: _node, ...props }) => (
                 <p className="mb-4 leading-relaxed" {...props} />
               ),
-
-              // Phase 7: render image results inline with captions
-              img: ({ node, src, alt, ...props }: {node?: unknown; src?: string; alt?: string; [key: string]: unknown}) => {
-                // rewrite relative image paths to the backend image endpoint
+              img: ({ node: _node, src, alt, ...props }) => {
                 const imgSrc = src && !src.startsWith('http') && !src.startsWith('data:')
                   ? `http://localhost:8000/api/images/${src.replace(/^data\/images\//, '')}`
                   : src;
@@ -285,7 +268,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ text, role }) => {
                   </span>
                 );
               },
-            }}
+            } satisfies Components}
           >
             {mainText}
           </ReactMarkdown>

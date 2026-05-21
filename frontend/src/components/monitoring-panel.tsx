@@ -54,7 +54,7 @@ function MiniBar({ values, color, maxVal }: { values: number[]; color: string; m
   );
 }
 
-export default function MonitoringPanel({ weights, reward, isActive }: Props) {
+export function MonitoringPanel({ weights, reward, isActive }: Props) {
   const [weightHistory, setWeightHistory] = useState<WeightSnapshot[]>([]);
   const [rewardHistory, setRewardHistory] = useState<RewardEntry[]>([]);
   const [health, setHealth] = useState<SystemHealth | null>(null);

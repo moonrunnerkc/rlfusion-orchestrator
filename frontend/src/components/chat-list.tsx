@@ -1,7 +1,7 @@
-// src/components/ChatList.tsx
+// src/components/chat-list.tsx
 import { useEffect, useRef } from 'react';
 import type { Message } from '../types/contracts';
-import { ChatMessage } from './ChatMessage';
+import { ChatMessage } from './chat-message';
 
 interface ChatListProps {
   messages: Message[];
@@ -10,7 +10,7 @@ interface ChatListProps {
   onSuggestionClick?: (suggestion: string) => void;
 }
 
-export default function ChatList({ messages, isLoading, proactiveHint, onSuggestionClick }: ChatListProps) {
+export function ChatList({ messages, isLoading, proactiveHint, onSuggestionClick }: ChatListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {

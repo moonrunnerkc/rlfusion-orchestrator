@@ -1,12 +1,7 @@
 // Author: Bradley R. Kinnard
-// AgentPipeline — polished multi-agent status with live detail
+// agent-pipeline: polished multi-agent status with live detail.
 import { useEffect, useRef, useState } from 'react';
-
-export interface AgentStatus {
-  name: string;
-  status: 'idle' | 'pending' | 'running' | 'done' | 'blocked' | 'skipped';
-  detail?: string;
-}
+import type { AgentStatus } from '../types/contracts';
 
 interface Props {
   agents: AgentStatus[];
@@ -159,7 +154,7 @@ function PipelineTimer({ active, elapsedMs }: { active: boolean; elapsedMs: numb
   );
 }
 
-export default function AgentPipeline({ agents, isActive, elapsedMs }: Props) {
+export function AgentPipeline({ agents, isActive, elapsedMs }: Props) {
   const allIdle = agents.every(a => a.status === 'idle');
 
   return (
