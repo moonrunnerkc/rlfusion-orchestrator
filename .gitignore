@@ -95,6 +95,7 @@ test.md
 
 # Planning docs (local only)
 overhaul-plan.md
+.audit/
 
 # Claude Code: only ship the shared OCR command stubs, ignore per-user state
 .claude/*
