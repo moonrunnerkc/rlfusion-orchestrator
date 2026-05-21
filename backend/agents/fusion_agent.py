@@ -95,39 +95,102 @@ def _heuristic_weights(query: str) -> np.ndarray:
     return np.array([0.5, 0.5])
 
 
+def _csw_rerank_graph(
+    graph_items: list[dict[str, float | str]],
+    query: str,
+) -> list[dict[str, float | str]]:
+    """Run CSWR scoring on graph items in-place and return them sorted by csw_score.
+
+    The graph items must carry a `text` and a `score` (the cosine sim from
+    retrieve()). score_chunks() reads `score` as the vector axis and writes
+    `csw_score`, `local_stability`, `question_fit`, `drift_penalty` onto
+    each item.
+    """
+    from backend.core.decomposer import decompose_query
+    from backend.core.retrievers import score_chunks
+    from backend.config import cfg as _cfg
+
+    if not graph_items:
+        return graph_items
+
+    profile = decompose_query(query)
+    profile["query_text"] = query
+
+    for i, item in enumerate(graph_items):
+        item.setdefault("id", str(item.get("id") or f"g{i}"))
+        item.setdefault("local_stability", 0.0)
+        item.setdefault("question_fit", 0.0)
+        item.setdefault("drift_penalty", 0.0)
+        item.setdefault("csw_score", 0.0)
+        item.setdefault("project_coherence", 1.0)
+
+    return score_chunks(list(graph_items), profile, _cfg.get("cswr", {}))
+
+
 def build_fusion_context(
     retrieval_results: dict[str, list[dict[str, float | str]]],
     weights: np.ndarray,
+    query: str = "",
 ) -> str:
     """Assemble scored retrieval results into a fused context string.
 
-    Two-path: CAG + Graph only. Filters by per-path score thresholds and
-    allocates proportional slots based on the RL fusion weights.
+    Two-path: CAG + Graph. CAG entries are short, exact-match cached
+    answers that bypass CSWR. Graph results are re-ranked by CSWR
+    (`score_chunks`) and filtered by `cswr.min_csw_score` before slot
+    allocation. The RL fusion weights determine how many slots each path
+    gets out of a total of 12.
     """
+    from backend.config import cfg as _cfg
+
     total_items = 12
     cag_take = max(1, int(weights[0] * total_items))
     graph_take = max(1, int(weights[1] * total_items))
 
-    cag_items = [c for c in retrieval_results.get("cag", []) if c.get("score", 0) >= 0.85][:cag_take]
-    graph_items = [g for g in retrieval_results.get("graph", []) if g.get("score", 0) >= 0.50][:graph_take]
+    cag_items = [
+        c for c in retrieval_results.get("cag", [])
+        if c.get("score", 0) >= 0.85
+    ][:cag_take]
 
-    # global relevance gate
+    # CSWR re-rank graph results, gate by min_csw_score
+    raw_graph = list(retrieval_results.get("graph", []))
+    min_csw = float(_cfg.get("cswr", {}).get("min_csw_score", 0.25))
+    if raw_graph and query:
+        scored_graph = _csw_rerank_graph(raw_graph, query)
+        graph_items = [
+            g for g in scored_graph if float(g.get("csw_score", 0.0)) >= min_csw
+        ][:graph_take]
+    else:
+        # no query supplied: fall back to raw cosine gate so we still emit
+        # something on training-time / replay paths that do not pass query
+        graph_items = [
+            g for g in raw_graph if g.get("score", 0) >= 0.50
+        ][:graph_take]
+
+    # global relevance gate: best across paths must clear 0.52
     all_scores = (
         [float(c.get("score", 0)) for c in cag_items]
-        + [float(g.get("score", 0)) for g in graph_items]
+        + [float(g.get("csw_score", g.get("score", 0))) for g in graph_items]
     )
     best_score = max(all_scores) if all_scores else 0.0
     if best_score < 0.52:
-        logger.info("Relevance gate: best score %.2f < 0.52, returning empty context", best_score)
+        logger.info(
+            "Relevance gate: best score %.2f < 0.52, returning empty context",
+            best_score,
+        )
         return ""
 
     parts: list[str] = []
     for c in cag_items:
         parts.append(f"[CAG:{c['score']:.2f}|w={weights[0]:.2f}] {c['text']}")
     for g in graph_items:
-        parts.append(f"[GRAPH:{g['score']:.2f}|w={weights[1]:.2f}] {g['text']}")
+        # show csw_score in the tag when present; fall back to raw score
+        tag_score = float(g.get("csw_score", g.get("score", 0)))
+        parts.append(f"[GRAPH:{tag_score:.2f}|w={weights[1]:.2f}] {g['text']}")
 
-    logger.info("Fusion stats: %d CAG, %d Graph", len(cag_items), len(graph_items))
+    logger.info(
+        "Fusion stats: %d CAG, %d Graph (min_csw=%.2f)",
+        len(cag_items), len(graph_items), min_csw,
+    )
     fused = "\n\n".join(parts) if parts else ""
     if len(fused) > 5000:
         fused = fused[:5000]
@@ -170,7 +233,7 @@ class FusionAgent:
         retrieval_results = state.get("retrieval_results", {})
 
         rl_weights = compute_rl_weights(query, self._rl_policy, retrieval_results)
-        fused_context = build_fusion_context(retrieval_results, rl_weights)
+        fused_context = build_fusion_context(retrieval_results, rl_weights, query=query)
         # 2-path weights: [cag, graph]
         actual_weights = [float(w) for w in rl_weights[:2]]
 

@@ -286,10 +286,14 @@ def _compute_rl_fusion_weights(query: str, policy, retrieval_results=None) -> np
     return compute_rl_weights(query, policy, retrieval_results)
 
 
-def _build_fusion_context(retrieval_results: Dict[str, List[Dict[str, Any]]], weights: np.ndarray) -> str:
+def _build_fusion_context(
+    retrieval_results: Dict[str, List[Dict[str, Any]]],
+    weights: np.ndarray,
+    query: str = "",
+) -> str:
     """Build fused context. Delegates to the canonical implementation."""
     from backend.agents.fusion_agent import build_fusion_context
-    return build_fusion_context(retrieval_results, weights)
+    return build_fusion_context(retrieval_results, weights, query=query)
 
 
 # Import prompts from orchestrator (single source of truth)
