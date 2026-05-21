@@ -193,10 +193,33 @@ Es et al. 2023 (arXiv 2309.15217); they do not require an LLM judge so
 they are reproducible from a single command. Each run also dumps the
 full per-query results to `tests/results/ragas_<timestamp>.json`.
 
-The "learned" column is skipped (and the row omitted) when no
+The "learned" column falls back to uniform `[0.5, 0.5]` when no
 `models/rl_policy_cql.d3` is present, which is the default state of the
 repo after the overhaul. Train a policy with `python backend/rl/train_rl.py`
-and re-run the eval to populate it.
+and re-run the eval to populate it with real numbers.
+
+### Reference run (v2.0.0, dry-run, empty CAG)
+
+Captured locally on macOS / CPU, no GPU, no LLM (`--dry-run`), CAG
+cache empty, freshly-built entity graph over `data/docs/rlfusion/`
+(15 chunks, 227 entities):
+
+| strategy   |   n | context_relevance | answer_relevance | faithfulness |
+|------------|----:|------------------:|-----------------:|-------------:|
+| uniform    |  50 |             0.799 |            0.614 |        0.685 |
+| heuristic  |  50 |             0.799 |            0.614 |        0.685 |
+| learned    |  50 |             0.799 |            0.614 |        0.685 |
+
+All three are identical here on purpose: with an empty CAG cache the
+graph path is the only thing producing context, and the per-strategy
+slot allocation has no effect when CAG is empty. The heuristic policy
+does produce three distinct weight vectors per query (`cag` ∈
+`{0.3, 0.5, 0.6}`); the metric collapse is downstream of fusion, not
+upstream. To get meaningful differentiation between strategies, run
+the eval without `--dry-run` (real LLM) and against a CAG cache
+populated by some actual chat traffic.
+
+Raw per-query JSON for that run: `tests/results/ragas_1779338015.json`.
 
 ## Docker
 
