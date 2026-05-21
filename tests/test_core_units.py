@@ -412,53 +412,29 @@ class TestNormalizeWeights:
 class TestFuseContext:
     """Fusion filtering by score thresholds."""
 
-    def test_filters_low_score_rag(self):
-        from backend.core.fusion import fuse_context
-        rag = [{"text": "low score", "score": 0.30}]
-        cag = []
-        graph = []
-        result = fuse_context("test", rag, cag, graph)
-        assert result["context"] == ""
-
-    def test_includes_high_score_rag(self):
-        """RAG path removed. High-score RAG items should be ignored."""
-        from backend.core.fusion import fuse_context
-        rag = [{"text": "high quality doc", "score": 0.80}]
-        result = fuse_context("test", rag, [], [])
-        # RAG removed - no RAG items in fusion context anymore
-        assert result["context"] == ""
-        assert "[RAG:" not in result["context"]
-
     def test_cag_threshold(self):
         from backend.core.fusion import fuse_context
         cag_low = [{"text": "low cached", "score": 0.50}]
         cag_high = [{"text": "cached answer", "score": 0.90}]
-        r1 = fuse_context("test", [], cag_low, [])
-        r2 = fuse_context("test", [], cag_high, [])
+        r1 = fuse_context("test", cag_low, [])
+        r2 = fuse_context("test", cag_high, [])
         assert "cached" not in r1["context"]
         assert "cached answer" in r2["context"]
 
+    def test_graph_threshold(self):
+        from backend.core.fusion import fuse_context
+        graph_low = [{"text": "low score", "score": 0.50}]
+        graph_high = [{"text": "graph chunk", "score": 0.80}]
+        r1 = fuse_context("test", [], graph_low)
+        r2 = fuse_context("test", [], graph_high)
+        assert "low score" not in r1["context"]
+        assert "graph chunk" in r2["context"]
+
     def test_returns_weights(self):
         from backend.core.fusion import fuse_context
-        result = fuse_context("test", [], [], [])
+        result = fuse_context("test", [], [])
         assert "cag" in result["weights"]
         assert "graph" in result["weights"]
-
-
-class TestFormatWebSource:
-    """Web source display formatting."""
-
-    def test_strips_tavily_prefix(self):
-        from backend.core.fusion import format_web_source
-        result = format_web_source({"url": "tavily://search", "text": "content", "title": "Title"})
-        assert "tavily" not in result.lower()
-        assert "Title" in result
-
-    def test_strips_tavily_from_title(self):
-        from backend.core.fusion import format_web_source
-        result = format_web_source({"url": "https://example.com", "text": "content", "title": "Tavily: Example"})
-        assert "Tavily:" not in result
-        assert "Example" in result
 
 
 # ---------------------------------------------------------------------------
@@ -596,39 +572,24 @@ class TestCAGRetrieval:
 # ---------------------------------------------------------------------------
 
 class TestGraphCache:
-    """Verify graph loading cache behavior."""
+    """Verify retrieve_graph behavior when the entity graph is empty."""
 
-    def test_graph_cache_loads(self):
-        from backend.core.retrievers import _load_graph
-        G = _load_graph()
-        # ontology.json is currently empty, so graph has 0 nodes
-        assert G is not None
-
-    def test_retrieve_graph_empty_ontology(self):
+    def test_retrieve_graph_empty(self):
         from backend.core.retrievers import retrieve_graph, _graph_engine_cache
         from backend.config import PROJECT_ROOT
-        # reset graph engine cache and temporarily remove both data files
         _graph_engine_cache["engine"] = None
         _graph_engine_cache["attempted"] = False
         entity_graph = PROJECT_ROOT / "data" / "entity_graph.json"
-        ontology = PROJECT_ROOT / "data" / "ontology.json"
         eg_backup = None
-        ont_backup = None
         if entity_graph.exists():
             eg_backup = entity_graph.read_text()
             entity_graph.unlink()
-        if ontology.exists():
-            ont_backup = ontology.read_text()
-            ontology.unlink()
         try:
             results = retrieve_graph("What is machine learning?")
-            # empty ontology + no entity graph file = empty results
             assert results == []
         finally:
             if eg_backup is not None:
                 entity_graph.write_text(eg_backup)
-            if ont_backup is not None:
-                ontology.write_text(ont_backup)
             _graph_engine_cache["engine"] = None
             _graph_engine_cache["attempted"] = False
 
@@ -788,10 +749,7 @@ class TestGraphEngine:
         from backend.core.graph_engine import GraphEngine
         if tmp_path is None:
             tmp_path = Path(tempfile.mkdtemp())
-        return GraphEngine(
-            graph_path=tmp_path / "entity_graph.json",
-            ontology_path=tmp_path / "ontology.json",
-        )
+        return GraphEngine(graph_path=tmp_path / "entity_graph.json")
 
     def test_add_entity(self):
         engine = self._make_engine()
@@ -926,15 +884,13 @@ class TestGraphEngine:
         tmp_dir = Path(tempfile.mkdtemp())
         graph_path = tmp_dir / "entity_graph.json"
 
-        # build and save
         from backend.core.graph_engine import GraphEngine
-        engine1 = GraphEngine(graph_path=graph_path, ontology_path=tmp_dir / "ont.json")
+        engine1 = GraphEngine(graph_path=graph_path)
         engine1.add_entity({"id": "test_node", "label": "Test Node", "description": "A test entity"})
         engine1.save()
         assert graph_path.exists()
 
-        # load into fresh engine
-        engine2 = GraphEngine(graph_path=graph_path, ontology_path=tmp_dir / "ont.json")
+        engine2 = GraphEngine(graph_path=graph_path)
         assert engine2.node_count == 1
         assert "test_node" in [n for n in engine2.graph.nodes()]
 
@@ -1080,184 +1036,6 @@ class TestComputeFitGraphAware:
             "path_distance_weight": 0.0,
         })
         assert penalized_score <= base_score
-
-
-# ---------------------------------------------------------------------------
-# Phase 5: reasoning.py - ORPS tree exploration
-# ---------------------------------------------------------------------------
-
-class TestReasoningTypes:
-    """Verify typed structures and config loading from reasoning module."""
-
-    def test_candidate_response_fields(self):
-        from backend.core.reasoning import CandidateResponse
-        candidate = CandidateResponse(
-            text="test", reward=0.8, factual=0.9, proactivity=0.7,
-            helpfulness=0.85, suggestions=["q1"], reason="ok",
-            refinement_pass=0,
-        )
-        assert candidate["reward"] == 0.8
-        assert candidate["refinement_pass"] == 0
-
-    def test_exploration_tree_fields(self):
-        from backend.core.reasoning import ExplorationTree
-        tree = ExplorationTree(
-            query="test", fused_context="ctx", beam_width=3,
-            candidates=[], selected_index=0, selected_reward=0.8,
-            pruned_count=1, refined_count=0, faithfulness_checked=False,
-            faithfulness_score=-1.0, elapsed_ms=50.0,
-        )
-        assert tree["beam_width"] == 3
-        assert tree["pruned_count"] == 1
-
-    def test_reasoning_result_fields(self):
-        from backend.core.reasoning import ReasoningResult
-        result = ReasoningResult(
-            response="answer", reward=0.85, proactive_suggestions=["q1"],
-            reason="critique", candidates_explored=3, pruned_count=1,
-            faithfulness_score=-1.0,
-        )
-        assert result["candidates_explored"] == 3
-
-    def test_config_defaults_loaded(self):
-        from backend.core.reasoning import (
-            _DEFAULT_BEAM_WIDTH,
-            _DEFAULT_PRUNE_THRESHOLD,
-            _DEFAULT_MAX_REFINEMENT,
-            _FAITHFULNESS_HOT,
-            _FAITHFULNESS_GATE,
-        )
-        assert isinstance(_DEFAULT_BEAM_WIDTH, int)
-        assert _DEFAULT_BEAM_WIDTH >= 1
-        assert 0.0 <= _DEFAULT_PRUNE_THRESHOLD <= 1.0
-        assert isinstance(_DEFAULT_MAX_REFINEMENT, int)
-        assert isinstance(_FAITHFULNESS_HOT, bool)
-        assert 0.0 <= _FAITHFULNESS_GATE <= 1.0
-
-
-class TestFaithfulnessCache:
-    """TTL-based cache for check_faithfulness() LLM calls."""
-
-    def test_cache_key_deterministic(self):
-        from backend.core.reasoning import _cache_key
-        k1 = _cache_key("the sky is blue", "abc123")
-        k2 = _cache_key("the sky is blue", "abc123")
-        assert k1 == k2
-        assert len(k1) == 24
-
-    def test_cache_key_differs_for_different_claims(self):
-        from backend.core.reasoning import _cache_key
-        k1 = _cache_key("the sky is blue", "ctx1")
-        k2 = _cache_key("grass is green", "ctx1")
-        assert k1 != k2
-
-    def test_cache_key_differs_for_different_context(self):
-        from backend.core.reasoning import _cache_key
-        k1 = _cache_key("same claim", "ctx_a")
-        k2 = _cache_key("same claim", "ctx_b")
-        assert k1 != k2
-
-    def test_context_hash_stable(self):
-        from backend.core.reasoning import _context_hash
-        h1 = _context_hash("some context text")
-        h2 = _context_hash("some context text")
-        assert h1 == h2
-        assert len(h1) == 16
-
-    def test_clear_faithfulness_cache(self):
-        from backend.core.reasoning import (
-            _faithfulness_cache,
-            clear_faithfulness_cache,
-        )
-        import time
-        # inject a dummy entry
-        _faithfulness_cache["test_key"] = (time.time(), True, 0.9)
-        assert len(_faithfulness_cache) >= 1
-        cleared = clear_faithfulness_cache()
-        assert cleared >= 1
-        assert len(_faithfulness_cache) == 0
-
-
-class TestSelectiveFaithfulness:
-    """Faithfulness gating based on sensitivity level."""
-
-    def test_should_check_below_gate(self):
-        from backend.core.reasoning import should_check_faithfulness
-        # default gate is 0.7; sensitivity 0.3 should skip
-        assert should_check_faithfulness(0.3) is False
-
-    def test_should_check_above_gate(self):
-        from backend.core.reasoning import should_check_faithfulness
-        assert should_check_faithfulness(0.9) is True
-
-    def test_should_check_at_gate(self):
-        from backend.core.reasoning import should_check_faithfulness
-        from backend.core.reasoning import _FAITHFULNESS_GATE
-        assert should_check_faithfulness(_FAITHFULNESS_GATE) is True
-
-    def test_run_selective_below_gate_skips(self):
-        from backend.core.reasoning import run_selective_faithfulness
-        checked, score = run_selective_faithfulness(
-            "Some answer text.", "Some context.", sensitivity_level=0.2,
-        )
-        assert checked is False
-        assert score == -1.0
-
-
-class TestScoreCandidate:
-    """_score_candidate wraps critique() for tree nodes."""
-
-    def test_scores_inline_critique(self):
-        from backend.core.reasoning import _score_candidate
-        response_with_critique = """Answer about ML.
-<critique>
-Factual accuracy: 0.90/1.00
-Proactivity score: 0.75/1.00
-Helpfulness: 0.85/1.00
-Final reward: 0.88
-Proactive suggestions:
-- What about deep learning?
-</critique>"""
-        candidate = _score_candidate("test q", "test ctx", response_with_critique)
-        assert abs(candidate["reward"] - 0.88) < 0.01
-        assert "<critique>" not in candidate["text"]
-        assert candidate["refinement_pass"] == 0
-
-    def test_scores_plain_response(self):
-        from backend.core.reasoning import _score_candidate
-        candidate = _score_candidate(
-            "test q", "test ctx", "Just a plain answer without critique.",
-            refinement_pass=1,
-        )
-        assert 0.0 <= candidate["reward"] <= 1.0
-        assert candidate["refinement_pass"] == 1
-        assert "plain answer" in candidate["text"]
-
-
-class TestReasoningConfig:
-    """Verify reasoning config section in config.yaml."""
-
-    def test_config_section_exists(self):
-        from backend.config import cfg
-        assert "reasoning" in cfg
-        r = cfg["reasoning"]
-        assert "beam_width" in r
-        assert "prune_threshold" in r
-        assert "max_refinement_passes" in r
-        assert "faithfulness_on_hot_path" in r
-        assert "faithfulness_sensitivity_gate" in r
-        assert "faithfulness_cache_ttl_secs" in r
-        assert "log_exploration_tree" in r
-
-    def test_config_defaults_sane(self):
-        from backend.config import cfg
-        r = cfg["reasoning"]
-        assert 1 <= r["beam_width"] <= 10
-        assert 0.0 <= r["prune_threshold"] <= 1.0
-        assert r["max_refinement_passes"] >= 0
-        assert isinstance(r["faithfulness_on_hot_path"], bool)
-        assert 0.0 <= r["faithfulness_sensitivity_gate"] <= 1.0
-        assert r["faithfulness_cache_ttl_secs"] > 0
 
 
 class TestCoTTraceGeneration:
@@ -1614,324 +1392,3 @@ class TestFineTuneEndpoint:
         data = resp.json()
         assert data["status"] == "unauthorized"
 
-
-# ---------------------------------------------------------------------------
-# Phase 7: Multimodal Capabilities
-# ---------------------------------------------------------------------------
-
-class TestMultimodalConfig:
-    """Verify multimodal config loads with safe defaults."""
-
-    def test_config_section_exists(self):
-        from backend.config import cfg
-        mm = cfg.get("multimodal", {})
-        assert isinstance(mm, dict)
-        assert "enabled" in mm
-        assert "clip_model" in mm
-        assert "vision_model" in mm
-
-    def test_defaults_are_safe(self):
-        from backend.config import cfg
-        mm = cfg.get("multimodal", {})
-        assert mm.get("clip_model") == "openai/clip-vit-base-patch32"
-        assert mm.get("vision_model") == "llava"
-        assert mm.get("caption_max_tokens", 200) == 200
-        assert mm.get("max_image_size_mb", 10) == 10
-
-
-class TestImageChunkTypedDict:
-    """ImageChunk TypedDict has correct fields."""
-
-    def test_fields_present(self):
-        from backend.core.multimodal import ImageChunk
-        # TypedDicts expose __annotations__
-        keys = set(ImageChunk.__annotations__)
-        expected = {"image_id", "image_path", "source", "caption",
-                    "content_type", "width", "height", "page_number"}
-        assert expected.issubset(keys)
-
-
-class TestImageSearchResultTypedDict:
-    """ImageSearchResult TypedDict has correct fields."""
-
-    def test_fields_present(self):
-        from backend.core.multimodal import ImageSearchResult
-        keys = set(ImageSearchResult.__annotations__)
-        expected = {"text", "score", "source", "id", "image_path",
-                    "caption", "width", "height"}
-        assert expected.issubset(keys)
-
-
-class TestImageId:
-    """Deterministic image hashing."""
-
-    def test_consistent_hash(self):
-        from backend.core.multimodal import _image_id
-        data = b"test image bytes"
-        h1 = _image_id(data)
-        h2 = _image_id(data)
-        assert h1 == h2
-        assert len(h1) == 32  # shake_256 with length=16 -> 32 hex chars
-
-    def test_different_data_different_hash(self):
-        from backend.core.multimodal import _image_id
-        assert _image_id(b"alpha") != _image_id(b"beta")
-
-
-class TestImageStorePath:
-    """Image store directory creation."""
-
-    def test_path_exists(self):
-        from backend.core.multimodal import _image_store_path
-        p = _image_store_path()
-        assert p.exists()
-        assert p.is_dir()
-        assert "data/images" in str(p)
-
-
-class TestImageIndexPath:
-    """Image FAISS index path resolution."""
-
-    def test_index_path(self):
-        from backend.core.multimodal import _image_index_path
-        p = _image_index_path()
-        assert str(p).endswith("image_index.faiss")
-
-    def test_metadata_path(self):
-        from backend.core.multimodal import _image_metadata_path
-        p = _image_metadata_path()
-        assert str(p).endswith("image_metadata.json")
-
-
-class TestBuildImageIndexEmpty:
-    """Building an image index with no chunks produces empty index."""
-
-    def test_empty_index(self):
-        import faiss
-        from backend.core.multimodal import build_image_index, _CLIP_DIM
-        idx = build_image_index([])
-        assert isinstance(idx, faiss.IndexFlatIP)
-        assert idx.ntotal == 0
-        assert idx.d == _CLIP_DIM
-
-
-class TestGetImageIndex:
-    """get_image_index returns valid FAISS index."""
-
-    def test_returns_index(self):
-        import faiss
-        from backend.core.multimodal import get_image_index, _CLIP_DIM
-        idx = get_image_index()
-        assert isinstance(idx, faiss.IndexFlatIP)
-        assert idx.d == _CLIP_DIM
-
-
-class TestRetrieveImagesDisabled:
-    """retrieve_images returns empty when multimodal is disabled."""
-
-    def test_disabled_returns_empty(self):
-        from backend.core.multimodal import retrieve_images
-        from backend.config import cfg
-        original = cfg.get("multimodal", {}).get("enabled")
-        try:
-            cfg.setdefault("multimodal", {})["enabled"] = False
-            result = retrieve_images("test query")
-            assert result == []
-        finally:
-            cfg.setdefault("multimodal", {})["enabled"] = original
-
-
-class TestRetrieveImagesEmptyIndex:
-    """retrieve_images returns empty when index has no images."""
-
-    def test_empty_index_returns_empty(self):
-        from backend.core.multimodal import retrieve_images, build_image_index
-        from backend.config import cfg
-        original = cfg.get("multimodal", {}).get("enabled")
-        try:
-            cfg.setdefault("multimodal", {})["enabled"] = True
-            build_image_index([])
-            result = retrieve_images("test query")
-            assert result == []
-        finally:
-            cfg.setdefault("multimodal", {})["enabled"] = original
-
-
-class TestProcessDocumentsForImagesDisabled:
-    """process_documents_for_images returns empty when disabled."""
-
-    def test_disabled(self):
-        from backend.core.multimodal import process_documents_for_images
-        from backend.config import cfg, PROJECT_ROOT
-        original = cfg.get("multimodal", {}).get("enabled")
-        try:
-            cfg.setdefault("multimodal", {})["enabled"] = False
-            result = process_documents_for_images(PROJECT_ROOT / "data" / "docs")
-            assert result == []
-        finally:
-            cfg.setdefault("multimodal", {})["enabled"] = original
-
-
-class TestDiscoverStandaloneImages:
-    """discover_standalone_images handles missing dirs gracefully."""
-
-    def test_nonexistent_dir(self):
-        from backend.core.multimodal import discover_standalone_images
-        result = discover_standalone_images(Path("/nonexistent/path"))
-        assert result == []
-
-
-class TestExtractPdfImages:
-    """extract_pdf_images degrades gracefully."""
-
-    def test_nonexistent_file(self):
-        from backend.core.multimodal import extract_pdf_images
-        result = extract_pdf_images(Path("/nonexistent/file.pdf"))
-        assert result == []
-
-
-class TestExtractMarkdownImages:
-    """extract_markdown_images handles edge cases."""
-
-    def test_nonexistent_file(self):
-        from backend.core.multimodal import extract_markdown_images
-        result = extract_markdown_images(Path("/nonexistent/file.md"))
-        assert result == []
-
-    def test_no_images_in_markdown(self):
-        import tempfile
-        from backend.core.multimodal import extract_markdown_images
-        with tempfile.NamedTemporaryFile(suffix=".md", mode="w", delete=False) as f:
-            f.write("# Hello\n\nNo images here.")
-            f.flush()
-            result = extract_markdown_images(Path(f.name))
-        assert result == []
-        Path(f.name).unlink()
-
-
-class TestImageToBase64:
-    """image_to_base64 encoding."""
-
-    def test_nonexistent_file(self):
-        from backend.core.multimodal import image_to_base64
-        assert image_to_base64(Path("/nonexistent.png")) == ""
-
-    def test_valid_image(self):
-        import tempfile
-        from backend.core.multimodal import image_to_base64
-        # create minimal 1x1 PNG (valid binary)
-        png_bytes = (
-            b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01'
-            b'\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00'
-            b'\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00'
-            b'\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82'
-        )
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-            f.write(png_bytes)
-            f.flush()
-            result = image_to_base64(Path(f.name))
-        assert result.startswith("data:image/png;base64,")
-        Path(f.name).unlink()
-
-
-class TestCaptionImageFallback:
-    """caption_image returns fallback when vision model is unavailable."""
-
-    def test_fallback_on_missing_file(self):
-        from backend.core.multimodal import caption_image
-        result = caption_image(Path("/nonexistent.png"), fallback="test caption")
-        assert result == "test caption"
-
-
-class TestBuildMultimodalIndex:
-    """build_multimodal_index end-to-end."""
-
-    def test_empty_docs(self):
-        import tempfile
-        from backend.core.multimodal import build_multimodal_index
-        from backend.config import cfg
-        original = cfg.get("multimodal", {}).get("enabled")
-        try:
-            cfg.setdefault("multimodal", {})["enabled"] = True
-            with tempfile.TemporaryDirectory() as tmpdir:
-                count = build_multimodal_index(Path(tmpdir))
-                assert count == 0
-        finally:
-            cfg.setdefault("multimodal", {})["enabled"] = original
-
-
-class TestRetrieveIncludesImages:
-    """retrieve() returns images key in results."""
-
-    def test_images_key_present(self):
-        from backend.core.retrievers import retrieve
-        result = retrieve("test query")
-        assert "images" in result
-        assert isinstance(result["images"], list)
-
-
-class TestImageServingEndpoint:
-    """Image serving endpoint validation."""
-
-    def _reset_limiter(self):
-        from backend.main import limiter
-        try:
-            limiter._storage.reset()
-        except Exception:
-            pass
-
-    def test_traversal_blocked(self):
-        from fastapi.testclient import TestClient
-        self._reset_limiter()
-        from backend.main import app
-        client = TestClient(app)
-        resp = client.get("/api/images/../../../etc/passwd")
-        assert resp.status_code in (400, 403, 404)
-
-    def test_not_found(self):
-        from fastapi.testclient import TestClient
-        self._reset_limiter()
-        from backend.main import app
-        client = TestClient(app)
-        resp = client.get("/api/images/nonexistent_abc123.png")
-        assert resp.status_code == 404
-
-    def test_absolute_path_rejected(self):
-        from fastapi.testclient import TestClient
-        self._reset_limiter()
-        from backend.main import app
-        client = TestClient(app)
-        resp = client.get("/api/images//etc/passwd")
-        assert resp.status_code in (400, 403, 404)
-
-
-class TestUploadAcceptsImages:
-    """Upload endpoint accepts image file extensions."""
-
-    def _reset_limiter(self):
-        from backend.main import limiter
-        try:
-            limiter._storage.reset()
-        except Exception:
-            pass
-
-    def test_png_accepted(self):
-        from fastapi.testclient import TestClient
-        self._reset_limiter()
-        from backend.main import app
-        client = TestClient(app)
-        # minimal 1x1 PNG
-        png_bytes = (
-            b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01'
-            b'\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00'
-            b'\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00'
-            b'\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82'
-        )
-        resp = client.post("/api/upload", files=[("files", ("test.png", png_bytes, "image/png"))])
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["total_saved"] >= 1
-        # cleanup
-        uploaded = Path(__file__).resolve().parents[1] / "data" / "docs" / "test.png"
-        if uploaded.exists():
-            uploaded.unlink()

@@ -326,12 +326,10 @@ class TestNoDeadReferences:
         # returns a 2-element list [cag, graph], no rag/web
         assert len(w) == 2
 
-    def test_retrieve_no_rag_results(self):
-        """RAG key may still exist for backward compat but must be empty."""
+    def test_retrieve_returns_two_paths_only(self):
         from backend.core.retrievers import retrieve
         results = retrieve("test query")
-        rag = results.get("rag", [])
-        assert len(rag) == 0, "RAG results should always be empty in 2-path architecture"
+        assert set(results.keys()) == {"cag", "graph"}
 
     def test_config_retrieval_paths(self):
         from backend.config import cfg
@@ -347,12 +345,11 @@ class TestNoDeadReferences:
         assert FusionEnv.NUM_SOURCES == 2
 
     def test_no_tavily_in_retrievers(self):
-        """tavily_search should not be called in retrievers hot path."""
+        """tavily_search must not appear anywhere in retrievers."""
         import importlib
         mod = importlib.import_module("backend.core.retrievers")
         source = Path(mod.__file__).read_text()
-        # functional tavily code removed; only deprecation comments may reference it
-        assert "tavily_search(" not in source, "Active tavily_search call found in retrievers"
+        assert "tavily" not in source.lower()
 
 
 # ───────────────────────────────────────────────────────────────────────

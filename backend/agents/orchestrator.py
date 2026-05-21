@@ -461,7 +461,6 @@ class Orchestrator:
             proactive_suggestions=critique_updates.get("proactive_suggestions", []),
             blocked=False,
             safety_reason="Safe",
-            web_status=web_status,
         )
 
     def run(

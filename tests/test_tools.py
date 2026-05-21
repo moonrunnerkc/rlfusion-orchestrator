@@ -23,13 +23,6 @@ os.environ.setdefault("RLFUSION_FORCE_CPU", "true")
 class TestBaseToolProtocol:
     """Verify all tools satisfy the BaseTool protocol."""
 
-    def test_web_search_is_base_tool(self):
-        from backend.tools.base import BaseTool
-        from backend.tools.web_search import WebSearchTool
-        tool = WebSearchTool()
-        assert isinstance(tool, BaseTool)
-        assert tool.name == "web_search"
-
     def test_calculator_is_base_tool(self):
         from backend.tools.base import BaseTool
         from backend.tools.calculator import CalculatorTool
@@ -60,24 +53,22 @@ class TestBaseToolProtocol:
         assert not isinstance(NotATool(), BaseTool)
 
     def test_all_tools_have_description(self):
-        from backend.tools.web_search import WebSearchTool
         from backend.tools.calculator import CalculatorTool
         from backend.tools.code_executor import CodeExecutorTool
         from backend.tools.api_bridge import ApiBridgeTool
 
-        for tool_cls in [WebSearchTool, CalculatorTool, CodeExecutorTool, ApiBridgeTool]:
+        for tool_cls in [CalculatorTool, CodeExecutorTool, ApiBridgeTool]:
             tool = tool_cls()
             assert len(tool.description) > 10, f"{tool.name} has too short a description"
             assert isinstance(tool.input_schema, dict)
             assert "required_params" in tool.input_schema
 
     def test_all_tools_have_unique_names(self):
-        from backend.tools.web_search import WebSearchTool
         from backend.tools.calculator import CalculatorTool
         from backend.tools.code_executor import CodeExecutorTool
         from backend.tools.api_bridge import ApiBridgeTool
 
-        names = [cls().name for cls in [WebSearchTool, CalculatorTool, CodeExecutorTool, ApiBridgeTool]]
+        names = [cls().name for cls in [CalculatorTool, CodeExecutorTool, ApiBridgeTool]]
         assert len(names) == len(set(names)), f"Duplicate tool names: {names}"
 
 
@@ -553,40 +544,6 @@ class TestPrivateUrlDetection:
 
 
 # ---------------------------------------------------------------------------
-# WebSearchTool
-# ---------------------------------------------------------------------------
-
-class TestWebSearchTool:
-    """Web search tool wraps tavily_search without duplicating logic."""
-
-    def test_empty_query_returns_error(self):
-        from backend.tools.web_search import WebSearchTool
-        from backend.tools.base import ToolInput
-        tool = WebSearchTool()
-        result = tool.execute(ToolInput(query="", params={}))
-        assert result["status"] == "error"
-        assert "Empty" in result["content"]
-
-    def test_disabled_web_returns_error(self):
-        from backend.tools.web_search import WebSearchTool
-        from backend.tools.base import ToolInput
-        # web is disabled by default in config.yaml (web.enabled: false)
-        tool = WebSearchTool()
-        result = tool.execute(ToolInput(query="latest news", params={}))
-        assert result["status"] == "error"
-        # should indicate disabled or no_api_key
-        assert result["confidence"] == 0.0
-
-    def test_tool_name_and_source(self):
-        from backend.tools.web_search import WebSearchTool
-        from backend.tools.base import ToolInput
-        tool = WebSearchTool()
-        result = tool.execute(ToolInput(query="test", params={}))
-        assert result["tool_name"] == "web_search"
-        assert result["source"] == "web_search"
-
-
-# ---------------------------------------------------------------------------
 # ToolRegistry
 # ---------------------------------------------------------------------------
 
@@ -664,22 +621,10 @@ class TestToolRegistry:
     def test_select_tools_math_query(self):
         from backend.tools.registry import ToolRegistry
         from backend.tools.calculator import CalculatorTool
-        from backend.tools.web_search import WebSearchTool
         reg = ToolRegistry()
         reg.register(CalculatorTool())
-        reg.register(WebSearchTool())
         selected = reg.select_tools("calculate the square root of 144")
         assert "calculator" in selected
-
-    def test_select_tools_web_query(self):
-        from backend.tools.registry import ToolRegistry
-        from backend.tools.calculator import CalculatorTool
-        from backend.tools.web_search import WebSearchTool
-        reg = ToolRegistry()
-        reg.register(CalculatorTool())
-        reg.register(WebSearchTool())
-        selected = reg.select_tools("search the web for current news")
-        assert "web_search" in selected
 
     def test_select_tools_no_match_returns_all(self):
         from backend.tools.registry import ToolRegistry
@@ -780,14 +725,14 @@ class TestBuildDefaultRegistry:
     def test_all_tools_registered(self):
         from backend.tools import build_default_registry
         reg = build_default_registry()
-        assert reg.tool_count == 4
-        expected = {"web_search", "calculator", "code_executor", "api_bridge"}
+        assert reg.tool_count == 3
+        expected = {"calculator", "code_executor", "api_bridge"}
         assert set(reg.tool_names) == expected
 
     def test_custom_rate_limits(self):
         from backend.tools import build_default_registry
         reg = build_default_registry(max_calls_per_tool=5, window_secs=30.0)
-        assert reg.tool_count == 4
+        assert reg.tool_count == 3
 
 
 # ---------------------------------------------------------------------------
@@ -804,7 +749,6 @@ class TestToolsPackage:
         assert hasattr(tools, "ToolOutput")
         assert hasattr(tools, "ToolSchema")
         assert hasattr(tools, "ToolRegistry")
-        assert hasattr(tools, "WebSearchTool")
         assert hasattr(tools, "CalculatorTool")
         assert hasattr(tools, "CodeExecutorTool")
         assert hasattr(tools, "ApiBridgeTool")
