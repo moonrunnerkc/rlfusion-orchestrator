@@ -188,8 +188,8 @@ export default function App() {
   const [proactiveHint, setProactiveHint] = useState<string>('Waiting for next query...');
   const [isLoading, setIsLoading] = useState(false);
   const [mode, setMode] = useState<'chat' | 'build' | 'test'>('chat');
-  const [systemInfo, setSystemInfo] = useState<{gpu: string | null; model: string; policy: string; device: string; stis: {enabled: boolean; model: string | null; status: string; agents: number} | null}>({
-    gpu: null, model: '—', policy: '—', device: 'cpu', stis: null
+  const [systemInfo, setSystemInfo] = useState<{gpu: string | null; model: string; policy: string; device: string}>({
+    gpu: null, model: '—', policy: '—', device: 'cpu'
   });
   const [pipelineAgents, setPipelineAgents] = useState<AgentStatus[]>([
     { name: 'safety', status: 'idle' },
@@ -212,7 +212,6 @@ export default function App() {
           model: data.model || '—',
           policy: data.policy || '—',
           device: data.device || 'cpu',
-          stis: data.stis || null,
         });
         // If the server rebooted, wipe client-side state so it feels fresh
         const prevBoot = localStorage.getItem('rlfusion_boot_id');
@@ -580,21 +579,6 @@ export default function App() {
               <span className="text-gray-500">LLM</span>
               <span className="text-[var(--accent)] font-mono text-[11px]">{systemInfo.model}</span>
             </div>
-            {systemInfo.stis?.enabled && (
-              <div className="flex justify-between items-center">
-                <span className="text-gray-500">STIS</span>
-                <span className="flex items-center gap-1.5">
-                  <span className={`inline-block w-1.5 h-1.5 rounded-full ${
-                    systemInfo.stis.status === 'ready' ? 'bg-emerald-400' :
-                    systemInfo.stis.status === 'standby' ? 'bg-amber-400' :
-                    'bg-gray-600'
-                  }`} />
-                  <span className="text-[var(--accent)] font-mono text-[11px]">
-                    {systemInfo.stis.model ? systemInfo.stis.model.split('/').pop() : 'Qwen2.5-1.5B'}
-                  </span>
-                </span>
-              </div>
-            )}
             <div className="flex justify-between items-center">
               <span className="text-gray-500">Device</span>
               <span className="text-[var(--accent)] font-mono text-[11px]">{systemInfo.gpu || systemInfo.device.toUpperCase()}</span>

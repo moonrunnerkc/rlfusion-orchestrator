@@ -1,5 +1,5 @@
 // Author: Bradley R. Kinnard
-// AgentPipeline — polished multi-agent status with live detail + STIS awareness
+// AgentPipeline — polished multi-agent status with live detail
 import { useEffect, useRef, useState } from 'react';
 
 export interface AgentStatus {
@@ -38,7 +38,6 @@ function AgentRow({ agent, index }: { agent: AgentStatus; index: number }) {
   const isDone = agent.status === 'done';
   const isBlocked = agent.status === 'blocked';
   const hasDetail = !!agent.detail;
-  const isStis = hasDetail && agent.detail!.includes('STIS');
   const stepNum = index + 1;
 
   return (
@@ -115,13 +114,11 @@ function AgentRow({ agent, index }: { agent: AgentStatus; index: number }) {
       {hasDetail && (agent.status === 'running' || agent.status === 'done' || agent.status === 'blocked') && (
         <div className="px-2.5 pb-2 pl-[46px]">
           <p className={`text-[10px] leading-snug font-mono ${
-            isStis ? 'text-violet-400/70' :
             isRunning ? 'text-cyan-400/50' :
             isBlocked ? 'text-red-400/50' :
             'text-gray-500/60'
           } ${isRunning ? 'animate-pulse' : ''}`}>
-            {isStis && <span className="text-violet-400 font-semibold not-italic">⚡ STIS </span>}
-            {isStis ? agent.detail!.replace('STIS ', '').replace('STIS', '') : agent.detail}
+            {agent.detail}
           </p>
         </div>
       )}

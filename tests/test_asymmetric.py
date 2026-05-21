@@ -73,7 +73,7 @@ class TestTaskRouting:
 
     def test_gpu_tasks_recognized(self):
         from backend.core.asymmetric_llm import _GPU_TASKS
-        expected = {"generation", "critique", "stis_deep", "faithfulness"}
+        expected = {"generation", "critique", "faithfulness"}
         assert _GPU_TASKS == expected
 
     def test_no_task_overlap(self):

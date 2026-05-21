@@ -2,13 +2,16 @@
 """Asymmetric dual-model LLM orchestrator.
 
 Pins Qwen 2.5 1.5B (Q4_K_M) to CPU for triage tasks and Llama 3.1 8B (Q8_0)
-to GPU for generation, critique, and deep reasoning. Both models loaded once
-at startup in a single process, zero inter-process communication.
+to GPU for generation and critique. Both models loaded once at startup in a
+single process, zero inter-process communication.
 
 CPU worker handles: intent parsing, safety checks, CAG orchestration,
   GraphRAG entity extraction, observation building.
-GPU executor handles: generation, critique, STIS deep reasoning,
-  faithfulness verification.
+GPU executor handles: generation, critique, faithfulness verification.
+
+Note: route_task() is currently not wired into the live request path.
+The orchestrator routes work through fusion_agent/critique_agent/main.py
+directly; this class is loaded but reserved for the Phase 5 routing wire-up.
 """
 from __future__ import annotations
 
@@ -28,7 +31,7 @@ _CHARS_PER_TOKEN = 4
 
 TaskType = Literal[
     "intent_parse", "safety_check", "cag_lookup", "graph_trigger",
-    "obs_build", "generation", "critique", "stis_deep", "faithfulness",
+    "obs_build", "generation", "critique", "faithfulness",
 ]
 
 _CPU_TASKS: frozenset[str] = frozenset({
@@ -37,7 +40,7 @@ _CPU_TASKS: frozenset[str] = frozenset({
 })
 
 _GPU_TASKS: frozenset[str] = frozenset({
-    "generation", "critique", "stis_deep", "faithfulness",
+    "generation", "critique", "faithfulness",
 })
 
 
@@ -176,7 +179,7 @@ class AsymmetricLLMOrchestrator:
         temperature: float = 0.7,
         max_tokens: int = 2048,
     ) -> str:
-        """Run a generation task on the GPU executor. Deep reasoning.
+        """Run a generation task on the GPU executor.
 
         Truncates prompt to fit within GPU context window.
         """
@@ -230,7 +233,7 @@ class AsymmetricLLMOrchestrator:
         """Route a task to the correct worker based on type.
 
         CPU tasks: intent_parse, safety_check, cag_lookup, graph_trigger, obs_build
-        GPU tasks: generation, critique, stis_deep, faithfulness
+        GPU tasks: generation, critique, faithfulness
         """
         if task_type in _CPU_TASKS:
             json_mode = task_type in {"intent_parse", "graph_trigger", "obs_build"}
