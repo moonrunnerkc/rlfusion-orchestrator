@@ -1,22 +1,28 @@
 #!/bin/bash
 # Author: Bradley R. Kinnard
-# Master experiment runner for RLFusion
-# Default: full 8 baselines × 12 ablations × 5 seeds
-# QUICK=1: only 1 seed, 2 ablations
+# CQL-only seed sweep for the 2-path RLFusion trainer.
+#
+# The pre-v2.0.0 sweep ran 8 baselines × 12 ablations × 5 seeds, but the
+# trainer no longer accepts --algo / --ablation flags. Per the 2026-05-21
+# remediation plan (F1.4) we ship the trimmed sweep that actually runs;
+# the broader baseline matrix lives in scripts/sweep_baselines.sh as a
+# stub until those flags exist.
+#
+# Defaults: SEEDS="42 123 456 789 1337"
+# QUICK=1:  SEEDS="42"
+#
+# Each run is checked for non-zero exit; failures are reported as REWARD=FAIL
+# rather than being masked by `|| REWARD="0.0"`.
 
-set -e
+set -euo pipefail
 
 echo "=============================================="
-echo "RLFUSION EXPERIMENT RUNNER"
+echo "RLFUSION CQL SEED SWEEP"
 echo "=============================================="
 echo ""
 
-# ── Prerequisite checks ──────────────────────────────────
-
-# Check Python is available
 if ! command -v python &> /dev/null; then
     echo "[ERROR] Python is not installed or not in PATH."
-    echo "        Install Python 3.10+ and try again."
     exit 1
 fi
 
@@ -27,174 +33,82 @@ if [ "$PYTHON_MAJOR" -lt 3 ] || { [ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR"
     echo "[ERROR] Python 3.10+ required. Found: $PYTHON_VERSION"
     exit 1
 fi
-echo "[CHECK] Python $PYTHON_VERSION ✓"
+echo "[CHECK] Python $PYTHON_VERSION ok"
 
-# Check Ollama is running
-OLLAMA_HOST="${OLLAMA_HOST:-http://localhost:11434}"
-if ! curl -sf "$OLLAMA_HOST/api/tags" > /dev/null 2>&1; then
-    echo "[ERROR] Ollama is not reachable at $OLLAMA_HOST"
-    echo "        Start Ollama first:  ollama serve"
-    echo "        Then pull the model: ollama pull llama3.1:8b-instruct-q4_0"
-    exit 1
-fi
-echo "[CHECK] Ollama reachable at $OLLAMA_HOST ✓"
-
-# Check that the required model is pulled
-if ! curl -sf "$OLLAMA_HOST/api/tags" | grep -q "llama3.1"; then
-    echo "[WARN]  llama3.1 model not found in Ollama."
-    echo "        Run: ollama pull llama3.1:8b-instruct-q4_0"
-    echo "        Continuing anyway — training may fail without it."
-fi
-
-# setup paths
 cd "$(dirname "$0")"
-mkdir -p training/logs
-mkdir -p tests/results
+mkdir -p training/logs tests/results
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 LOG_DIR="training/logs"
 RESULTS_DIR="tests/results"
 
-# check quick mode
-if [ "$QUICK" = "1" ]; then
-    echo "[MODE] QUICK - 1 seed, 2 ablations"
+if [ "${QUICK:-0}" = "1" ]; then
+    echo "[MODE] QUICK - 1 seed, 1 epoch"
     SEEDS="42"
-    ABLATIONS="full no_cag"
+    EPOCHS="${EPOCHS:-1}"
 else
-    echo "[MODE] FULL - 5 seeds, 12 ablations"
-    SEEDS="42 123 456 789 1337"
-    ABLATIONS="full no_rag no_cag no_graph no_web no_cswr no_critique no_proactive no_memory rag_only cag_only equal_weights"
+    echo "[MODE] FULL - 5 seeds, $EPOCHS_DEFAULT epochs"
+    SEEDS="${SEEDS:-42 123 456 789 1337}"
+    EPOCHS="${EPOCHS:-50}"
 fi
-
-# baselines
-BASELINES="ppo cql iql td3_bc awac crr bc random"
-
-echo ""
 echo "Seeds: $SEEDS"
-echo "Ablations: $ABLATIONS"
-echo "Baselines: $BASELINES"
 echo ""
 
-# activate venv
-echo "[SETUP] Activating virtual environment..."
 if [ -f "venv/bin/activate" ]; then
     source venv/bin/activate
+elif [ -f ".venv/bin/activate" ]; then
+    source .venv/bin/activate
 elif [ -f "backend/venv/bin/activate" ]; then
     source backend/venv/bin/activate
-elif [ -n "$VIRTUAL_ENV" ]; then
-    echo "[SETUP] Already in a virtual environment: $VIRTUAL_ENV"
+elif [ -n "${VIRTUAL_ENV:-}" ]; then
+    echo "[SETUP] Already in venv: $VIRTUAL_ENV"
 else
     echo "[ERROR] No virtual environment found."
-    echo "        Create one:  python -m venv venv && source venv/bin/activate"
-    echo "        Then install: pip install -r backend/requirements.txt"
     exit 1
 fi
-echo "[CHECK] Virtual environment active ✓"
 
-# results csv header
 RESULTS_CSV="$RESULTS_DIR/experiment_results_$TIMESTAMP.csv"
-echo "baseline,ablation,seed,reward_mean,reward_std,train_time_s" > "$RESULTS_CSV"
-echo "[SETUP] Results will be written to: $RESULTS_CSV"
+echo "baseline,seed,reward,train_time_s,status" > "$RESULTS_CSV"
+echo "[SETUP] Results: $RESULTS_CSV"
 echo ""
 
-# counter for progress
-TOTAL_RUNS=0
-for b in $BASELINES; do
-    for a in $ABLATIONS; do
-        for s in $SEEDS; do
-            TOTAL_RUNS=$((TOTAL_RUNS + 1))
-        done
-    done
-done
+TOTAL_RUNS=$(echo "$SEEDS" | wc -w | tr -d ' ')
 CURRENT_RUN=0
+FAIL_COUNT=0
 
-echo "=============================================="
-echo "STARTING $TOTAL_RUNS EXPERIMENT RUNS"
-echo "=============================================="
-echo ""
+for SEED in $SEEDS; do
+    CURRENT_RUN=$((CURRENT_RUN + 1))
+    echo "[$CURRENT_RUN/$TOTAL_RUNS] seed=$SEED ..."
+    LOG_FILE="$LOG_DIR/cql_seed${SEED}_$TIMESTAMP.log"
+    START_TIME=$(date +%s)
 
-# main loop - baselines
-for BASELINE in $BASELINES; do
-    echo ""
-    echo "======================================"
-    echo "Running baseline: $BASELINE"
-    echo "======================================"
+    if python -m backend.rl.train_rl --seed "$SEED" --epochs "$EPOCHS" > "$LOG_FILE" 2>&1; then
+        REWARD=$(grep -oE 'best_reward[":=]+[ ]*[0-9.-]+' "$LOG_FILE" | tail -1 | grep -oE '[0-9.-]+' | tail -1)
+        if [ -z "$REWARD" ]; then
+            REWARD=$(grep -oE 'val_reward=[0-9.-]+' "$LOG_FILE" | tail -1 | cut -d= -f2)
+        fi
+        STATUS="ok"
+    else
+        REWARD="FAIL"
+        STATUS="fail"
+        FAIL_COUNT=$((FAIL_COUNT + 1))
+        echo "  [FAIL] seed=$SEED exited non-zero; see $LOG_FILE"
+    fi
 
-    # ablations loop
-    for ABLATION in $ABLATIONS; do
-        echo ""
-        echo "  Ablation: $ABLATION"
-
-        # seeds loop
-        for SEED in $SEEDS; do
-            CURRENT_RUN=$((CURRENT_RUN + 1))
-            echo "    [$CURRENT_RUN/$TOTAL_RUNS] seed=$SEED ..."
-
-            LOG_FILE="$LOG_DIR/${BASELINE}_${ABLATION}_seed${SEED}_$TIMESTAMP.log"
-            START_TIME=$(date +%s)
-
-            # run training based on baseline type
-            if [ "$BASELINE" = "ppo" ]; then
-                python -m backend.rl.train_rl --algo ppo --ablation "$ABLATION" --seed "$SEED" > "$LOG_FILE" 2>&1 && \
-                REWARD=$(tail -1 "$LOG_FILE" | grep -oP 'reward[=:]\s*\K[0-9.]+' || echo "0.0") || REWARD="0.0"
-            elif [ "$BASELINE" = "cql" ]; then
-                python -m backend.rl.train_rl --algo cql --ablation "$ABLATION" --seed "$SEED" > "$LOG_FILE" 2>&1 && \
-                REWARD=$(tail -1 "$LOG_FILE" | grep -oP 'reward[=:]\s*\K[0-9.]+' || echo "0.0") || REWARD="0.0"
-            elif [ "$BASELINE" = "iql" ]; then
-                python -m backend.rl.train_rl --algo iql --ablation "$ABLATION" --seed "$SEED" > "$LOG_FILE" 2>&1 && \
-                REWARD=$(tail -1 "$LOG_FILE" | grep -oP 'reward[=:]\s*\K[0-9.]+' || echo "0.0") || REWARD="0.0"
-            elif [ "$BASELINE" = "td3_bc" ]; then
-                python -m backend.rl.train_rl --algo td3_bc --ablation "$ABLATION" --seed "$SEED" > "$LOG_FILE" 2>&1 && \
-                REWARD=$(tail -1 "$LOG_FILE" | grep -oP 'reward[=:]\s*\K[0-9.]+' || echo "0.0") || REWARD="0.0"
-            elif [ "$BASELINE" = "awac" ]; then
-                python -m backend.rl.train_rl --algo awac --ablation "$ABLATION" --seed "$SEED" > "$LOG_FILE" 2>&1 && \
-                REWARD=$(tail -1 "$LOG_FILE" | grep -oP 'reward[=:]\s*\K[0-9.]+' || echo "0.0") || REWARD="0.0"
-            elif [ "$BASELINE" = "crr" ]; then
-                python -m backend.rl.train_rl --algo crr --ablation "$ABLATION" --seed "$SEED" > "$LOG_FILE" 2>&1 && \
-                REWARD=$(tail -1 "$LOG_FILE" | grep -oP 'reward[=:]\s*\K[0-9.]+' || echo "0.0") || REWARD="0.0"
-            elif [ "$BASELINE" = "bc" ]; then
-                python -m backend.rl.train_rl --algo bc --ablation "$ABLATION" --seed "$SEED" > "$LOG_FILE" 2>&1 && \
-                REWARD=$(tail -1 "$LOG_FILE" | grep -oP 'reward[=:]\s*\K[0-9.]+' || echo "0.0") || REWARD="0.0"
-            elif [ "$BASELINE" = "random" ]; then
-                python -m backend.rl.train_rl --algo random --ablation "$ABLATION" --seed "$SEED" > "$LOG_FILE" 2>&1 && \
-                REWARD=$(tail -1 "$LOG_FILE" | grep -oP 'reward[=:]\s*\K[0-9.]+' || echo "0.0") || REWARD="0.0"
-            fi
-
-            END_TIME=$(date +%s)
-            TRAIN_TIME=$((END_TIME - START_TIME))
-
-            # parse reward from log if not already set
-            if [ -z "$REWARD" ] || [ "$REWARD" = "0.0" ]; then
-                REWARD=$(grep -oP 'Best reward[=:]\s*\K[0-9.]+' "$LOG_FILE" 2>/dev/null | tail -1 || echo "0.0")
-            fi
-            if [ -z "$REWARD" ]; then
-                REWARD="0.0"
-            fi
-
-            echo "      -> reward=$REWARD, time=${TRAIN_TIME}s"
-
-            # write to csv
-            echo "$BASELINE,$ABLATION,$SEED,$REWARD,0.0,$TRAIN_TIME" >> "$RESULTS_CSV"
-        done
-    done
+    END_TIME=$(date +%s)
+    TRAIN_TIME=$((END_TIME - START_TIME))
+    echo "  -> reward=$REWARD, time=${TRAIN_TIME}s"
+    echo "cql,$SEED,$REWARD,$TRAIN_TIME,$STATUS" >> "$RESULTS_CSV"
 done
 
 echo ""
 echo "=============================================="
-echo "ALL EXPERIMENTS COMPLETE"
+echo "SWEEP COMPLETE"
 echo "=============================================="
-echo ""
-echo "Results saved to: $RESULTS_CSV"
-echo "Logs saved to: $LOG_DIR/"
-echo ""
+echo "Results: $RESULTS_CSV"
+echo "Logs:    $LOG_DIR/"
 
-# quick summary
-echo "Summary:"
-echo "--------"
-for BASELINE in $BASELINES; do
-    AVG=$(grep "^$BASELINE," "$RESULTS_CSV" | awk -F',' '{sum+=$4; count++} END {if(count>0) printf "%.4f", sum/count; else print "N/A"}')
-    echo "  $BASELINE: avg_reward=$AVG"
-done
-
-echo ""
-echo "Done!"
+if [ "$FAIL_COUNT" -gt 0 ]; then
+    echo "[FAIL] $FAIL_COUNT seed(s) failed."
+    exit 1
+fi

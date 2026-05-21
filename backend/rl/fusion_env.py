@@ -9,12 +9,12 @@ from typing import Any, Dict, Optional, Tuple
 
 import gymnasium as gym
 import numpy as np
-import torch
 
 from backend.agents.fusion_agent import build_fusion_context
 from backend.core.critique import critique
 from backend.core.retrievers import retrieve
 from backend.core.utils import embed_text
+from backend.rl.obs_builder import OBS_DIM, build_observation, project_to_simplex
 
 logger = logging.getLogger(__name__)
 
@@ -22,18 +22,23 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class FusionEnv(gym.Env):
-    """Gymnasium environment for learning 2-path fusion weights (CAG + Graph).
+    """Contextual-bandit environment for 2-path fusion weights (CAG + Graph).
 
-    Each `step()` call:
-      1. Softmax-normalizes the action into [w_cag, w_graph].
-      2. Builds the fused context the way the live pipeline does, via
-         `build_fusion_context()` which runs CSWR re-ranking on graph
-         results before slot allocation.
+    Every `step()` returns terminal=True, so this is a contextual bandit
+    in gym clothing rather than a full-horizon RL problem. Migration from
+    CQL to AWAC, CRR, or behaviour cloning is tracked in RELEASES.md
+    "Known follow-ups" and out of scope for the 2026-05-21 remediation.
+
+    Each call:
+      1. Projects the action onto the [w_cag, w_graph] simplex via
+         `project_to_simplex` (same fn the live serving path uses).
+      2. Builds the fused context exactly the way the live pipeline does
+         via `build_fusion_context()` (CSWR rerank, injection scrub).
       3. Calls the real local generator (Llama 3.1 8B by default) for a
          response unless RLFUSION_ENV_DRY_RUN is set, in which case it
          falls back to the fused context as the "response" so training
          can smoke-test on CPU-only boxes.
-      4. Calls `critique()` to produce the reward signal — the same call
+      4. Calls `critique()` to produce the reward signal: the same call
          that runs at inference, so training reward and serving reward
          come from the same scorer.
     """
@@ -47,7 +52,7 @@ class FusionEnv(gym.Env):
         )
         # 384 embed + 10 features = 394
         self.observation_space = gym.spaces.Box(
-            low=-np.inf, high=np.inf, shape=(394,), dtype=np.float32,
+            low=-np.inf, high=np.inf, shape=(OBS_DIM,), dtype=np.float32,
         )
         self.current_query: str = ""
         self.query_embedding: Optional[np.ndarray] = None
@@ -58,36 +63,12 @@ class FusionEnv(gym.Env):
         self._dry_run = os.environ.get("RLFUSION_ENV_DRY_RUN", "").lower() in ("1", "true")
 
     def _build_observation(self) -> np.ndarray:
-        """Build 394-dim observation from embedding + retrieval features."""
-        embed = self.query_embedding
-
-        cag_results = self.retrieval_results.get("cag", [])
-        cache_hit = 1.0 if cag_results else 0.0
-        cag_top_score = float(cag_results[0].get("score", 0)) if cag_results else 0.0
-
-        graph_results = self.retrieval_results.get("graph", [])
-        graph_density = len(graph_results) / 10.0
-        graph_scores = [g.get("score", 0) for g in graph_results[:3]]
-        graph_top3 = graph_scores + [0.0] * (3 - len(graph_scores))
-
-        query_len = len(self.current_query.split()) / 50.0
-        q_lower = self.current_query.lower()
-        query_type = [0.0] * 3
-        if any(w in q_lower for w in ["what is", "who is", "define", "explain"]):
-            query_type[0] = 1.0
-        elif any(w in q_lower for w in ["how does", "architecture", "design", "relationship"]):
-            query_type[1] = 1.0
-        else:
-            query_type[2] = 1.0
-
-        features = np.array(
-            [cache_hit, cag_top_score, graph_density]
-            + graph_top3
-            + [query_len]
-            + query_type,
-            dtype=np.float32,
+        """Build 394-dim observation. Delegates to the canonical builder."""
+        return build_observation(
+            self.current_query,
+            self.query_embedding,
+            self.retrieval_results,
         )
-        return np.concatenate([embed, features]).astype(np.float32)
 
     def _generate_response(self, fused_context: str) -> str:
         """Run the real local generator unless dry-run is active."""
@@ -140,10 +121,8 @@ class FusionEnv(gym.Env):
     def step(
         self, action: np.ndarray,
     ) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
-        weights = torch.softmax(torch.tensor(action), dim=0)
-        weights = torch.clamp(weights, min=0.05)
-        weights = weights / weights.sum()
-        self.last_applied_weights = weights.numpy()
+        # F1.5: train and serve share the same simplex projection.
+        self.last_applied_weights = project_to_simplex(np.asarray(action).flatten())
         w_cag, w_graph = self.last_applied_weights.tolist()
 
         # build context exactly the way the live pipeline does (with CSWR re-rank)
