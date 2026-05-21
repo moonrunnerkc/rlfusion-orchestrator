@@ -298,21 +298,15 @@ def _build_fallback_suggestions(query: str, response: str) -> list[str]:
 def critique(query: str, fused_context: str, response: str) -> Dict[str, Any]:
     """Evaluate response quality via a dedicated LLM call. Model-agnostic.
 
-    Falls back to inline <critique> parsing if the LLM call returns nothing,
-    and to static defaults if both fail. Return shape is frozen.
+    Always runs the dedicated _run_critique_llm scorer. The legacy
+    'inline critique block' path is gone: v2.0.0 stopped injecting the
+    critique instruction into system prompts, so any <critique> block
+    that appears in a response is the model hallucinating after seeing
+    the schema in retrieved context. Trusting it would let the reward
+    signal be set by the same model that produced the answer.
     """
     scale = cfg.get("critique", {}).get("reward_scale", 1.0)
 
-    # first try: inline parse (cheap, no LLM call) for models that do produce the block
-    _, inline = parse_inline_critique(response)
-    if inline["reason"] != "No critique block found":
-        return {
-            "reward": min(inline["reward"] * scale, 1.0),
-            "reason": inline["reason"],
-            "proactive_suggestions": inline["proactive_suggestions"],
-        }
-
-    # second try: dedicated LLM evaluation call
     scores = _run_critique_llm(query, fused_context, response)
     reward = (scores["factual"] + scores["proactivity"] + scores["helpfulness"]) / 3.0
 
@@ -335,33 +329,37 @@ def critique(query: str, fused_context: str, response: str) -> Dict[str, Any]:
     }
 
 
+# Well-formed critique blocks only. A bare opening tag with no closing is
+# a hallucination, not a signal: strip_critique_block leaves it alone.
+_PAIRED_CRITIQUE_RE = re.compile(
+    r"<critique>.*?</critique>", re.DOTALL | re.IGNORECASE,
+)
+
+
 def strip_critique_block(response: str) -> str:
+    """Remove well-formed <critique>...</critique> blocks and source tags.
+
+    Two invariants:
+
+    1. Only well-formed pairs are stripped. A bare <critique> with no
+       closing tag is treated as content, not a marker. The old behavior
+       (strip to EOF on any opening tag) silently deleted entire
+       responses when the model emitted one stray token.
+
+    2. Stripping never produces an empty string. If removing the
+       critique pair would leave nothing, the original is returned
+       verbatim. The user has to see something; the alternative is an
+       empty bubble that hides the bug. The reward scorer is a separate
+       LLM call that does not depend on this text being clean.
+    """
     text = response
-    text = _CRITIQUE_BLOCK_RE.sub("", text)
-
+    stripped = _PAIRED_CRITIQUE_RE.sub("", text)
     for pattern in _SOURCE_TAG_PATTERNS:
-        text = re.sub(pattern, '', text)
-
-    # remove "Critique" or "Self-Critique" header and everything after
-    for marker in [r'\*{0,2}Self[- ]?Critique\*{0,2}:?\s*.*$',
-                   r'\*{0,2}Critique\*{0,2}:?\s*.*$',
-                   r'#{1,3}\s*(?:Self[- ]?)?Critique.*$',
-                   r'\nSelf-\s*$']:
-        text = re.sub(marker, '', text, flags=re.IGNORECASE | re.DOTALL)
-
-    # remove standalone score lines (digits, X.XX placeholders, or any value)
-    score_patterns = [
-        r'Factual accuracy:?\s*[\dXx\./_]+.*?(?=\n|$)',
-        r'Proactivity score:?\s*[\dXx\./_]+.*?(?=\n|$)',
-        r'Helpfulness:?\s*[\dXx\./_]+.*?(?=\n|$)',
-        r'Citation coverage:?\s*[\dXx\./_]+.*?(?=\n|$)',
-        r'Final reward:?\s*[\dXx\./_]+.*?(?=\n|$)',
-        r'Proactive suggestions:.*$',
-    ]
-    for pattern in score_patterns:
-        text = re.sub(pattern, '', text, flags=re.IGNORECASE | re.DOTALL)
-
-    return text.strip()
+        stripped = re.sub(pattern, '', stripped)
+    stripped = stripped.strip()
+    if not stripped:
+        return text.strip()
+    return stripped
 
 
 def compute_reward(query: str, fused_context: str, response: str) -> float:

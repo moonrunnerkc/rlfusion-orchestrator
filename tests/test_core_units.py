@@ -284,20 +284,22 @@ class TestCitationCounting:
 class TestCritiqueFunction:
     """Integration of critique() with reward scaling."""
 
-    def test_reward_scaling(self):
-        from backend.core.critique import critique
-        response = """Answer text.
-<critique>
-Factual accuracy: 0.80/1.00
-Proactivity score: 0.60/1.00
-Helpfulness: 0.70/1.00
-Final reward: 0.80
-Proactive suggestions:
-- Follow up question?
-</critique>"""
-        result = critique("test query", "test context", response)
-        # default reward_scale is 1.0, so reward should be 0.80
-        assert abs(result["reward"] - 0.80) < 0.01
+    def test_reward_scaling(self, monkeypatch):
+        """critique() always uses the dedicated scorer. The reward in the
+        return value is mean(factual, proactivity, helpful) * reward_scale,
+        not whatever the response's inline critique block claims."""
+        from backend.core import critique as critique_mod
+
+        monkeypatch.setattr(
+            critique_mod, "_run_critique_llm",
+            lambda *_a, **_k: {
+                "factual": 0.80, "proactivity": 0.60, "helpfulness": 1.00,
+                "follow_up_questions": ["Does the policy ever pick uniform weights?"],
+            },
+        )
+        response = "Answer text. <critique>Final reward: 0.10</critique>"
+        result = critique_mod.critique("test query", "test context", response)
+        assert abs(result["reward"] - 0.80) < 0.01  # mean of 0.80/0.60/1.00
         assert len(result["proactive_suggestions"]) >= 1
 
 

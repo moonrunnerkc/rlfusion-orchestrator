@@ -337,8 +337,19 @@ Proactive suggestions:
 - What are the latency trade-offs?
 </critique>"""
 
-    def test_act_extracts_reward(self):
+    def test_act_extracts_reward(self, monkeypatch):
+        """Reward is set by the dedicated _run_critique_llm scorer. An
+        inline <critique> block in the response is no longer trusted."""
         from backend.agents.critique_agent import CritiqueAgent
+        from backend.core import critique as critique_mod
+
+        monkeypatch.setattr(
+            critique_mod, "_run_critique_llm",
+            lambda *_a, **_k: {
+                "factual": 0.9, "proactivity": 0.8, "helpfulness": 0.7,
+                "follow_up_questions": ["What does the policy choose for short queries?"],
+            },
+        )
         agent = CritiqueAgent()
         state = {
             "query": "test query",
@@ -348,7 +359,7 @@ Proactive suggestions:
         }
         result = agent.act(state)
         assert "reward" in result
-        assert abs(result["reward"] - 0.82) < 0.01
+        assert abs(result["reward"] - 0.80) < 0.01  # mean of 0.9/0.8/0.7
 
     def test_act_strips_critique_block(self):
         from backend.agents.critique_agent import CritiqueAgent
@@ -545,17 +556,22 @@ class TestOrchestratorPipeline:
         assert result["is_memory_request"] is True
         assert "blue" in result["memory_content"].lower() or "color" in result["memory_content"].lower()
 
-    def test_finalize_critique(self):
+    def test_finalize_critique(self, monkeypatch):
         from backend.agents.orchestrator import Orchestrator
+        from backend.core import critique as critique_mod
+
+        monkeypatch.setattr(
+            critique_mod, "_run_critique_llm",
+            lambda *_a, **_k: {
+                "factual": 0.85, "proactivity": 0.70, "helpfulness": 0.85,
+                "follow_up_questions": ["How does CQL differ from DPO here?"],
+            },
+        )
         orch = Orchestrator(rl_policy=None)
         response = """Answer about ML.
 <critique>
-Factual accuracy: 0.85/1.00
-Proactivity score: 0.70/1.00
-Helpfulness: 0.90/1.00
-Final reward: 0.80
-Proactive suggestions:
-- What is deep learning?
+Factual accuracy: 0.50/1.00
+Final reward: 0.50
 </critique>"""
         result = orch.finalize(
             query="What is ML?",
@@ -565,6 +581,7 @@ Proactive suggestions:
         )
         assert result["response"]
         assert "<critique>" not in result["response"]
+        # Reward = mean of dedicated scorer's three axes, not the inline 0.50.
         assert abs(result["reward"] - 0.80) < 0.01
         assert result["fusion_weights"]["cag"] == 0.4
         assert result["blocked"] is False

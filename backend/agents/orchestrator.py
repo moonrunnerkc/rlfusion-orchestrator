@@ -127,6 +127,7 @@ RULES:
 4. If context is unrelated, pretend it does not exist. Never mention, acknowledge, or refer to it. Answer from your own knowledge.
 5. Never fabricate sources or claim context says something it does not.
 6. NEVER comment on the context itself. Do not say "the context does not mention", "based on the provided context", "unfortunately", "please note", or any meta-commentary about your sources. Just answer directly.
+7. Never output <critique>, </critique>, "Self-Critique:", or any score block. A separate process scores the response.
 {critique_suffix}"""
 
 

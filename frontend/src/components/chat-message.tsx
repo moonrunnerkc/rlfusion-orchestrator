@@ -23,19 +23,21 @@ interface CritiqueData {
 }
 
 function parseCritique(text: string): { mainText: string; critique: CritiqueData | null } {
+  // Only paired <critique>...</critique> is treated as a critique block. A
+  // bare opening tag with no closing tag is the model hallucinating, not a
+  // signal, and we don't strip mid-stream chunks because they may complete
+  // later.
   const critiqueMatch = text.match(/<critique>([\s\S]*?)<\/critique>/i);
 
   if (!critiqueMatch) {
-    // Still strip any "Self Critique:" header even if no tags
-    const cleanedText = text.replace(/\n*\**\s*Self[- ]?Critique:?\s*\**\n*/gi, '').trim();
-    return { mainText: cleanedText, critique: null };
+    return { mainText: text.trim(), critique: null };
   }
 
-  // Strip critique tags AND any "Self Critique:" header that precedes them
-  const mainText = text
-    .replace(/\n*\**\s*Self[- ]?Critique:?\s*\**\n*/gi, '')
-    .replace(/<critique>[\s\S]*?<\/critique>/gi, '')
-    .trim();
+  // If stripping the paired block would erase the whole bubble, keep the
+  // original. An empty bubble hides the bug; raw critique markup at least
+  // surfaces it so the user can flag what happened.
+  const stripped = text.replace(/<critique>[\s\S]*?<\/critique>/gi, '').trim();
+  const mainText = stripped || text.trim();
   const critiqueText = critiqueMatch[1];
 
   // Parse individual scores
