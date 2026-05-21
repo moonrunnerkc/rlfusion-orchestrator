@@ -1,8 +1,7 @@
 # Author: Bradley R. Kinnard
-"""Retrieval agent: owns CAG and GraphRAG paths + CSWR.
+"""Retrieval agent: owns CAG and GraphRAG paths.
 
 Wraps retrieve() from backend.core.retrievers. CAG-first with GraphRAG fallback.
-RAG (FAISS) and Web (Tavily) paths removed in Step 3 upgrade.
 """
 from __future__ import annotations
 
@@ -54,11 +53,9 @@ class RetrievalAgent:
         top_k = base_top_k * multiplier
 
         retrieval_results = retrieve(query, top_k=top_k)
-        web_status = retrieval_results.get("web_status", "disabled")
 
         return {  # type: ignore[return-value]
             "retrieval_results": retrieval_results,
-            "web_status": web_status,
         }
 
     def reflect(self, state: PipelineState) -> PipelineState:

@@ -2,12 +2,8 @@
 """Critique agent: self-critique scoring, response cleanup, and replay logging.
 
 Wraps critique(), strip_critique_block(), and log_episode_to_replay_buffer()
-from backend.core.critique. Handles reward extraction and proactive suggestion
-parsing without rewriting the proven regex-based logic.
-
-Phase 5: integrates selective faithfulness checking on the hot path for
-high-sensitivity queries. Sensitivity level flows from query decomposition
-through PipelineState.
+from backend.core.critique. Produces the reward signal consumed by the
+RL training loop and the proactive suggestion list shown in the UI.
 """
 from __future__ import annotations
 
@@ -20,12 +16,11 @@ logger = logging.getLogger(__name__)
 
 
 class CritiqueAgent:
-    """Owns self-critique, faithfulness checks, and reward scaling.
+    """Owns self-critique and replay logging.
 
-    Pipeline role: takes the raw LLM response, extracts inline critique scores,
-    strips critique blocks from user-facing output, and logs episodes to the
-    replay buffer for RL training. For high-sensitivity queries, runs
-    faithfulness verification on the hot path via cached LLM calls.
+    Pipeline role: takes the raw LLM response, runs the dedicated critique
+    LLM call to score it, strips critique blocks from user-facing output,
+    and logs the episode to the replay buffer for offline RL training.
     """
     _NAME: ClassVar[str] = "critique"
 
@@ -41,37 +36,20 @@ class CritiqueAgent:
         return {}  # type: ignore[return-value]
 
     def act(self, state: PipelineState) -> PipelineState:
-        """Extract critique scores and clean the response for user display.
-
-        When sensitivity_level is above the configured gate, also runs
-        faithfulness checking via cached_check_faithfulness().
-        """
+        """Extract critique scores, clean the response, log to replay buffer."""
         from backend.core.critique import (
             critique,
             log_episode_to_replay_buffer,
             strip_critique_block,
         )
-        from backend.core.reasoning import run_selective_faithfulness
 
         llm_response = state.get("llm_response", "")
         query = state.get("query", "")
         fused_context = state.get("fused_context", "")
-        sensitivity = float(state.get("sensitivity_level", 0.5))
 
         critique_result = critique(query, fused_context, llm_response)
         clean_response = strip_critique_block(llm_response)
 
-        # Phase 5: selective faithfulness on the hot path
-        faith_checked, faith_score = run_selective_faithfulness(
-            clean_response, fused_context, sensitivity,
-        )
-        if faith_checked:
-            logger.info(
-                "[%s] Faithfulness score=%.2f (sensitivity=%.2f)",
-                self._NAME, faith_score, sensitivity,
-            )
-
-        # log to replay buffer for future RL training
         actual_weights = state.get("actual_weights", [0.5, 0.5])
         log_episode_to_replay_buffer({
             "query": query,
@@ -90,8 +68,6 @@ class CritiqueAgent:
             "clean_response": clean_response,
             "proactive_suggestions": critique_result.get("proactive_suggestions", []),
             "critique_reason": critique_result.get("reason", ""),
-            "faithfulness_checked": faith_checked,
-            "faithfulness_score": faith_score,
         }
 
     def reflect(self, state: PipelineState) -> PipelineState:
@@ -104,9 +80,8 @@ class CritiqueAgent:
             logger.warning("[%s] Low reward (%.2f) for query: %s...",
                            self._NAME, reward, state.get("query", "")[:50])
         suggestions = state.get("proactive_suggestions", [])
-        faith = state.get("faithfulness_score", -1.0)
-        logger.debug("[%s] Critique complete: reward=%.2f, suggestions=%d, faith=%.2f",
-                     self._NAME, reward, len(suggestions), faith)
+        logger.debug("[%s] Critique complete: reward=%.2f, suggestions=%d",
+                     self._NAME, reward, len(suggestions))
         return {}  # type: ignore[return-value]
 
     def __call__(self, state: PipelineState) -> PipelineState:

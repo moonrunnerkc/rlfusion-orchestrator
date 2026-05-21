@@ -34,12 +34,9 @@ class RetrieverItem(TypedDict, total=False):
 
 
 class RetrievalResults(TypedDict):
-    """Aggregated results from all four retrieval paths."""
-    rag: list[RetrieverItem]
+    """Aggregated results from the 2-path retrieval pipeline."""
     cag: list[RetrieverItem]
     graph: list[RetrieverItem]
-    web: list[RetrieverItem]
-    web_status: str
 
 
 class PipelineState(TypedDict, total=False):
@@ -71,7 +68,6 @@ class PipelineState(TypedDict, total=False):
     rl_weights: list[float]
     fused_context: str
     actual_weights: list[float]
-    web_status: str
     context_parts: list[str]
 
     # ----- Profile / conversation -----
@@ -90,9 +86,6 @@ class PipelineState(TypedDict, total=False):
     clean_response: str
     proactive_suggestions: list[str]
     critique_reason: str
-    faithfulness_checked: bool
-    faithfulness_score: float
-    sensitivity_level: float
 
     # ----- Meta -----
     complexity: QueryComplexity
@@ -106,7 +99,6 @@ class OrchestrationResult(TypedDict):
     proactive_suggestions: list[str]
     blocked: bool
     safety_reason: str
-    web_status: str
 
 
 class PreparedContext(TypedDict):
@@ -115,7 +107,6 @@ class PreparedContext(TypedDict):
     user_prompt: str
     actual_weights: list[float]
     fused_context: str
-    web_status: str
     expanded_query: str
     query_expanded: bool
     is_safe: bool

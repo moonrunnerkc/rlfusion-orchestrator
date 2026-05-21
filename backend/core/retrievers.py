@@ -1,26 +1,21 @@
 # Author: Bradley R. Kinnard
-# retrievers.py - CAG/Graph retrieval with CSWR stability filtering
-# RAG (FAISS) and Web (Tavily) paths removed per upgrade plan Step 3.
+# retrievers.py - CAG + Graph retrieval with CSWR stability filtering
 
 import hashlib
 import sqlite3
 import json
 import uuid
 import logging
-import os
-import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import numpy as np
-import networkx as nx
 from pathlib import Path
-from datetime import datetime
 from typing import TYPE_CHECKING, List, Dict, Any
-from backend.core.utils import embed_text, embed_batch, ensure_path, deterministic_id
+import numpy as np
+
+from backend.core.utils import embed_text, embed_batch
 
 if TYPE_CHECKING:
     from backend.core.graph_engine import GraphEngine
 from backend.core.decomposer import decompose_query
-from backend.config import cfg, PROJECT_ROOT, get_web_api_key
+from backend.config import cfg, PROJECT_ROOT
 
 logger = logging.getLogger("cswr")
 if not logger.handlers:
@@ -99,15 +94,8 @@ def _get_docs_path() -> Path:
     return path
 
 
-def _get_index_path() -> Path:
-    """DEPRECATED: FAISS index path. Kept for backward compat, returns legacy path."""
-    index_dir = PROJECT_ROOT / "indexes"
-    index_dir.mkdir(parents=True, exist_ok=True)
-    return index_dir / "rag_index.faiss"
-
-
 def _get_metadata_path() -> Path:
-    """DEPRECATED: metadata JSON path. Kept for backward compat."""
+    """Path to the doc-chunk metadata JSON. Written by build_doc_chunks()."""
     index_dir = PROJECT_ROOT / "indexes"
     index_dir.mkdir(parents=True, exist_ok=True)
     return index_dir / "metadata.json"
@@ -198,51 +186,41 @@ def route_to_projects(query: str, gap_threshold: float = 0.15) -> list[str] | No
     return qualifying
 
 
-def build_rag_index() -> None:
-    """DEPRECATED: FAISS RAG index removed in Step 3 upgrade.
+def build_doc_chunks() -> int:
+    """Walk data/docs/, chunk each file, write metadata.json, rebuild entity graph.
 
-    Use retrieve_graph() for entity-based retrieval or populate CAG
-    via the main pipeline's cache-on-success path.
+    Returns the number of chunks written. This is what the /api/reindex
+    endpoint calls; there is no FAISS index any more, only chunk metadata
+    used by the in-memory cosine search in _retrieve_doc_chunks().
     """
-    import warnings
-    warnings.warn(
-        "build_rag_index() is deprecated. FAISS removed in CAG-RL-Fusion upgrade.",
-        DeprecationWarning, stacklevel=2,
-    )
-    logger.warning("build_rag_index() called but FAISS has been removed.")
+    docs_path = _get_docs_path()
+    files = (list(docs_path.rglob("*.txt")) + list(docs_path.rglob("*.md"))
+             + list(docs_path.rglob("*.pdf")))
+    all_chunks: list[dict[str, str]] = []
+    for fpath in files:
+        try:
+            content = extract_pdf_text(fpath) if fpath.suffix.lower() == ".pdf" else fpath.read_text()
+            rel = fpath.relative_to(docs_path)
+            project = rel.parts[0] if len(rel.parts) > 1 else "default"
+            from backend.core.utils import chunk_text
+            for chunk in chunk_text(content, max_tokens=400):
+                all_chunks.append({"text": chunk, "source": str(rel), "project": project})
+        except Exception as e:
+            logger.warning("Failed to process %s: %s", fpath, e)
 
-    # still build entity graph from docs if available
-    if cfg.get("graph", {}).get("enabled", True):
-        docs_path = _get_docs_path()
-        files = (list(docs_path.rglob("*.txt")) + list(docs_path.rglob("*.md"))
-                 + list(docs_path.rglob("*.pdf")))
-        all_chunks = []
-        for fpath in files:
-            try:
-                content = extract_pdf_text(fpath) if fpath.suffix.lower() == ".pdf" else fpath.read_text()
-                rel = fpath.relative_to(docs_path)
-                project = rel.parts[0] if len(rel.parts) > 1 else "default"
-                from backend.core.utils import chunk_text
-                for chunk in chunk_text(content, max_tokens=400):
-                    all_chunks.append({"text": chunk, "source": str(rel), "project": project})
-            except Exception as e:
-                logger.warning("Failed to process %s: %s", fpath, e)
-        if all_chunks:
-            try:
-                entity_count = build_entity_graph(all_chunks)
-                logger.info("Entity graph built with %d entities", entity_count)
-            except (ImportError, RuntimeError) as exc:
-                logger.warning("Entity graph build skipped: %s", exc)
+    meta_path = _get_metadata_path()
+    meta_path.write_text(json.dumps(all_chunks))
+    logger.info("Wrote %d doc chunks to %s", len(all_chunks), meta_path)
 
+    # entity graph is built from the same chunks
+    if all_chunks and cfg.get("graph", {}).get("enabled", True):
+        try:
+            entity_count = build_entity_graph(all_chunks)
+            logger.info("Entity graph built with %d entities", entity_count)
+        except (ImportError, RuntimeError) as exc:
+            logger.warning("Entity graph build skipped: %s", exc)
 
-def get_rag_index() -> None:
-    """DEPRECATED: FAISS RAG index removed in Step 3 upgrade."""
-    import warnings
-    warnings.warn(
-        "get_rag_index() is deprecated. FAISS removed in CAG-RL-Fusion upgrade.",
-        DeprecationWarning, stacklevel=2,
-    )
-    logger.warning("get_rag_index() called but FAISS has been removed.")
+    return len(all_chunks)
 
 
 def cosine_sim(a, b):
@@ -459,90 +437,6 @@ def format_pack(pack: dict, rank: int) -> str:
     return out + "---\n"
 
 
-def retrieve_rag(query: str, mode: str = "chat", top_k: int = None, project: str | None = None) -> str:
-    cswr_cfg = cfg.get("cswr", {})
-    top_k = top_k or cswr_cfg.get("top_k", 20)
-
-    profile = decompose_query(query, mode)
-    profile["query_text"] = query
-
-    vec = embed_text(query).reshape(1, 384)
-    index = get_rag_index()
-
-    # empty index — nothing to search
-    if index.ntotal == 0:
-        return ""
-
-    search_k = min(top_k, index.ntotal)
-    dists, idxs = index.search(vec, search_k)
-
-    meta_path = _get_metadata_path()
-    meta = json.loads(meta_path.read_text()) if meta_path.exists() else []
-
-    # project routing
-    target_projects = [project] if project else route_to_projects(query)
-
-    chunks = []
-    for i in range(len(idxs[0])):
-        idx, dist = int(idxs[0][i]), float(dists[0][i])
-        if idx < 0 or idx >= len(meta):
-            continue
-        entry = meta[idx]
-        chunk_project = entry.get("project", "default")
-        if target_projects and chunk_project not in target_projects:
-            continue
-        chunks.append({
-            "text": entry["text"],
-            "source": entry["source"],
-            "project": chunk_project,
-            "project_coherence": entry.get("coherence", 1.0),
-            "score": 1.0 / (1.0 + dist), "id": str(idx),
-            "local_stability": 0.0, "question_fit": 0.0, "drift_penalty": 0.0, "csw_score": 0.0
-        })
-
-    chunks = score_chunks(chunks, profile, cswr_cfg)
-
-    packs, used = [], set()
-    min_score = cswr_cfg.get("min_csw_score", 0.25)
-    budget = cswr_cfg.get("pack_token_budget", 1800)
-
-    for c in chunks:
-        if c["id"] in used or c["csw_score"] < min_score:
-            continue
-        pack = build_pack(c, chunks, budget)
-        used.update(pack["source_chunks"])
-        packs.append(pack)
-        if len(packs) >= 4:
-            break
-
-    thresh = cswr_cfg.get("answerability_threshold", 0.5)
-    filtered = []
-    for p in packs:
-        ok, conf = check_answerable(p, profile)
-        if ok and conf >= thresh:
-            p["answerability_confidence"] = conf
-            filtered.append(p)
-
-    if not filtered and packs:
-        best = max(packs, key=lambda x: x["pack_csw_score"])
-        best["answerability_confidence"] = 0.0
-        filtered = [best]
-
-    result = "\n".join(format_pack(p, i) for i, p in enumerate(filtered))
-    logger.info(f"CSWR SUCCESS | query={query[:40]}... | packs={len(filtered)}")
-    return result
-
-
-def retrieve_rag_structured(query: str, top_k: int = 5, project: str | None = None) -> list:
-    """DEPRECATED: RAG structured retrieval removed. Returns empty list."""
-    import warnings
-    warnings.warn(
-        "retrieve_rag_structured() is deprecated. Use retrieve() for CAG+Graph.",
-        DeprecationWarning, stacklevel=2,
-    )
-    return []
-
-
 def _get_db_path() -> Path:
     """Return the database file path, creating parent dirs if needed."""
     db_rel = cfg["paths"]["db"]
@@ -623,16 +517,7 @@ def retrieve_cag(query: str, threshold: float = 0.75) -> list:
         conn.close()
 
 
-def _get_ontology_path() -> Path:
-    """Return the ontology file path."""
-    ont_rel = cfg["paths"]["ontology"]
-    return PROJECT_ROOT / ont_rel
-
-
-# Graph + embedding cache: avoids reloading JSON and re-embedding on every query
-_graph_cache: Dict[str, Any] = {"graph": None, "node_embeddings": {}, "mtime": 0.0}
-
-# Phase 2: GraphEngine lazy singleton
+# GraphEngine lazy singleton
 _graph_engine_cache: dict[str, "GraphEngine | bool | None"] = {"engine": None, "attempted": False}
 
 
@@ -753,42 +638,6 @@ def community_summarize(query: str, top_k: int = 3) -> list[dict[str, str | floa
     return results
 
 
-def _load_graph() -> nx.DiGraph:
-    """Load or return cached ontology graph. Re-reads only if file changed."""
-    path = _get_ontology_path()
-    if not path.exists():
-        return nx.DiGraph()
-
-    mtime = path.stat().st_mtime
-    if _graph_cache["graph"] is not None and _graph_cache["mtime"] == mtime:
-        return _graph_cache["graph"]
-
-    try:
-        data = json.loads(path.read_text())
-        G = nx.DiGraph()
-        for n in data.get("nodes", []):
-            G.add_node(n["id"], **n)
-        for e in data.get("edges", []):
-            G.add_edge(e["from"], e["to"], **{k: v for k, v in e.items() if k not in ["from", "to"]})
-    except (json.JSONDecodeError, KeyError, TypeError) as e:
-        logger.warning("Failed to load ontology graph: %s", e)
-        return nx.DiGraph()
-
-    # pre-embed all node texts once
-    node_embeddings = {}
-    for node in G.nodes():
-        nd = G.nodes[node]
-        txt = nd.get("description", "") or nd.get("label", str(node))
-        if txt:
-            node_embeddings[node] = embed_text(txt)
-
-    _graph_cache["graph"] = G
-    _graph_cache["node_embeddings"] = node_embeddings
-    _graph_cache["mtime"] = mtime
-    logger.info("Graph loaded and %d node embeddings cached", len(node_embeddings))
-    return G
-
-
 # chunk embedding cache for semantic search over doc chunks
 _chunk_embed_cache: dict[str, Any] = {"embeddings": None, "chunks": None, "mtime": 0.0}
 
@@ -838,81 +687,39 @@ def _retrieve_doc_chunks(query: str, top_k: int = 5) -> list[dict[str, Any]]:
 
 
 def retrieve_graph(query: str, max_hops: int = 2) -> List[Dict[str, Any]]:
-    """Retrieve from knowledge graph. Uses GraphEngine (Phase 2) with Qdrant hybrid
-    search when available, falls back to legacy ontology traversal."""
-    # Phase 2: use GraphEngine for richer retrieval
+    """Retrieve from the entity knowledge graph via GraphEngine hybrid search.
+
+    max_hops is accepted for API compatibility but the underlying GraphEngine
+    handles traversal depth internally.
+    """
     engine = _get_graph_engine()
-    if engine is not None and engine.node_count > 0:
-        results = engine.hybrid_search(query, top_k=5)
-        return [dict(r) for r in results]
-
-    # legacy fallback: static ontology graph
-    G = _load_graph()
-    if not G.number_of_nodes():
+    if engine is None or engine.node_count == 0:
         return []
-
-    q_emb = embed_text(query)
-    best_node, best_score = None, -1.0
-
-    for node, node_emb in _graph_cache["node_embeddings"].items():
-        sim = cosine_sim(q_emb, node_emb)
-        if sim > best_score:
-            best_score, best_node = sim, node
-
-    if not best_node:
-        return []
-
-    visited, results, queue = set(), [], [(best_node, 0)]
-    while queue:
-        cur, hops = queue.pop(0)
-        if cur in visited or hops > max_hops:
-            continue
-        visited.add(cur)
-        nd = G.nodes[cur]
-
-        parts = [f"Entity: {nd.get('label', cur)}"]
-        if nd.get('description'):
-            parts.append(f"Description: {nd['description']}")
-        for neighbor in G.neighbors(cur):
-            ed = G.edges[cur, neighbor]
-            parts.append(f"-> {ed.get('label', 'relates_to')} -> {G.nodes[neighbor].get('label', neighbor)}")
-            if neighbor not in visited:
-                queue.append((neighbor, hops + 1))
-
-        results.append({"text": "\n".join(parts), "score": best_score * (0.8 ** hops),
-                       "source": "graph", "id": str(cur)})
-    return results
+    results = engine.hybrid_search(query, top_k=5)
+    return [dict(r) for r in results]
 
 
 def retrieve(query: str, cag_weight: float = 1.0,
              graph_weight: float = 1.0, top_k: int = 5,
-             project: str | None = None,
-             rag_weight: float = 0.0, web_weight: float = 0.0) -> Dict[str, Any]:
-    """Two-path retrieval: CAG-first with GraphRAG fallback.
+             project: str | None = None) -> Dict[str, Any]:
+    """Two-path retrieval: CAG cache + GraphRAG (entity graph + doc chunks).
 
-    CAG is checked first for a cache hit. On miss, GraphRAG runs entity traversal.
-    The rag_weight and web_weight params are kept for backward compatibility
-    but ignored (both paths removed in Step 3).
+    CAG is checked first. On a strong hit (score >= 0.90) we bypass GraphRAG.
+    Otherwise the graph path merges entity traversal with semantic doc-chunk
+    matches. The CSWR re-rank lives in fusion_agent.build_fusion_context().
     """
-    # CAG-first: check cache before anything else
     cag = retrieve_cag(query)
     if cag and cag[0].get("score", 0) >= 0.90:
-        # strong CAG hit, bypass GraphRAG entirely
         for r in cag:
             r["score"] *= cag_weight
             r["retriever"] = "cag"
         logger.info("[retrieve] CAG HIT, skipping GraphRAG")
-        return {
-            "rag": [], "cag": cag[:top_k], "graph": [], "web": [],
-            "images": [], "web_status": "disabled",
-        }
+        return {"cag": cag[:top_k], "graph": []}
 
-    # GraphRAG: entity traversal + doc chunk semantic search
     graph_entities = retrieve_graph(query, 2)
     doc_chunks = _retrieve_doc_chunks(query, top_k=top_k)
 
-    # merge: entity context from graph + full doc chunks for grounding
-    # use doc chunks as graph results (they carry the actual text the LLM needs)
+    # merge: doc chunks (full text) + entity context, dedupe by text prefix
     seen_texts: set[str] = set()
     graph: list[dict[str, Any]] = []
     for r in doc_chunks:
@@ -926,29 +733,14 @@ def retrieve(query: str, cag_weight: float = 1.0,
             seen_texts.add(text_key)
             graph.append(r)
 
-    # multimodal image retrieval (kept, not on critical path)
-    images: list[dict[str, object]] = []
-    if cfg.get("multimodal", {}).get("enabled", False):
-        try:
-            from backend.core.multimodal import retrieve_images
-            images = retrieve_images(query, top_k=top_k)  # type: ignore[assignment]
-        except (ImportError, RuntimeError) as exc:
-            logger.debug("Image retrieval skipped: %s", exc)
-
     for r in cag:
         r["score"] *= cag_weight
         r["retriever"] = "cag"
     for r in graph:
         r["score"] *= graph_weight
         r["retriever"] = "graph"
-    for r in images:
-        r["retriever"] = "image"  # type: ignore[index]
 
-    for lst in [cag, graph]:
+    for lst in (cag, graph):
         lst.sort(key=lambda x: x["score"], reverse=True)
 
-    return {
-        "rag": [], "cag": cag[:top_k], "graph": graph[:top_k], "web": [],
-        "images": images[:top_k],
-        "web_status": "disabled",
-    }
+    return {"cag": cag[:top_k], "graph": graph[:top_k]}

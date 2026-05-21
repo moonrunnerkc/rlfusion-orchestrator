@@ -115,14 +115,10 @@ class GraphEngine:
     def __init__(
         self,
         graph_path: Path | None = None,
-        ontology_path: Path | None = None,
     ) -> None:
         graph_cfg = cfg.get("graph", {})
         self._graph_path = graph_path or (
             PROJECT_ROOT / graph_cfg.get("entity_graph_path", "data/entity_graph.json")
-        )
-        self._ontology_path = ontology_path or (
-            PROJECT_ROOT / cfg["paths"]["ontology"]
         )
         self._graph: nx.DiGraph = nx.DiGraph()
         self._entity_embeddings: dict[str, np.ndarray] = {}
@@ -141,37 +137,35 @@ class GraphEngine:
         self._load()
 
     def _load(self) -> None:
-        """Load graph data from ontology.json and entity_graph.json (if they exist)."""
-        for path in (self._ontology_path, self._graph_path):
-            if not path or not path.exists():
-                continue
+        """Load graph data from entity_graph.json if it exists."""
+        path = self._graph_path
+        if path and path.exists():
             try:
                 raw = path.read_text().strip()
-                if not raw:
-                    continue
-                data = json.loads(raw)
-                for n in data.get("nodes", []):
-                    nid = n.get("id", "")
-                    if not nid:
-                        continue
-                    attrs = {k: v for k, v in n.items() if k not in ("id", "embedding")}
-                    self._graph.add_node(nid, **attrs)
-                    if "embedding" in n:
-                        emb = np.array(n["embedding"], dtype=np.float32)
-                        self._entity_embeddings[nid] = emb
-                        self._index_entity(nid, emb, n)
+                if raw:
+                    data = json.loads(raw)
+                    for n in data.get("nodes", []):
+                        nid = n.get("id", "")
+                        if not nid:
+                            continue
+                        attrs = {k: v for k, v in n.items() if k not in ("id", "embedding")}
+                        self._graph.add_node(nid, **attrs)
+                        if "embedding" in n:
+                            emb = np.array(n["embedding"], dtype=np.float32)
+                            self._entity_embeddings[nid] = emb
+                            self._index_entity(nid, emb, n)
 
-                for e in data.get("edges", []):
-                    src, tgt = e.get("from", ""), e.get("to", "")
-                    if src and tgt and src in self._graph and tgt in self._graph:
-                        edge_attrs = {k: v for k, v in e.items() if k not in ("from", "to")}
-                        self._graph.add_edge(src, tgt, **edge_attrs)
+                    for e in data.get("edges", []):
+                        src, tgt = e.get("from", ""), e.get("to", "")
+                        if src and tgt and src in self._graph and tgt in self._graph:
+                            edge_attrs = {k: v for k, v in e.items() if k not in ("from", "to")}
+                            self._graph.add_edge(src, tgt, **edge_attrs)
 
-                # rebuild community assignment from saved node attributes
-                for nid in self._graph.nodes():
-                    cid = self._graph.nodes[nid].get("community_id", -1)
-                    if cid >= 0:
-                        self._communities.setdefault(cid, []).append(nid)
+                    # rebuild community assignment from saved node attributes
+                    for nid in self._graph.nodes():
+                        cid = self._graph.nodes[nid].get("community_id", -1)
+                        if cid >= 0:
+                            self._communities.setdefault(cid, []).append(nid)
 
             except (json.JSONDecodeError, KeyError, TypeError) as exc:
                 logger.warning("Failed to load graph from %s: %s", path, exc)

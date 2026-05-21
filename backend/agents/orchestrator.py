@@ -20,11 +20,6 @@ from backend.agents.base import (
     QueryComplexity,
     RLPolicy,
 )
-from backend.agents.critique_agent import CritiqueAgent
-from backend.agents.fusion_agent import FusionAgent
-from backend.agents.retrieval_agent import RetrievalAgent
-from backend.agents.safety_agent import SafetyAgent
-from backend.config import cfg
 from backend.core.critique import get_critique_instruction, strip_critique_block
 from backend.core.memory import (
     clear_memory,
@@ -33,6 +28,11 @@ from backend.core.memory import (
     record_turn,
 )
 from backend.core.profile import detect_and_save_memory, get_user_profile
+from backend.agents.critique_agent import CritiqueAgent
+from backend.agents.fusion_agent import FusionAgent
+from backend.agents.retrieval_agent import RetrievalAgent
+from backend.agents.safety_agent import SafetyAgent
+from backend.config import cfg
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +40,6 @@ logger = logging.getLogger(__name__)
 IDENTITY_BLOCK = """You are RLFusion AI, an expert retrieval-augmented assistant.
 Personal details in context belong to the USER, not you.
 If context contains a USER PROFILE section, use those facts to personalize answers.
-"""
-
-WEB_INSTRUCTION = """
-WEB RESULTS: Web search is currently disabled.
 """
 
 # Token budgets per mode (generation cap)
@@ -95,17 +91,15 @@ def generate_system_prompt(mode: str, context_parts: list[str]) -> str:
     """Build the system prompt based on mode and context content."""
     has_cag_hit = any(p.startswith("[CAG:") for p in context_parts)
     cag_only = has_cag_hit and len([p for p in context_parts if p.startswith("[CAG:")]) == len(context_parts)
-    has_web = any("[WEB:" in p for p in context_parts)
     critique_suffix = get_critique_instruction()
 
     if cag_only:
         return "Return the exact text after [CAG:] with no changes."
 
     if mode == "build":
-        web_block = WEB_INSTRUCTION if has_web else ""
-        return f"""{IDENTITY_BLOCK}{web_block}
+        return f"""{IDENTITY_BLOCK}
 You are an expert AI architect and systems designer.
-Do not output raw source tags like [RAG:...] or [GRAPH:...].
+Do not output raw source tags like [CAG:...] or [GRAPH:...].
 INSTRUCTIONS:
 1. Answer ONLY the design request. Nothing else.
 2. If reference material below is relevant, integrate its patterns into your design.
@@ -115,8 +109,7 @@ INSTRUCTIONS:
 6. Never produce generic textbook answers. Be opinionated.
 {critique_suffix}"""
 
-    web_block = WEB_INSTRUCTION if has_web else ""
-    return f"""{IDENTITY_BLOCK}{web_block}
+    return f"""{IDENTITY_BLOCK}
 You have retrieved context from knowledge sources below.
 Do not output raw source tags. Cite information naturally.
 RULES:
@@ -266,7 +259,7 @@ class Orchestrator:
         query_expanded: bool,
         complexity: QueryComplexity,
     ) -> PipelineState:
-        """Run retrieval agent only. Returns retrieval results + web_status."""
+        """Run retrieval agent only. Returns retrieval results."""
         state: PipelineState = {
             "query": query,
             "expanded_query": expanded_query,
@@ -296,7 +289,6 @@ class Orchestrator:
         session_id: str,
         fused_context: str,
         actual_weights: list[float],
-        web_status: str,
         expanded_query: str,
         query_expanded: bool,
     ) -> PreparedContext:
@@ -325,7 +317,6 @@ class Orchestrator:
             user_prompt=user_prompt,
             actual_weights=actual_weights,
             fused_context=fused_context,
-            web_status=web_status,
             expanded_query=expanded_query,
             query_expanded=query_expanded,
             is_safe=True,
@@ -333,7 +324,7 @@ class Orchestrator:
             blocked=False,
             is_memory_request=False,
             memory_content="",
-            retrieval_results={"rag": [], "cag": [], "graph": [], "web": [], "web_status": "disabled"},
+            retrieval_results={"cag": [], "graph": []},
         )
 
     # ---- Original single-call interface (kept for /chat endpoint) ----
@@ -360,7 +351,6 @@ class Orchestrator:
                 user_prompt="",
                 actual_weights=[0.5, 0.5],
                 fused_context="",
-                web_status="disabled",
                 expanded_query=expanded_query,
                 query_expanded=expansion_meta["expanded"],
                 is_safe=True,
@@ -368,7 +358,7 @@ class Orchestrator:
                 blocked=False,
                 is_memory_request=True,
                 memory_content=memory_content or "",
-                retrieval_results={"rag": [], "cag": [], "graph": [], "web": [], "web_status": "disabled"},
+                retrieval_results={"cag": [], "graph": []},
             )
 
         # classify complexity
@@ -393,7 +383,6 @@ class Orchestrator:
                 user_prompt="",
                 actual_weights=[0.0, 0.0],
                 fused_context="",
-                web_status=result.get("web_status", "disabled"),
                 expanded_query=expanded_query,
                 query_expanded=expansion_meta["expanded"],
                 is_safe=False,
@@ -401,13 +390,12 @@ class Orchestrator:
                 blocked=True,
                 is_memory_request=False,
                 memory_content="",
-                retrieval_results={"rag": [], "cag": [], "graph": [], "web": [], "web_status": "disabled"},
+                retrieval_results={"cag": [], "graph": []},
             )
 
         fused_context = result.get("fused_context", "")
         actual_weights = result.get("actual_weights", [0.5, 0.5])
-        web_status = result.get("web_status", "disabled")
-        retrieval_results = result.get("retrieval_results", {"rag": [], "cag": [], "graph": [], "web": [], "web_status": "disabled"})
+        retrieval_results = result.get("retrieval_results", {"cag": [], "graph": []})
 
         # inject user profile for personal queries
         if any(w in query.lower() for w in _PERSONAL_KEYWORDS):
@@ -429,7 +417,6 @@ class Orchestrator:
             user_prompt=user_prompt,
             actual_weights=actual_weights,
             fused_context=fused_context,
-            web_status=web_status,
             expanded_query=expanded_query,
             query_expanded=expansion_meta["expanded"],
             is_safe=True,
@@ -446,7 +433,6 @@ class Orchestrator:
         llm_response: str,
         fused_context: str,
         actual_weights: list[float],
-        web_status: str,
     ) -> OrchestrationResult:
         """Post-generation pipeline: critique, cleanup, episode logging.
 
@@ -464,15 +450,6 @@ class Orchestrator:
         critique_updates = self._critique(state)
 
         clean_response = critique_updates.get("clean_response", formatted_response)
-
-        # append web search notice if API key is missing
-        if web_status == "no_api_key":
-            web_notice = (
-                "\n\n---\n\u26a0\ufe0f **Web search is enabled but no API key is configured.** "
-                "To enable web search, set `TAVILY_API_KEY` in your `.env` file. "
-                "Get a free key at [tavily.com](https://tavily.com)."
-            )
-            clean_response += web_notice
 
         return OrchestrationResult(
             response=clean_response,
@@ -512,7 +489,6 @@ class Orchestrator:
                 proactive_suggestions=[],
                 blocked=False,
                 safety_reason="Safe",
-                web_status="disabled",
             )
 
         # early exit: blocked by safety
@@ -524,7 +500,6 @@ class Orchestrator:
                 proactive_suggestions=[],
                 blocked=True,
                 safety_reason=prepared["safety_reason"],
-                web_status=prepared["web_status"],
             )
 
         # CAG fast-path: strong cache hit skips generation entirely
@@ -543,7 +518,6 @@ class Orchestrator:
                 proactive_suggestions=[],
                 blocked=False,
                 safety_reason="Safe",
-                web_status="disabled",
             )
 
         # LLM generation via inference engine (non-streaming for /chat)
@@ -563,7 +537,6 @@ class Orchestrator:
             llm_response=llm_response,
             fused_context=prepared["fused_context"],
             actual_weights=prepared["actual_weights"],
-            web_status=prepared["web_status"],
         )
 
 

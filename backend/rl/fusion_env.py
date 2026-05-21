@@ -115,7 +115,6 @@ class FusionEnv(gym.Env):
 
         fusion_output = fuse_context(
             self.current_query,
-            [],  # no RAG results
             self.retrieval_results.get("cag", []),
             self.retrieval_results.get("graph", []),
         )

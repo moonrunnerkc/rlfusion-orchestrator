@@ -18,7 +18,6 @@ from backend.tools.registry import ToolRegistry
 from backend.tools.api_bridge import ApiBridgeTool
 from backend.tools.calculator import CalculatorTool
 from backend.tools.code_executor import CodeExecutorTool
-from backend.tools.web_search import WebSearchTool
 
 __all__ = [
     "BaseTool",
@@ -29,7 +28,6 @@ __all__ = [
     "ApiBridgeTool",
     "CalculatorTool",
     "CodeExecutorTool",
-    "WebSearchTool",
     "make_output",
     "timed_execute",
     "build_default_registry",
@@ -48,7 +46,6 @@ def build_default_registry(
         max_calls_per_tool=max_calls_per_tool,
         window_secs=window_secs,
     )
-    registry.register(WebSearchTool())
     registry.register(CalculatorTool())
     registry.register(CodeExecutorTool())
     registry.register(ApiBridgeTool())

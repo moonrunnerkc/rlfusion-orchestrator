@@ -35,7 +35,6 @@ from slowapi.errors import RateLimitExceeded
 from backend.config import cfg, PROJECT_ROOT
 from backend.core.model_router import get_engine
 from backend.core.critique import critique, log_episode_to_replay_buffer, get_critique_instruction, strip_critique_block, check_safety
-from backend.core.fusion import fuse_context
 from backend.core.memory import expand_query_with_context, record_turn, get_context_for_prompt, clear_memory
 from backend.core.profile import detect_and_save_memory, get_user_profile
 from backend.core.retrievers import retrieve
@@ -198,9 +197,6 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"PPO load failed: {e}")
 
-    # Web search removed in Step 3 upgrade
-    web_status = "disabled"
-
     logger.info("=" * 64)
     logger.info("RLFUSION ORCHESTRATOR - BACKEND STARTED")
     if USE_CUDA:
@@ -209,7 +205,6 @@ async def lifespan(app: FastAPI):
         logger.info("Device: CPU")
     logger.info(f"LLM: {cfg['llm']['model']}")
     logger.info(f"RL Policy: {policy_status}")
-    logger.info(f"Web Search: {web_status}")
 
     # Initialize multi-agent orchestrator (Phase 1)
     global _orchestrator
@@ -509,7 +504,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
             # Build prompts (fast, no status update needed)
             actual_weights = fusion_result.get("actual_weights", [0.5, 0.5])
-            web_status = retrieval_result.get("web_status", "disabled")
             fused_context = fusion_result.get("fused_context", "")
 
             # summarize fusion weights for detail text
@@ -528,7 +522,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 session_id=session_id,
                 fused_context=fused_context,
                 actual_weights=actual_weights,
-                web_status=web_status,
                 expanded_query=expanded_query,
                 query_expanded=query_expanded,
             )
@@ -596,7 +589,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 "proactive_suggestions": [],
                 "query_expanded": query_expanded,
                 "expanded_query": expanded_query if query_expanded else None,
-                "web_status": web_status,
             })
             _t_done = _time_mod.perf_counter()
             logger.info("[TIMING] TOTAL (query to done): %.0f ms", (_t_done - _t0) * 1000)
@@ -608,7 +600,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 resp: str,
                 ctx: str,
                 weights: list[float],
-                w_status: str,
             ) -> None:
                 try:
                     result = await asyncio.to_thread(
@@ -617,7 +608,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         llm_response=resp,
                         fused_context=ctx,
                         actual_weights=weights,
-                        web_status=w_status,
                     )
                     critique_reward = result["reward"]
                     CRITIQUE_REWARD.observe(critique_reward)
@@ -638,7 +628,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
             asyncio.create_task(_run_critique_async(
                 websocket, query, full_response, fused_context,
-                actual_weights, web_status,
+                actual_weights,
             ))
 
     except WebSocketDisconnect:
@@ -691,10 +681,7 @@ async def ping(request: Request) -> Dict[str, Any]:
 @app.post("/api/upload")
 @limiter.limit("10/minute")
 async def upload_documents(request: Request) -> Dict[str, Any]:
-    """Upload files to data/docs/ for RAG indexing."""
-    from fastapi import UploadFile
-    import shutil
-
+    """Upload .txt/.md/.pdf files to data/docs/ for indexing."""
     form = await request.form()
     files = form.getlist("files")
     if not files:
@@ -704,7 +691,7 @@ async def upload_documents(request: Request) -> Dict[str, Any]:
     docs_path.mkdir(parents=True, exist_ok=True)
 
     saved, skipped = [], []
-    allowed = {".txt", ".md", ".pdf", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"}
+    allowed = {".txt", ".md", ".pdf"}
 
     for f in files:
         if not hasattr(f, 'filename'):
@@ -738,51 +725,39 @@ async def upload_documents(request: Request) -> Dict[str, Any]:
 @app.post("/api/reindex")
 @limiter.limit("3/minute")
 async def reindex_documents(request: Request) -> Dict[str, Any]:
-    """Rebuild the RAG FAISS index and entity graph from documents in data/docs/."""
-    from backend.core.retrievers import build_rag_index, build_entity_graph, _get_docs_path, _get_metadata_path
+    """Rechunk data/docs/ and rebuild the entity graph."""
+    from backend.core.retrievers import build_doc_chunks, _get_docs_path
     import time
 
     docs_path = _get_docs_path()
     supported = (list(docs_path.rglob("*.txt")) + list(docs_path.rglob("*.md"))
                   + list(docs_path.rglob("*.pdf")))
-    image_files = [f for ext in ("*.png", "*.jpg", "*.jpeg", "*.webp", "*.bmp", "*.tiff")
-                   for f in docs_path.rglob(ext)]
 
-    if not supported and not image_files:
+    if not supported:
         return {
             "status": "empty",
-            "message": "No documents found. Add .txt, .md, .pdf, or image files to data/docs/ and try again.",
+            "message": "No documents found. Add .txt, .md, or .pdf files to data/docs/ and try again.",
             "docs_path": str(docs_path),
         }
 
     t0 = time.time()
-    index = build_rag_index()
+    chunk_count = build_doc_chunks()
 
-    meta_path = _get_metadata_path()
-    chunk_count = len(json.loads(meta_path.read_text())) if meta_path.exists() else 0
+    # entity count comes from the graph engine, re-loaded after rebuild
+    from backend.core.retrievers import _get_graph_engine
+    engine = _get_graph_engine()
+    entity_count = engine.node_count if engine is not None else 0
 
-    # rebuild entity graph from the same chunks
-    chunks = json.loads(meta_path.read_text()) if meta_path.exists() else []
-    entity_count = build_entity_graph(chunks) if chunks else 0
     elapsed = round(time.time() - t0, 2)
-
-    # report image index stats if multimodal is enabled
-    image_count = 0
-    img_meta = PROJECT_ROOT / "indexes" / "image_metadata.json"
-    if img_meta.exists():
-        image_count = len(json.loads(img_meta.read_text()))
-
-    total_files = len(supported) + len(image_files)
     logger.info(
-        "Reindex complete: %d text files, %d images, %d chunks, %d entities, %.2fs",
-        len(supported), len(image_files), chunk_count, entity_count, elapsed,
+        "Reindex complete: %d files, %d chunks, %d entities, %.2fs",
+        len(supported), chunk_count, entity_count, elapsed,
     )
     return {
         "status": "reindexed",
-        "files_processed": total_files,
+        "files_processed": len(supported),
         "chunks_indexed": chunk_count,
         "entities_extracted": entity_count,
-        "images_indexed": image_count,
         "elapsed_seconds": elapsed,
     }
 
@@ -846,41 +821,6 @@ async def fine_tune_endpoint(request: Request, body: Dict[str, Any]) -> Dict[str
     corr_id = uuid.uuid4().hex[:8]
     logger.info("Fine-tune job %s: status=%s episodes=%d", corr_id, result["status"], result["episodes_used"])
     return {**result, "job_id": corr_id}
-
-
-@app.get("/api/images/{image_path:path}")
-async def serve_image(image_path: str) -> Any:
-    """Serve images from data/images/ for multimodal retrieval results.
-
-    Path traversal is blocked: only files under data/images/ are served.
-    """
-    from fastapi.responses import FileResponse
-
-    # reject traversal attempts
-    if ".." in image_path or image_path.startswith("/"):
-        from fastapi.responses import JSONResponse
-        return JSONResponse({"error": "Invalid path"}, status_code=400)
-
-    full_path = PROJECT_ROOT / "data" / "images" / image_path
-    resolved = full_path.resolve()
-    allowed_root = (PROJECT_ROOT / "data" / "images").resolve()
-
-    if not str(resolved).startswith(str(allowed_root)):
-        from fastapi.responses import JSONResponse
-        return JSONResponse({"error": "Path outside allowed directory"}, status_code=403)
-
-    if not resolved.exists() or not resolved.is_file():
-        from fastapi.responses import JSONResponse
-        return JSONResponse({"error": "Image not found"}, status_code=404)
-
-    suffix = resolved.suffix.lower().lstrip(".")
-    mime_map = {
-        "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
-        "webp": "image/webp", "bmp": "image/bmp", "tiff": "image/tiff",
-        "svg": "image/svg+xml",
-    }
-    media_type = mime_map.get(suffix, "application/octet-stream")
-    return FileResponse(str(resolved), media_type=media_type)
 
 
 if __name__ == "__main__":
