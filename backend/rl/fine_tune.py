@@ -53,7 +53,6 @@ class TrainingEpisode(TypedDict):
     query: str
     response: str
     reward: float
-    rag_weight: float
     cag_weight: float
     graph_weight: float
 
@@ -136,7 +135,7 @@ def load_training_episodes(
         return []
 
     cursor.execute(
-        "SELECT query, response, reward, rag_weight, cag_weight, graph_weight "
+        "SELECT query, response, reward, cag_weight, graph_weight "
         "FROM episodes WHERE reward >= ? ORDER BY reward DESC LIMIT ?",
         (min_reward, max_episodes),
     )
@@ -144,14 +143,13 @@ def load_training_episodes(
     conn.close()
 
     episodes = []
-    for query, response, reward, rag_w, cag_w, graph_w in rows:
+    for query, response, reward, cag_w, graph_w in rows:
         if not query or not response:
             continue
         episodes.append(TrainingEpisode(
             query=str(query),
             response=str(response)[:4000],
             reward=float(reward or 0.0),
-            rag_weight=float(rag_w or 0.0),
             cag_weight=float(cag_w or 0.0),
             graph_weight=float(graph_w or 0.0),
         ))

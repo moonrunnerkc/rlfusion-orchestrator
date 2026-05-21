@@ -28,7 +28,6 @@ CREATE TABLE IF NOT EXISTS episodes (
     query TEXT,
     response TEXT,
     reward REAL,
-    rag_weight REAL,
     cag_weight REAL,
     graph_weight REAL,
     fused_context TEXT,

@@ -41,7 +41,11 @@ uvicorn backend.main:app --port 8000 --reload
 cd frontend && npm install && npm run dev
 ```
 
-The pre-trained CQL policy ships at `models/rl_policy_cql.d3`. Retraining is optional.
+The v1 pre-trained CQL policy was trained on a broken reward signal and
+has been deleted (see [overhaul-plan.md](overhaul-plan.md) Phase 3). The
+orchestrator falls back to heuristic weights when no policy is present.
+Train a fresh one with `python backend/rl/train_rl.py` once the
+`episodes` table has at least a few hundred real chat turns.
 
 For Blackwell (RTX 50-series) GPUs, llama-cpp-python must be compiled with
 `-DCMAKE_CUDA_ARCHITECTURES=100;120`. See `scripts/compatibility/fix_blackwell.sh`.
@@ -140,18 +144,26 @@ pytest tests/ -v --tb=short -m "gpu"
 
 ## RL training
 
-Pre-trained CQL policy ships at `models/rl_policy_cql.d3`. To retrain:
+The repo ships with no pre-trained CQL policy. The orchestrator falls
+back to heuristic 2-path weights until you train one.
 
 ```bash
-python backend/rl/train_rl.py                 # offline CQL (d3rlpy)
-python backend/rl/add_batch_episodes.py       # seed replay with synthetic
-python scripts/retrain_fusion.py              # 500 synthetic episodes, 2-path
+# (one-time) migrate the episodes table from 4-path to 2-path
+python3 scripts/migrate_episodes_to_two_path.py
+
+# train CQL on whatever real chat episodes you have accumulated
+python backend/rl/train_rl.py
+
+# optional: seed the replay buffer by replaying a batch of queries
+python backend/rl/add_batch_episodes.py
 ```
 
-The episodes table schema is being migrated to 2-path (CAG + Graph) as
-part of the [overhaul plan](overhaul-plan.md) Phase 3. The
-`rag_weight`/`graph_weight` columns from the 4-path era are tech debt
-that the migration cleans up.
+`backend/rl/fusion_env.py::FusionEnv.step()` now calls the live local
+generator and the same `critique()` function the chat path uses, so
+training reward and serving reward come from the same scorer. The
+training run is bounded by data quality, not data quantity — see
+Levine et al. 2020 (arXiv 2005.01643) on CQL with small high-quality
+datasets.
 
 ---
 

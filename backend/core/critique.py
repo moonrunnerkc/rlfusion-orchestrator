@@ -368,7 +368,13 @@ def compute_reward(query: str, fused_context: str, response: str) -> float:
 
 
 def log_episode_to_replay_buffer(episode: dict) -> bool:
-    """Log an episode to the replay buffer database for RL training."""
+    """Log an episode to the replay buffer database for RL training.
+
+    Writes to the 2-path episodes schema (cag_weight, graph_weight). If
+    an older 4-path schema is present, falls back to writing rag_weight=0
+    so the insert still succeeds — migration drops the column on the
+    next ./scripts/init_db.sh run.
+    """
     db_path = PROJECT_ROOT / "db" / "rlfo_cache.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -379,24 +385,41 @@ def log_episode_to_replay_buffer(episode: dict) -> bool:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 query TEXT, response TEXT, reward REAL,
-                rag_weight REAL, cag_weight REAL, graph_weight REAL,
+                cag_weight REAL, graph_weight REAL,
                 fused_context TEXT, proactive_suggestions TEXT
             )
         """)
 
-        cursor = conn.execute("""
-            INSERT INTO episodes (query, response, reward, rag_weight, cag_weight, graph_weight, fused_context, proactive_suggestions)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            episode.get("query", ""),
-            episode.get("response", ""),
-            episode.get("reward", 0.0),
-            episode.get("weights", {}).get("rag", 0.0),
-            episode.get("weights", {}).get("cag", 0.0),
-            episode.get("weights", {}).get("graph", 0.0),
-            episode.get("fused_context", ""),
-            " | ".join(episode.get("proactive_suggestions", []))
-        ))
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(episodes)").fetchall()]
+        has_rag = "rag_weight" in cols
+
+        if has_rag:
+            cursor = conn.execute("""
+                INSERT INTO episodes (query, response, reward, rag_weight, cag_weight, graph_weight, fused_context, proactive_suggestions)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                episode.get("query", ""),
+                episode.get("response", ""),
+                episode.get("reward", 0.0),
+                0.0,
+                episode.get("weights", {}).get("cag", 0.0),
+                episode.get("weights", {}).get("graph", 0.0),
+                episode.get("fused_context", ""),
+                " | ".join(episode.get("proactive_suggestions", [])),
+            ))
+        else:
+            cursor = conn.execute("""
+                INSERT INTO episodes (query, response, reward, cag_weight, graph_weight, fused_context, proactive_suggestions)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                episode.get("query", ""),
+                episode.get("response", ""),
+                episode.get("reward", 0.0),
+                episode.get("weights", {}).get("cag", 0.0),
+                episode.get("weights", {}).get("graph", 0.0),
+                episode.get("fused_context", ""),
+                " | ".join(episode.get("proactive_suggestions", [])),
+            ))
 
         episode_id = cursor.lastrowid
         reward = episode.get("reward", 0.0)

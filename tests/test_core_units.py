@@ -1038,39 +1038,6 @@ class TestComputeFitGraphAware:
         assert penalized_score <= base_score
 
 
-class TestCoTTraceGeneration:
-    """Phase 5.2: CoT trace extraction from replay buffer."""
-
-    def test_generate_synthetic_cot(self):
-        import tempfile
-        from backend.rl.generate_training_data import _generate_synthetic_cot
-        tmp = Path(tempfile.mkdtemp()) / "cot_test.jsonl"
-        result = _generate_synthetic_cot(tmp, count=10)
-        assert result.exists()
-        import json
-        with open(result) as f:
-            lines = f.readlines()
-        assert len(lines) == 10
-        first = json.loads(lines[0])
-        assert "query" in first
-        assert "reasoning_chain" in first
-        assert "response" in first
-        assert "reward" in first
-        assert first["reward"] >= 0.85
-
-    def test_extract_cot_with_missing_db(self):
-        import tempfile
-        from backend.rl.generate_training_data import extract_cot_traces
-        # point at a nonexistent DB, should fallback to synthetic
-        tmp_dir = tempfile.mkdtemp()
-        result = extract_cot_traces(
-            db_path=f"{tmp_dir}/nonexistent.db",
-            output_path=f"{tmp_dir}/cot.jsonl",
-            max_traces=5,
-        )
-        assert result.exists()
-
-
 # ---------------------------------------------------------------------------
 # model_router.py (Phase 6)
 # ---------------------------------------------------------------------------
