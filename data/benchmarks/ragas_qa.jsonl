@@ -1,0 +1,50 @@
+{"id": "q01", "query": "Which two GGUF models does RLFusion load at startup?", "reference_answer": "Qwen 2.5 1.5B Q4_K_M on CPU for triage and Llama 3.1 8B Q8_0 on GPU for generation.", "context_span": "Qwen 2.5 1.5B Instruct"}
+{"id": "q02", "query": "What does the CAG cache use for exact-match lookups?", "reference_answer": "SHA-256 hashing of the normalized query string.", "context_span": "SHA-256"}
+{"id": "q03", "query": "What CSWR weight is assigned to the vector similarity axis?", "reference_answer": "0.35.", "context_span": "0.35"}
+{"id": "q04", "query": "What is the default min_csw_score gate value?", "reference_answer": "0.25.", "context_span": "min_csw_score"}
+{"id": "q05", "query": "Which port does the FastAPI backend listen on by default?", "reference_answer": "Port 8000.", "context_span": "8000"}
+{"id": "q06", "query": "Which inference engine does the config default to?", "reference_answer": "llama_cpp_dual via llama-cpp-python.", "context_span": "llama_cpp_dual"}
+{"id": "q07", "query": "What CSWR stability threshold applies to code-domain queries?", "reference_answer": "0.55.", "context_span": "0.55"}
+{"id": "q08", "query": "What CSWR stability threshold applies to general-domain queries?", "reference_answer": "0.70.", "context_span": "0.70"}
+{"id": "q09", "query": "Where is the SQLite cache located by default?", "reference_answer": "db/rlfo_cache.db.", "context_span": "db/rlfo_cache.db"}
+{"id": "q10", "query": "What reward threshold causes a turn to be cached into CAG?", "reference_answer": "Reward of 0.70 or higher.", "context_span": "0.70"}
+{"id": "q11", "query": "What is the asymmetric design's CPU model used for?", "reference_answer": "Triage tasks like intent parsing, safety checks, and entity extraction.", "context_span": "intent parsing"}
+{"id": "q12", "query": "What is the asymmetric design's GPU model used for?", "reference_answer": "Generation, critique, and faithfulness verification.", "context_span": "generation"}
+{"id": "q13", "query": "Which Python version does the project require as a minimum?", "reference_answer": "Python 3.10 or higher.", "context_span": "Python 3.10"}
+{"id": "q14", "query": "What CUDA architecture flag is needed for Blackwell GPUs?", "reference_answer": "CMAKE_CUDA_ARCHITECTURES set to 100;120.", "context_span": "100;120"}
+{"id": "q15", "query": "What is the default frontend port?", "reference_answer": "Port 5173, the Vite dev server.", "context_span": "5173"}
+{"id": "q16", "query": "What does the safety agent's third tier check?", "reference_answer": "Out-of-distribution detection via Mahalanobis distance against the embedding distribution.", "context_span": "Mahalanobis"}
+{"id": "q17", "query": "Which two retrieval paths does the system fuse?", "reference_answer": "CAG semantic cache and GraphRAG entity + chunk retrieval.", "context_span": "CAG"}
+{"id": "q18", "query": "What was removed from the codebase in the v2 overhaul?", "reference_answer": "STIS engine, ontology contradiction trigger, multimodal pipeline, federated learning module, ORPS reasoning, DPO/GRPO trainers, fake academic benchmarks, and dead FAISS RAG code.", "context_span": "STIS"}
+{"id": "q19", "query": "What is the LLM context budget enforced in the orchestrator?", "reference_answer": "5000 characters, roughly 1250 tokens.", "context_span": "5000"}
+{"id": "q20", "query": "What is the floor weight clamp value on the RL policy outputs?", "reference_answer": "0.05.", "context_span": "0.05"}
+{"id": "q21", "query": "What environment variable enables FusionEnv dry-run mode?", "reference_answer": "RLFUSION_ENV_DRY_RUN.", "context_span": "RLFUSION_ENV_DRY_RUN"}
+{"id": "q22", "query": "Which env var controls admin access to the fine-tune endpoint?", "reference_answer": "RLFUSION_ADMIN_KEY.", "context_span": "RLFUSION_ADMIN_KEY"}
+{"id": "q23", "query": "How many dimensions are in the FusionEnv observation space?", "reference_answer": "394 dimensions (384 embedding + 10 features).", "context_span": "394"}
+{"id": "q24", "query": "What is the CSWR pack token budget?", "reference_answer": "1800 tokens per pack.", "context_span": "1800"}
+{"id": "q25", "query": "Which library trains the CQL policy?", "reference_answer": "d3rlpy.", "context_span": "d3rlpy"}
+{"id": "q26", "query": "What score causes the CAG fast path to skip generation?", "reference_answer": "A CAG hit with score at or above 0.90.", "context_span": "0.90"}
+{"id": "q27", "query": "Where is the entity knowledge graph persisted?", "reference_answer": "data/entity_graph.json.", "context_span": "entity_graph.json"}
+{"id": "q28", "query": "What does the project-coherence CSWR axis measure?", "reference_answer": "Whether a chunk's neighbors in embedding space share the same project tag.", "context_span": "project coherence"}
+{"id": "q29", "query": "Which embedding model does the codebase use?", "reference_answer": "BAAI/bge-small-en-v1.5.", "context_span": "BAAI/bge-small-en-v1.5"}
+{"id": "q30", "query": "Where does CSWR scoring run on the live pipeline?", "reference_answer": "Inside FusionAgent.build_fusion_context() in the fusion stage.", "context_span": "build_fusion_context"}
+{"id": "q31", "query": "What does the OOM fallback do on the GPU executor?", "reference_answer": "Re-loads the model in CPU-only mode and continues serving.", "context_span": "OOM"}
+{"id": "q32", "query": "Which retrieval condition triggers the CAG-only fast path?", "reference_answer": "A CAG hit scoring 0.90 or above with no graph hits.", "context_span": "0.90"}
+{"id": "q33", "query": "What three axes does the critique LLM score?", "reference_answer": "Factual accuracy, proactivity, and helpfulness.", "context_span": "factual"}
+{"id": "q34", "query": "What command rebuilds the doc chunks and entity graph?", "reference_answer": "POST /api/reindex.", "context_span": "/api/reindex"}
+{"id": "q35", "query": "Which file is authoritative for runtime tunables?", "reference_answer": "backend/config.yaml.", "context_span": "config.yaml"}
+{"id": "q36", "query": "What licence does the project ship under?", "reference_answer": "MIT.", "context_span": "MIT"}
+{"id": "q37", "query": "Which streaming endpoint shows the live per-step pipeline status?", "reference_answer": "The WebSocket endpoint at /ws.", "context_span": "/ws"}
+{"id": "q38", "query": "Which env var forces CPU-only execution?", "reference_answer": "RLFUSION_FORCE_CPU.", "context_span": "RLFUSION_FORCE_CPU"}
+{"id": "q39", "query": "Why was the v1 CQL policy deleted in the overhaul?", "reference_answer": "It was trained on a broken reward signal where the env produced truncated context plus boilerplate, so its weights did not generalize to real LLM outputs.", "context_span": "broken reward"}
+{"id": "q40", "query": "Which CSWR weight goes to the question fit axis?", "reference_answer": "0.20.", "context_span": "0.20"}
+{"id": "q41", "query": "What benchmark family is the eval script built around?", "reference_answer": "RAGAs (Es et al. 2023, arxiv 2309.15217).", "context_span": "RAGAs"}
+{"id": "q42", "query": "What is the default LoRA rank for fine-tuning?", "reference_answer": "16.", "context_span": "lora_rank"}
+{"id": "q43", "query": "What three RL configurations does the eval script compare?", "reference_answer": "Uniform fusion weights, heuristic weights, and the learned CQL policy.", "context_span": "uniform"}
+{"id": "q44", "query": "What is the WebSocket message type sent when streaming begins?", "reference_answer": "A JSON message with type 'start'.", "context_span": "start"}
+{"id": "q45", "query": "Which agent in the pipeline scores the response after generation?", "reference_answer": "CritiqueAgent.", "context_span": "CritiqueAgent"}
+{"id": "q46", "query": "What does the GraphEngine use for in-memory vector search?", "reference_answer": "Qdrant in-memory with cosine distance, falling back to numpy.", "context_span": "Qdrant"}
+{"id": "q47", "query": "What does community_summarize() return?", "reference_answer": "The top-k Leiden community summaries ranked by query similarity.", "context_span": "community"}
+{"id": "q48", "query": "Where do conversation turns get logged?", "reference_answer": "The conversations table in the SQLite database.", "context_span": "conversations"}
+{"id": "q49", "query": "What is the headline acceptance criterion for the whole overhaul?", "reference_answer": "A local-first chatbot where RL-mediated multi-source retrieval fusion measurably beats a uniform-weight baseline on an external benchmark, with every README claim verifiable in the code.", "context_span": "uniform-weight baseline"}
+{"id": "q50", "query": "Which RAGAs metrics does eval_ragas.py compute?", "reference_answer": "Context relevance, answer relevance, and faithfulness.", "context_span": "context relevance"}

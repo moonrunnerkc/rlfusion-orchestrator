@@ -167,37 +167,6 @@ datasets.
 
 ---
 
-## Benchmarks
-
-```bash
-# 50-query RAGAs-style eval over data/docs/rlfusion/
-python3 scripts/eval_ragas.py
-
-# CI-friendly: skip the LLM, score fused context as the answer
-python3 scripts/eval_ragas.py --dry-run
-```
-
-The script compares three fusion strategies (uniform `[0.5, 0.5]`,
-heuristic `_heuristic_weights()`, learned CQL) on the 50-question set
-at `data/benchmarks/ragas_qa.jsonl`. It reports three metrics per
-strategy:
-
-| metric | what it measures |
-|--------|------------------|
-| `context_relevance` | does the fused context contain the ground-truth span (substring OR embedding cosine ≥ that)? |
-| `answer_relevance`  | embedding cosine between the generated answer and the reference answer |
-| `faithfulness`      | fraction of reference-answer content tokens that appear in the fused context |
-
-These are simplified, local proxies for the RAGAs metrics in
-Es et al. 2023 (arXiv 2309.15217); they do not require an LLM judge so
-they are reproducible from a single command. Each run also dumps the
-full per-query results to `tests/results/ragas_<timestamp>.json`.
-
-The "learned" column is skipped (and the row omitted) when no
-`models/rl_policy_cql.d3` is present, which is the default state of the
-repo after the overhaul. Train a policy with `python backend/rl/train_rl.py`
-and re-run the eval to populate it.
-
 ## Docker
 
 ```bash

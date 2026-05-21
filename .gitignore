@@ -51,6 +51,7 @@ rag_index.faiss
 data/docs/*
 !data/docs/.gitkeep
 !data/docs/images/
+!data/docs/rlfusion/
 data/synthetic_episodes/
 training/logs/
 d3rlpy_logs/
