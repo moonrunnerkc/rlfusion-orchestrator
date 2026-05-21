@@ -1,0 +1,40 @@
+# Build context hygiene. Keep the image small and exclude anything that
+# the production runtime should not bake into a layer.
+.git
+.gitignore
+.gitattributes
+.github
+.venv
+.env
+.env.example
+.env.local
+.audit
+.ocr
+.pytest_cache
+__pycache__
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.DS_Store
+
+# tests + dev tooling
+tests
+training
+**/*.test.ts
+**/*.spec.ts
+node_modules
+frontend/node_modules
+frontend/dist
+frontend/build
+
+# heavy artifacts that get bind-mounted at runtime
+data
+db
+indexes
+models
+
+# editor / IDE
+.idea
+.vscode
+.claude

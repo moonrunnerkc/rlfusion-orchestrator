@@ -2,38 +2,43 @@
 # docker-compose.yml - CPU and GPU profiles for RLFusion (2-path architecture)
 # Usage: docker compose --profile cpu up
 #        docker compose --profile gpu up
-# Models must be pre-downloaded to models/ before first run.
+# Models must be pre-downloaded to ./models/ before first run and an admin
+# key set via RLFUSION_ADMIN_KEY in the host environment.
+
+x-backend-base: &backend-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+  ports:
+    - "8000:8000"
+  volumes:
+    - ./data:/app/data
+    - ./db:/app/db
+    - ./models:/app/models:ro
+  environment:
+    - INFERENCE_ENGINE=llama_cpp_dual
+    - RLFUSION_ADMIN_KEY=${RLFUSION_ADMIN_KEY}
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  read_only: false
+  restart: unless-stopped
 
 services:
   backend-cpu:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *backend-base
     profiles: ["cpu"]
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./data:/app/data
-      - ./db:/app/db
-      - ./models:/app/models
     environment:
       - CUDA_VISIBLE_DEVICES=""
       - INFERENCE_ENGINE=llama_cpp_dual
-    command: python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+      - RLFUSION_ADMIN_KEY=${RLFUSION_ADMIN_KEY}
+      - RLFUSION_FORCE_CPU=true
+    mem_limit: 12g
 
   backend-gpu:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *backend-base
     profiles: ["gpu"]
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./data:/app/data
-      - ./db:/app/db
-      - ./models:/app/models
-    environment:
-      - INFERENCE_ENGINE=llama_cpp_dual
     deploy:
       resources:
         reservations:
@@ -43,7 +48,6 @@ services:
               capabilities: [gpu]
         limits:
           memory: 24G
-    command: python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 
   frontend:
     build:
@@ -52,4 +56,8 @@ services:
     profiles: ["cpu", "gpu"]
     ports:
       - "5173:5173"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     command: npm run dev -- --host
