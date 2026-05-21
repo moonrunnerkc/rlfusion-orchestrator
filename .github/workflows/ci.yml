@@ -75,7 +75,7 @@ jobs:
           RLFUSION_DEVICE: "cpu"
           RLFUSION_ADMIN_KEY: "ci-test-key-do-not-use-in-production"
           RLFUSION_ALLOW_WEAK_ADMIN_KEY: "1"
-        run: pytest tests/ backend/tests/ -v --tb=short -m "not gpu"
+        run: pytest tests/ -v --tb=short -m "not gpu"
 
   load-test:
     runs-on: ubuntu-latest

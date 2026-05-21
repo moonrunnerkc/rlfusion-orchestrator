@@ -33,7 +33,7 @@ pytest tests/test_core_units.py -v
 pytest tests/test_core_units.py::TestScoreChunks -v
 ```
 
-`pytest.ini_options` in `pyproject.toml` defines three markers (`gpu`, `slow`, `integration`) and sets `testpaths = ["tests", "backend/tests"]`. Tests that hit admin endpoints set `RLFUSION_ALLOW_WEAK_ADMIN_KEY=1` so short fixture keys are accepted; outside tests, the server refuses to boot with anything shorter than 32 chars.
+`pytest.ini_options` in `pyproject.toml` defines three markers (`gpu`, `slow`, `integration`) and sets `testpaths = ["tests"]`. Tests that hit admin endpoints set `RLFUSION_ALLOW_WEAK_ADMIN_KEY=1` so short fixture keys are accepted; outside tests, the server refuses to boot with anything shorter than 32 chars.
 
 ### Lint / format
 

@@ -4,7 +4,7 @@ markers = [
     "slow: mark test as slow-running (>30s)",
     "integration: mark test as requiring external services (Ollama, Redis)",
 ]
-testpaths = ["tests", "backend/tests"]
+testpaths = ["tests"]
 addopts = "-v --tb=short"
 
 [tool.black]
