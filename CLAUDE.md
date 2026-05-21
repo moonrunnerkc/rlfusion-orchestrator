@@ -203,3 +203,25 @@ These rules are enforced at all times, in every response, every commit, every fi
 - Accuracy over hype.
 - Every public claim verifiable with evidence.
 - For research-style answers: state findings as facts in your own words, collect all sources at the bottom under a single `Sources:` line. No inline citations, no "[source]" markers, no parenthetical links in the body.
+
+<!-- Managed by `ocr init`. Mirror in AGENTS.md. Do not hand-edit. -->
+<!-- OCR:START -->
+## Open Code Review Instructions
+
+These instructions are for AI assistants handling code review in this project.
+
+Always open `.ocr/skills/SKILL.md` when the request:
+- Asks for code review, PR review, or feedback on changes
+- Mentions "review my code" or similar phrases
+- Wants multi-perspective analysis of code quality
+- Asks to map, organize, or navigate a large changeset
+
+Use `.ocr/skills/SKILL.md` to learn:
+- How to run the 8-phase review workflow
+- How to generate a Code Review Map for large changesets
+- Available reviewer personas and their focus areas
+- Session management and output format
+
+Keep this managed block so `ocr init` can refresh the instructions.
+
+<!-- OCR:END -->
