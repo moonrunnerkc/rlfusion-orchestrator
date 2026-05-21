@@ -55,17 +55,21 @@ class AsymmetricLLMOrchestrator:
     _init_lock = threading.Lock()
 
     def __new__(cls) -> AsymmetricLLMOrchestrator:
-        if cls._instance is None:
-            with cls._init_lock:
-                if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-                    cls._instance._initialized = False
+        # F1.10: the double-checked-lock pattern only stays safe when both
+        # reads happen under the lock. The outer read is a fast path; the
+        # inner check must re-verify because another thread could have
+        # constructed in the meantime.
+        with cls._init_lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+                cls._instance._initialized = False
         return cls._instance
 
     def __init__(self) -> None:
-        if self._initialized:
-            return
-        self._initialized = True
+        with self._init_lock:
+            if self._initialized:
+                return
+            self._initialized = True
 
         inf = get_inference_config()
         self._cpu_model_path = str(PROJECT_ROOT / inf["cpu_model_path"])
@@ -79,6 +83,9 @@ class AsymmetricLLMOrchestrator:
         self._cpu_lock = threading.Lock()
         self._gpu_lock = threading.Lock()
         self._gpu_offloaded = False
+        # F1.8: after this many CPU-fallback turns we attempt a GPU reload.
+        self._oom_recovery_counter = 0
+        self._oom_recovery_threshold = 5
 
         logger.info(
             "AsymmetricLLMOrchestrator configured: cpu=%s, gpu=%s",
@@ -109,8 +116,14 @@ class AsymmetricLLMOrchestrator:
         )
         logger.info("CPU triage model loaded (RAM only, 0 GPU layers)")
 
-    def _ensure_gpu(self) -> None:
-        """Load GPU executor model on first use. All layers pinned to VRAM."""
+    def _ensure_gpu(self, force_reload: bool = False) -> None:
+        """Load GPU executor model on first use. All layers pinned to VRAM.
+
+        Pass force_reload=True from the OOM-recovery path to drop the existing
+        Llama handle and rehydrate against the freshest VRAM availability.
+        """
+        if force_reload:
+            self._gpu_executor = None
         if self._gpu_executor is not None:
             return
         from llama_cpp import Llama
@@ -185,6 +198,21 @@ class AsymmetricLLMOrchestrator:
         """
         prompt = self._enforce_ctx(prompt, self._gpu_ctx, max_tokens)
         with self._gpu_lock:
+            # F1.8: if we are in CPU-fallback mode, try to come back to GPU
+            # after _oom_recovery_threshold successful CPU-fallback turns.
+            if (
+                self._gpu_offloaded
+                and self._oom_recovery_counter >= self._oom_recovery_threshold
+            ):
+                logger.info("Attempting GPU recovery after CPU fallback streak")
+                self._gpu_offloaded = False
+                self._oom_recovery_counter = 0
+                try:
+                    self._ensure_gpu(force_reload=True)
+                except Exception as exc:
+                    logger.warning("GPU recovery failed, staying on CPU: %s", exc)
+                    self._gpu_offloaded = True
+
             self._ensure_gpu()
             messages = [
                 {"role": "system", "content": system},
@@ -201,6 +229,9 @@ class AsymmetricLLMOrchestrator:
                 if "out of memory" in str(exc).lower() or "CUDA" in str(exc):
                     return self._handle_oom(messages, temperature, max_tokens)
                 raise
+
+            if self._gpu_offloaded:
+                self._oom_recovery_counter += 1
         return response["choices"][0]["message"]["content"] or ""
 
     def stream_execute(
