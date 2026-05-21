@@ -1,9 +1,9 @@
 # Author: Bradley R. Kinnard
-"""Dynamic tool orchestration layer for RLFusion Orchestrator (Phase 3).
+"""Built-in tool surface for RLFusion.
 
-Exposes BaseTool protocol, ToolRegistry, and all built-in tool implementations.
-Tools wrap external capabilities behind a uniform interface, selected by
-query decomposition and dispatched with per-tool rate limiting.
+Currently only the Calculator is exposed. The legacy ApiBridgeTool,
+CodeExecutorTool, and ToolRegistry were removed in the v2.0.0 cleanup
+because nothing in the live pipeline referenced them.
 """
 
 from backend.tools.base import (
@@ -14,39 +14,14 @@ from backend.tools.base import (
     make_output,
     timed_execute,
 )
-from backend.tools.registry import ToolRegistry
-from backend.tools.api_bridge import ApiBridgeTool
 from backend.tools.calculator import CalculatorTool
-from backend.tools.code_executor import CodeExecutorTool
 
 __all__ = [
     "BaseTool",
     "ToolInput",
     "ToolOutput",
     "ToolSchema",
-    "ToolRegistry",
-    "ApiBridgeTool",
     "CalculatorTool",
-    "CodeExecutorTool",
     "make_output",
     "timed_execute",
-    "build_default_registry",
 ]
-
-
-def build_default_registry(
-    max_calls_per_tool: int = 10,
-    window_secs: float = 60.0,
-) -> ToolRegistry:
-    """Create a registry pre-loaded with all built-in tools.
-
-    Called during app startup to wire tools into the orchestration layer.
-    """
-    registry = ToolRegistry(
-        max_calls_per_tool=max_calls_per_tool,
-        window_secs=window_secs,
-    )
-    registry.register(CalculatorTool())
-    registry.register(CodeExecutorTool())
-    registry.register(ApiBridgeTool())
-    return registry
