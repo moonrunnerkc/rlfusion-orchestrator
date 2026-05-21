@@ -152,7 +152,16 @@ class InferenceEngine:
                 for m in payload_msgs
             ]
 
-        resp = client.chat(model=model, messages=payload_msgs, options=opts)  # type: ignore[arg-type]
+        # think=False keeps reasoning models (gemma4, deepseek-r1,
+        # qwen3-thinking) from spending the num_predict budget in a
+        # `thinking` channel that the chat endpoint does not return as
+        # content. Without it gemma4:31b emits 0 content tokens.
+        resp = client.chat(  # type: ignore[arg-type]
+            model=model,
+            messages=payload_msgs,
+            options=opts,
+            think=False,
+        )
         return resp["message"]["content"]
 
     def _ollama_stream(
@@ -171,9 +180,11 @@ class InferenceEngine:
         if num_predict is not None:
             opts["num_predict"] = num_predict
 
-        for chunk in client.chat(model=model, messages=messages, options=opts, stream=True):  # type: ignore[arg-type]
-            if "message" in chunk and "content" in chunk["message"]:
-                yield chunk["message"]["content"]
+        for chunk in client.chat(  # type: ignore[arg-type]
+            model=model, messages=messages, options=opts,
+            stream=True, think=False,
+        ):
+            yield chunk["message"]["content"]
 
     # -- OpenAI-compatible backend (vLLM, TensorRT-LLM) -----------------------
 

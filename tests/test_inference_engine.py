@@ -115,6 +115,37 @@ class TestInferenceEngineOllama:
                 ))
                 assert result == ["Hello", " world"]
 
+    def test_stream_passes_think_false(self):
+        """think=False must reach the ollama client. Without it, reasoning
+        models spend the whole num_predict budget in their thinking channel
+        and never produce a content token, leaving the bubble blank."""
+        from backend.core.model_router import InferenceEngine
+
+        with patch.dict(os.environ, {"INFERENCE_ENGINE": "ollama"}):
+            engine = InferenceEngine()
+            mock_client = MagicMock()
+            mock_client.chat.return_value = iter([{"message": {"content": "ok"}}])
+
+            with patch("ollama.Client", return_value=mock_client):
+                list(engine.stream(messages=[{"role": "user", "content": "x"}]))
+
+            call_kwargs = mock_client.chat.call_args.kwargs
+            assert call_kwargs.get("think") is False
+            assert call_kwargs.get("stream") is True
+
+    def test_generate_passes_think_false(self):
+        from backend.core.model_router import InferenceEngine
+
+        with patch.dict(os.environ, {"INFERENCE_ENGINE": "ollama"}):
+            engine = InferenceEngine()
+            mock_client = MagicMock()
+            mock_client.chat.return_value = {"message": {"content": "ok"}}
+
+            with patch("ollama.Client", return_value=mock_client):
+                engine.generate(messages=[{"role": "user", "content": "x"}])
+
+            assert mock_client.chat.call_args.kwargs.get("think") is False
+
 
 class TestInferenceEngineOpenAI:
     """Test the OpenAI-compatible backend path (vLLM/TensorRT)."""

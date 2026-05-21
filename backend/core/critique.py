@@ -339,27 +339,16 @@ _PAIRED_CRITIQUE_RE = re.compile(
 def strip_critique_block(response: str) -> str:
     """Remove well-formed <critique>...</critique> blocks and source tags.
 
-    Two invariants:
-
-    1. Only well-formed pairs are stripped. A bare <critique> with no
-       closing tag is treated as content, not a marker. The old behavior
-       (strip to EOF on any opening tag) silently deleted entire
-       responses when the model emitted one stray token.
-
-    2. Stripping never produces an empty string. If removing the
-       critique pair would leave nothing, the original is returned
-       verbatim. The user has to see something; the alternative is an
-       empty bubble that hides the bug. The reward scorer is a separate
-       LLM call that does not depend on this text being clean.
+    Only well-formed pairs are stripped. A bare opening tag with no
+    closing is treated as content; the old strip-to-EOF behavior
+    silently nuked entire responses when the model emitted one stray
+    token. If a response is *only* a critique block, the returned
+    string is empty and that's the model's problem to fix.
     """
-    text = response
-    stripped = _PAIRED_CRITIQUE_RE.sub("", text)
+    text = _PAIRED_CRITIQUE_RE.sub("", response)
     for pattern in _SOURCE_TAG_PATTERNS:
-        stripped = re.sub(pattern, '', stripped)
-    stripped = stripped.strip()
-    if not stripped:
-        return text.strip()
-    return stripped
+        text = re.sub(pattern, '', text)
+    return text.strip()
 
 
 def compute_reward(query: str, fused_context: str, response: str) -> float:

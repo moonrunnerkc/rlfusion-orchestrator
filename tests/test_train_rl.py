@@ -165,13 +165,12 @@ class TestStripCritiqueBlock:
         text = "Real answer text. <critique>partial open"
         assert strip_critique_block(text) == text.strip()
 
-    def test_only_critique_returns_original(self):
-        """When the model emits ONLY a critique block, return the raw
-        block instead of an empty string. Empty bubbles hide the bug."""
+    def test_only_critique_returns_empty(self):
+        """When the model emits ONLY a critique block, stripping returns
+        empty. That's the model misbehaving; surface it, don't paper over."""
         from backend.core.critique import strip_critique_block
         text = "<critique>Factual: 0.9\nFinal reward: 0.85</critique>"
-        assert strip_critique_block(text) == text.strip()
-        assert strip_critique_block(text) != ""
+        assert strip_critique_block(text) == ""
 
     def test_inline_critique_word_preserved(self):
         """The word 'critique' as content (not a marker) stays."""
