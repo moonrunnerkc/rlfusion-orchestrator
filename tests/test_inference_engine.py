@@ -23,7 +23,8 @@ class TestInferenceConfig:
     def test_default_config_loads(self):
         from backend.config import get_inference_config
         inf = get_inference_config()
-        assert inf["engine"] == "ollama"
+        # v2 default is the asymmetric llama-cpp dual-model engine
+        assert inf["engine"] == "llama_cpp_dual"
         assert "localhost" in inf["base_url"]
         assert isinstance(inf["model"], str)
         assert inf["max_concurrent"] >= 1
@@ -60,14 +61,14 @@ class TestInferenceEngineInit:
     def test_engine_loads_from_config(self):
         from backend.core.model_router import InferenceEngine
         engine = InferenceEngine()
-        assert engine.engine in ("ollama", "vllm", "tensorrt")
+        assert engine.engine in ("ollama", "vllm", "tensorrt", "llama_cpp_dual")
         assert isinstance(engine.model, str)
         assert isinstance(engine.base_url, str)
 
-    def test_engine_defaults_to_ollama(self):
+    def test_engine_defaults_to_llama_cpp_dual(self):
         from backend.core.model_router import InferenceEngine
         engine = InferenceEngine()
-        assert engine.engine == "ollama"
+        assert engine.engine == "llama_cpp_dual"
 
     def test_engine_respects_env_override(self):
         from backend.core.model_router import InferenceEngine
@@ -83,34 +84,36 @@ class TestInferenceEngineOllama:
     def test_generate_calls_ollama_client(self):
         from backend.core.model_router import InferenceEngine
 
-        engine = InferenceEngine()
-        mock_client = MagicMock()
-        mock_client.chat.return_value = {"message": {"content": "test response"}}
+        with patch.dict(os.environ, {"INFERENCE_ENGINE": "ollama"}):
+            engine = InferenceEngine()
+            mock_client = MagicMock()
+            mock_client.chat.return_value = {"message": {"content": "test response"}}
 
-        with patch("backend.core.model_router.InferenceEngine._ollama_generate", wraps=engine._ollama_generate):
-            with patch("ollama.Client", return_value=mock_client):
-                result = engine.generate(
-                    messages=[{"role": "user", "content": "hello"}],
-                    temperature=0.5,
-                )
-                assert result == "test response"
+            with patch("backend.core.model_router.InferenceEngine._ollama_generate", wraps=engine._ollama_generate):
+                with patch("ollama.Client", return_value=mock_client):
+                    result = engine.generate(
+                        messages=[{"role": "user", "content": "hello"}],
+                        temperature=0.5,
+                    )
+                    assert result == "test response"
 
     def test_stream_yields_chunks(self):
         from backend.core.model_router import InferenceEngine
 
-        engine = InferenceEngine()
-        chunks = [
-            {"message": {"content": "Hello"}},
-            {"message": {"content": " world"}},
-        ]
-        mock_client = MagicMock()
-        mock_client.chat.return_value = iter(chunks)
+        with patch.dict(os.environ, {"INFERENCE_ENGINE": "ollama"}):
+            engine = InferenceEngine()
+            chunks = [
+                {"message": {"content": "Hello"}},
+                {"message": {"content": " world"}},
+            ]
+            mock_client = MagicMock()
+            mock_client.chat.return_value = iter(chunks)
 
-        with patch("ollama.Client", return_value=mock_client):
-            result = list(engine.stream(
-                messages=[{"role": "user", "content": "hello"}],
-            ))
-            assert result == ["Hello", " world"]
+            with patch("ollama.Client", return_value=mock_client):
+                result = list(engine.stream(
+                    messages=[{"role": "user", "content": "hello"}],
+                ))
+                assert result == ["Hello", " world"]
 
 
 class TestInferenceEngineOpenAI:
@@ -189,30 +192,36 @@ class TestInferenceEngineHealthCheck:
 
     def test_ollama_health_check_success(self):
         from backend.core.model_router import InferenceEngine
-        engine = InferenceEngine()
+        with patch.dict(os.environ, {"INFERENCE_ENGINE": "ollama", "INFERENCE_MODEL": "dolphin-llama3:8b"}):
+            engine = InferenceEngine()
 
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"models": [{"name": "dolphin-llama3:8b"}]}
-        mock_response.raise_for_status = MagicMock()
+            mock_response = MagicMock()
+            mock_response.json.return_value = {"models": [{"name": "dolphin-llama3:8b"}]}
+            mock_response.raise_for_status = MagicMock()
 
-        with patch("httpx.get", return_value=mock_response):
-            assert engine.check_health() is True
+            with patch("httpx.get", return_value=mock_response):
+                assert engine.check_health() is True
 
     def test_ollama_health_check_model_missing(self):
         from backend.core.model_router import InferenceEngine
-        engine = InferenceEngine()
+        with patch.dict(os.environ, {"INFERENCE_ENGINE": "ollama", "INFERENCE_MODEL": "dolphin-llama3:8b"}):
+            engine = InferenceEngine()
 
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"models": [{"name": "other-model:7b"}]}
-        mock_response.raise_for_status = MagicMock()
+            mock_response = MagicMock()
+            mock_response.json.return_value = {"models": [{"name": "other-model:7b"}]}
+            mock_response.raise_for_status = MagicMock()
 
-        with patch("httpx.get", return_value=mock_response):
-            assert engine.check_health() is False
+            with patch("httpx.get", return_value=mock_response):
+                assert engine.check_health() is False
 
     def test_vllm_health_check_success(self):
         from backend.core.model_router import InferenceEngine
 
-        with patch.dict(os.environ, {"INFERENCE_ENGINE": "vllm", "INFERENCE_BASE_URL": "http://vllm:8000"}):
+        with patch.dict(os.environ, {
+            "INFERENCE_ENGINE": "vllm",
+            "INFERENCE_BASE_URL": "http://vllm:8000",
+            "INFERENCE_MODEL": "dolphin-llama3:8b",
+        }):
             engine = InferenceEngine()
 
             mock_response = MagicMock()
@@ -285,8 +294,9 @@ class TestConfigToggle:
 
     def test_ollama_engine_uses_ollama_backend(self):
         from backend.core.model_router import InferenceEngine
-        engine = InferenceEngine()
-        assert engine.engine == "ollama"
+        with patch.dict(os.environ, {"INFERENCE_ENGINE": "ollama"}):
+            engine = InferenceEngine()
+            assert engine.engine == "ollama"
 
     def test_vllm_engine_uses_openai_backend(self):
         from backend.core.model_router import InferenceEngine

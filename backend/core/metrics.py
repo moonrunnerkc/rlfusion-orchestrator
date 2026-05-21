@@ -55,7 +55,7 @@ class MemoryMonitor:
             return 0.0, 0.0
 
     def _read_ram(self) -> tuple[float, float]:
-        """Read system RAM via /proc/meminfo (no psutil dependency)."""
+        """Read system RAM. Prefers /proc/meminfo on Linux, falls back to psutil."""
         try:
             with open("/proc/meminfo", "r") as f:
                 lines = f.readlines()
@@ -66,7 +66,16 @@ class MemoryMonitor:
             total = mem.get("MemTotal", 0) / 1024
             available = mem.get("MemAvailable", mem.get("MemFree", 0)) / 1024
             used = total - available
-            return used, total
+            if total > 0:
+                return used, total
+        except (OSError, ValueError, IndexError):
+            pass
+
+        # Darwin / Windows / anywhere /proc isn't available
+        try:
+            import psutil
+            vm = psutil.virtual_memory()
+            return vm.used / (1024 * 1024), vm.total / (1024 * 1024)
         except Exception:
             return 0.0, 0.0
 

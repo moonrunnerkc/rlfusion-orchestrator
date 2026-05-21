@@ -149,12 +149,8 @@ class TestRetrievalAgent:
         state = {"query": "What is CSWR?", "complexity": "simple"}
         result = agent.act(state)
         assert "retrieval_results" in result
-        assert "web_status" in result
         rr = result["retrieval_results"]
-        assert "rag" in rr
-        assert "cag" in rr
-        assert "graph" in rr
-        assert "web" in rr
+        assert set(rr.keys()) == {"cag", "graph"}
 
     def test_uses_expanded_query(self):
         from backend.agents.retrieval_agent import RetrievalAgent
@@ -176,10 +172,8 @@ class TestRetrievalAgent:
         agent = RetrievalAgent()
         state = {
             "retrieval_results": {
-                "rag": [{"text": "t", "score": 0.5}],
                 "cag": [],
-                "graph": [],
-                "web": [],
+                "graph": [{"text": "t", "score": 0.5}],
             }
         }
         # should not raise
@@ -188,7 +182,7 @@ class TestRetrievalAgent:
     def test_reflect_empty_results(self):
         from backend.agents.retrieval_agent import RetrievalAgent
         agent = RetrievalAgent()
-        state = {"retrieval_results": {"rag": [], "cag": [], "graph": [], "web": []}}
+        state = {"retrieval_results": {"cag": [], "graph": []}}
         agent.reflect(state)
 
 
@@ -479,10 +473,11 @@ class TestPromptHelpers:
         prompt = generate_system_prompt("chat", ["[CAG:0.95] cached answer"])
         assert "exact text" in prompt.lower()
 
-    def test_generate_system_prompt_web(self):
+    def test_generate_system_prompt_chat(self):
         from backend.agents.orchestrator import generate_system_prompt
-        prompt = generate_system_prompt("chat", ["[WEB:0.9] web result"])
-        assert "WEB" in prompt
+        prompt = generate_system_prompt("chat", ["[GRAPH:0.8] some chunk"])
+        # the chat-mode system prompt explicitly references retrieved context
+        assert "RULES" in prompt and "context" in prompt.lower()
 
     def test_generate_user_prompt_chat(self):
         from backend.agents.orchestrator import generate_user_prompt
@@ -567,7 +562,6 @@ Proactive suggestions:
             llm_response=response,
             fused_context="context",
             actual_weights=[0.4, 0.6],
-            web_status="disabled",
         )
         assert result["response"]
         assert "<critique>" not in result["response"]
@@ -575,7 +569,8 @@ Proactive suggestions:
         assert result["fusion_weights"]["cag"] == 0.4
         assert result["blocked"] is False
 
-    def test_finalize_web_notice(self):
+    def test_finalize_no_tavily_notice(self):
+        """Web search and TAVILY notices were removed in the v2 overhaul."""
         from backend.agents.orchestrator import Orchestrator
         orch = Orchestrator()
         result = orch.finalize(
@@ -583,19 +578,6 @@ Proactive suggestions:
             llm_response="Answer text.",
             fused_context="ctx",
             actual_weights=[0.5, 0.5],
-            web_status="no_api_key",
-        )
-        assert "TAVILY_API_KEY" in result["response"]
-
-    def test_finalize_no_web_notice(self):
-        from backend.agents.orchestrator import Orchestrator
-        orch = Orchestrator()
-        result = orch.finalize(
-            query="test",
-            llm_response="Answer text.",
-            fused_context="ctx",
-            actual_weights=[0.5, 0.5],
-            web_status="disabled",
         )
         assert "TAVILY_API_KEY" not in result["response"]
 
@@ -637,15 +619,13 @@ class TestAgentsPackage:
 
 
 # ---------------------------------------------------------------------------
-# Phase 5: CritiqueAgent faithfulness integration
+# CritiqueAgent return shape (v2: faithfulness gating removed with reasoning.py)
 # ---------------------------------------------------------------------------
 
-class TestCritiqueAgentFaithfulness:
-    """Verify CritiqueAgent returns faithfulness fields (Phase 5)."""
+class TestCritiqueAgentShape:
+    """CritiqueAgent returns the 4-key contract used by the live pipeline."""
 
     SAMPLE_RESPONSE = """Here is my answer about RLFusion.
-
-The system uses four retrieval paths.
 
 <critique>
 Factual accuracy: 0.85/1.00
@@ -657,7 +637,7 @@ Proactive suggestions:
 - How does CQL compare to PPO for this use case?
 </critique>"""
 
-    def test_act_returns_faithfulness_fields(self):
+    def test_act_returns_reward_and_suggestions(self):
         from backend.agents.critique_agent import CritiqueAgent
         agent = CritiqueAgent()
         state = {
@@ -665,16 +645,17 @@ Proactive suggestions:
             "llm_response": self.SAMPLE_RESPONSE,
             "fused_context": "test context",
             "actual_weights": [0.4, 0.6],
-            "sensitivity_level": 0.3,
         }
         result = agent.act(state)
-        assert "faithfulness_checked" in result
-        assert "faithfulness_score" in result
-        # low sensitivity should skip faithfulness
-        assert result["faithfulness_checked"] is False
-        assert result["faithfulness_score"] == -1.0
+        assert "reward" in result
+        assert "clean_response" in result
+        assert "proactive_suggestions" in result
+        assert "critique_reason" in result
+        # faithfulness keys removed in v2 overhaul (reasoning.py deleted)
+        assert "faithfulness_checked" not in result
+        assert "faithfulness_score" not in result
 
-    def test_callable_returns_faithfulness_fields(self):
+    def test_callable_returns_same_keys(self):
         from backend.agents.critique_agent import CritiqueAgent
         agent = CritiqueAgent()
         state = {
@@ -682,33 +663,20 @@ Proactive suggestions:
             "llm_response": "Simple answer.",
             "fused_context": "ctx",
             "actual_weights": [0.5, 0.5],
-            "sensitivity_level": 0.2,
         }
         result = agent(state)
-        assert "faithfulness_checked" in result
-        assert "faithfulness_score" in result
-
-    def test_default_sensitivity_when_missing(self):
-        from backend.agents.critique_agent import CritiqueAgent
-        agent = CritiqueAgent()
-        # no sensitivity_level in state: should default to 0.5 (below gate)
-        state = {
-            "query": "test",
-            "llm_response": "Answer text.",
-            "fused_context": "ctx",
-            "actual_weights": [0.5, 0.5],
-        }
-        result = agent.act(state)
-        assert result["faithfulness_checked"] is False
+        assert "reward" in result
 
 
-class TestPipelineStateFaithfulness:
-    """Verify PipelineState has Phase 5 fields."""
+class TestPipelineStateShape:
+    """PipelineState lost the faithfulness/sensitivity fields in the v2 overhaul."""
 
-    def test_pipeline_state_has_faithfulness_fields(self):
+    def test_pipeline_state_has_no_faithfulness_fields(self):
         from backend.agents.base import PipelineState
         import typing
         hints = typing.get_type_hints(PipelineState)
-        assert "faithfulness_checked" in hints
-        assert "faithfulness_score" in hints
-        assert "sensitivity_level" in hints
+        # v2: web_status and faithfulness/sensitivity fields removed
+        assert "faithfulness_checked" not in hints
+        assert "faithfulness_score" not in hints
+        assert "sensitivity_level" not in hints
+        assert "web_status" not in hints

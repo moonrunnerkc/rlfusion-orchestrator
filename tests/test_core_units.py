@@ -1211,14 +1211,14 @@ class TestSFTDataLoading:
         conn.execute("""
             CREATE TABLE episodes (
                 id INTEGER PRIMARY KEY, query TEXT, response TEXT,
-                reward REAL, rag_weight REAL, cag_weight REAL, graph_weight REAL,
+                reward REAL, cag_weight REAL, graph_weight REAL,
                 fused_context TEXT, proactive_suggestions TEXT
             )
         """)
         conn.execute(
-            "INSERT INTO episodes (query, response, reward, rag_weight, cag_weight, graph_weight) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            ("typed test", "typed response", 0.9, 0.3, 0.3, 0.4),
+            "INSERT INTO episodes (query, response, reward, cag_weight, graph_weight) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("typed test", "typed response", 0.9, 0.4, 0.6),
         )
         conn.commit()
         conn.close()
@@ -1226,7 +1226,10 @@ class TestSFTDataLoading:
         ep = episodes[0]
         assert isinstance(ep["query"], str)
         assert isinstance(ep["reward"], float)
-        assert isinstance(ep["rag_weight"], float)
+        assert isinstance(ep["cag_weight"], float)
+        assert isinstance(ep["graph_weight"], float)
+        # rag_weight was dropped in the v2 overhaul
+        assert "rag_weight" not in ep
 
 
 class TestSFTDataPreparation:
