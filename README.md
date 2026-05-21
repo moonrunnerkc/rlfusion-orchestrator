@@ -54,7 +54,7 @@ turns into cuda if available, mps on Apple Silicon, cpu everywhere
 else. Force with `RLFUSION_DEVICE` or `RLFUSION_FORCE_CPU`.
 
 The v1 pre-trained CQL policy was trained on a broken reward signal and
-has been deleted (see [overhaul-plan.md](overhaul-plan.md) Phase 3). The
+has been deleted (see RELEASES.md "v2.0.0" under "Removed"). The
 orchestrator falls back to heuristic weights when no policy is present.
 Train a fresh one with `python backend/rl/train_rl.py` once the
 `episodes` table has at least a few hundred real chat turns.
@@ -69,22 +69,22 @@ For Blackwell (RTX 50-series) GPUs, llama-cpp-python must be compiled with
 The hot path, in order, lives in `backend/main.py::websocket_endpoint`
 and `backend/agents/orchestrator.py`:
 
-1. **Memory expand + complexity classify** — `step_preprocess()` runs the
+1. **Memory expand + complexity classify**: `step_preprocess()` runs the
    regex-based classifier and short-term memory enrichment.
-2. **Safety gate** — `SafetyAgent` runs three tiers: pattern regex, OOD
+2. **Safety gate**: `SafetyAgent` runs three tiers: pattern regex, OOD
    Mahalanobis distance against the embedding distribution, then a keyword
    blocklist. LLM calls do not sit on this path.
-3. **Retrieval** — `retrieve()` in `backend/core/retrievers.py` checks CAG
+3. **Retrieval**: `retrieve()` in `backend/core/retrievers.py` checks CAG
    first; a strong cache hit (score ≥ 0.90) skips graph entirely. Otherwise
    the graph path merges entity traversal (`GraphEngine.hybrid_search`)
    with semantic doc-chunk matches.
-4. **Fusion** — `FusionAgent.act()` embeds the query, runs the CQL policy
+4. **Fusion**: `FusionAgent.act()` embeds the query, runs the CQL policy
    to produce `[w_cag, w_graph]`, clamps each weight to ≥ 0.05, and builds
    the LLM context using CSWR-scored chunks.
-5. **Generation** — Llama 3.1 8B streams tokens via llama-cpp-python with
+5. **Generation**: Llama 3.1 8B streams tokens via llama-cpp-python with
    layers pinned to GPU. CAG-fast-path turns skip generation entirely.
-6. **Critique + reward logging** — a separate LLM call scores the response
-   (factual / proactivity / helpfulness, 0–1 each), the average reward is
+6. **Critique + reward logging**: a separate LLM call scores the response
+   (factual / proactivity / helpfulness, 0-1 each), the average reward is
    logged into the `episodes` table, and turns with reward ≥ 0.70 are
    cached back into CAG.
 
@@ -101,7 +101,7 @@ re-loads the GPU model in CPU mode. `route_task()` exists but is not
 wired into the live request path yet; it is reserved for Phase 5 of the
 overhaul plan.
 
-### CSWR — Chunk Stability Weighted Retrieval
+### CSWR: Chunk Stability Weighted Retrieval
 
 `score_chunks()` in `backend/core/retrievers.py` ranks graph results on:
 
@@ -160,20 +160,17 @@ The repo ships with no pre-trained CQL policy. The orchestrator falls
 back to heuristic 2-path weights until you train one.
 
 ```bash
-# (one-time) migrate the episodes table from 4-path to 2-path
+# (one-time) migrate the episodes table to the 2026-05-21 schema
 python3 scripts/migrate_episodes_to_two_path.py
 
 # train CQL on whatever real chat episodes you have accumulated
-python backend/rl/train_rl.py
-
-# optional: seed the replay buffer by replaying a batch of queries
-python backend/rl/add_batch_episodes.py
+python -m backend.rl.train_rl
 ```
 
 `backend/rl/fusion_env.py::FusionEnv.step()` now calls the live local
 generator and the same `critique()` function the chat path uses, so
 training reward and serving reward come from the same scorer. The
-training run is bounded by data quality, not data quantity — see
+training run is bounded by data quality, not data quantity: see
 Levine et al. 2020 (arXiv 2005.01643) on CQL with small high-quality
 datasets.
 
@@ -275,7 +272,7 @@ trigger, the unwired multimodal/CLIP path, the network-less federated
 learning scaffold, the ORPS tree-search reasoning module, the DPO+GRPO
 trainers, the FAISS-era `retrieve_rag()` path, and a stack of fake
 "benchmark" files that ran 10-question self-graded sanity checks. See
-[overhaul-plan.md](overhaul-plan.md) for the full record.
+RELEASES.md for the per-section ledger.
 
 ---
 

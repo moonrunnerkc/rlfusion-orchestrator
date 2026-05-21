@@ -3,15 +3,16 @@
 **Bradley R. Kinnard**
 December 2025
 
-> **ARCHIVED — describes a deprecated architecture.** Sections on STIS,
+> **ARCHIVED: describes a deprecated architecture.** Sections on STIS,
 > the ontology contradiction trigger, multimodal/CLIP, federated learning,
 > ORPS tree reasoning, and the 6-suite "100% pass rate" benchmark table
 > describe features removed in the v2 overhaul (May 2026). The current
 > system is a 2-path CAG + GraphRAG chatbot whose architecture lives in
-> [README.md](README.md) and the code under `backend/`. See
-> [overhaul-plan.md](overhaul-plan.md) for what changed and why. This
-> paper is preserved as historical context only and is no longer the
-> source of truth for what the code does.
+> [README.md](README.md) and the code under `backend/`. The "Known
+> follow-ups" section of [RELEASES.md](RELEASES.md) is the canonical
+> place for what is and isn't on the live request path. This paper is
+> preserved as historical context only and is no longer the source of
+> truth for what the code does.
 
 ---
 
