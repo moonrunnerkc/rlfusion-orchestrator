@@ -69,6 +69,9 @@ jobs:
           fi
           pip install pytest pytest-asyncio
 
+      - name: Initialize SQLite schema
+        run: ./scripts/init_db.sh
+
       - name: Run pytest (CPU-only, skip GPU tests)
         env:
           RLFUSION_FORCE_CPU: "true"
