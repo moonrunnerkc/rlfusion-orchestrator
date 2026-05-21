@@ -155,7 +155,7 @@ def _try_load_policy():
     try:
         import torch
         from backend.main import CQLPolicyWrapper
-        state = torch.load(str(path), weights_only=False, map_location="cpu")
+        state = torch.load(str(path), weights_only=True, map_location="cpu")
         return CQLPolicyWrapper(state["policy"])
     except Exception as exc:
         logger.warning("Could not load CQL policy: %s", exc)

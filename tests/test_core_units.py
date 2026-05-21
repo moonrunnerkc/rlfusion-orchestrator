@@ -254,15 +254,14 @@ Proactive suggestions:
         assert cleaned == "Just a plain answer."
 
     def test_clamped_scores(self):
-        """Scores outside [0, 1] should be clamped."""
+        """Scores outside [0, 1] should be clamped (both directions)."""
         from backend.core.critique import parse_inline_critique
         bad = "<critique>\nFactual accuracy: 1.50/1.00\nFinal reward: -0.3\n</critique>"
         _, result = parse_inline_critique(bad)
+        # high clamps down to 1.0
         assert result["factual"] == 1.0
-        # negative reward not captured by regex; falls back to mean of sub-scores
-        # factual=1.0, proactivity=0.75 (default), helpfulness=0.75 (default)
-        expected_reward = (1.0 + 0.75 + 0.75) / 3.0
-        assert abs(result["reward"] - expected_reward) < 0.01
+        # negative is captured by the signed regex (F4.8) and clamped up to 0.0
+        assert result["reward"] == 0.0
 
 
 class TestCitationCounting:
@@ -500,27 +499,26 @@ class TestConfig:
 class TestConversationPersistence:
     """Verify record_turn writes to both in-memory state and SQLite."""
 
-    def test_persist_turn_writes_to_db(self):
+    def test_persist_turn_writes_to_db(self, tmp_path, monkeypatch):
         import sqlite3
-        from backend.config import PROJECT_ROOT, cfg
-        from backend.core.memory import record_turn
+        from backend.core import memory as memory_mod
 
-        db_path = PROJECT_ROOT / cfg["paths"]["db"]
-        if not db_path.exists():
-            pytest.skip("Database not initialized")
-
+        db_path = tmp_path / "rlfo_cache.db"
         conn = sqlite3.connect(str(db_path))
-        conn.execute("DELETE FROM conversations WHERE session_id = 'test-persist'")
+        conn.execute(
+            "CREATE TABLE conversations (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "session_id TEXT, role TEXT, content TEXT, "
+            "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+        )
         conn.commit()
+        monkeypatch.setattr(memory_mod, "_get_db_path", lambda: db_path)
 
-        record_turn("test-persist", "user", "hello from test")
-        record_turn("test-persist", "assistant", "hi back")
+        memory_mod.record_turn("test-persist", "user", "hello from test")
+        memory_mod.record_turn("test-persist", "assistant", "hi back")
 
         rows = conn.execute(
             "SELECT role, content FROM conversations WHERE session_id = 'test-persist' ORDER BY id"
         ).fetchall()
-        conn.execute("DELETE FROM conversations WHERE session_id = 'test-persist'")
-        conn.commit()
         conn.close()
 
         assert len(rows) == 2
@@ -535,31 +533,28 @@ class TestConversationPersistence:
 class TestCAGRetrieval:
     """Verify CAG retrieval with batch embedding path."""
 
-    def test_cag_exact_hit(self):
+    def test_cag_exact_hit(self, tmp_path, monkeypatch):
         import sqlite3
-        from backend.config import PROJECT_ROOT, cfg
-        from backend.core.retrievers import retrieve_cag
+        from backend.core import retrievers as retrievers_mod
 
-        db_path = PROJECT_ROOT / cfg["paths"]["db"]
-        if not db_path.exists():
-            pytest.skip("Database not initialized")
-
+        db_path = tmp_path / "rlfo_cache.db"
         conn = sqlite3.connect(str(db_path))
-        conn.execute("INSERT OR REPLACE INTO cache (key, value, score) VALUES (?, ?, ?)",
-                     ("test_cag_query_exact", "cached answer text", 0.95))
+        conn.execute(
+            "CREATE TABLE cache (key TEXT PRIMARY KEY, key_hash TEXT, "
+            "value TEXT, score REAL DEFAULT 1.0)"
+        )
+        conn.execute(
+            "INSERT INTO cache (key, value, score) VALUES (?, ?, ?)",
+            ("test_cag_query_exact", "cached answer text", 0.95),
+        )
         conn.commit()
         conn.close()
+        monkeypatch.setattr(retrievers_mod, "_get_db_path", lambda: db_path)
 
-        results = retrieve_cag("test_cag_query_exact")
+        results = retrievers_mod.retrieve_cag("test_cag_query_exact")
         assert len(results) == 1
         assert results[0]["text"] == "cached answer text"
         assert results[0]["score"] == 0.95
-
-        # cleanup
-        conn = sqlite3.connect(str(db_path))
-        conn.execute("DELETE FROM cache WHERE key = 'test_cag_query_exact'")
-        conn.commit()
-        conn.close()
 
     def test_cag_no_hit(self):
         from backend.core.retrievers import retrieve_cag
@@ -1314,29 +1309,32 @@ class TestFineTuneEndpoint:
         import os
         from fastapi.testclient import TestClient
         self._reset_limiter()
-        # ensure admin key is set so the check can fail
+        # short test key; the boot-time length floor is bypassed via the
+        # RLFUSION_ALLOW_WEAK_ADMIN_KEY escape hatch so the auth path itself
+        # is what's under test.
         os.environ["RLFUSION_ADMIN_KEY"] = "test-secret-key-123"
+        os.environ["RLFUSION_ALLOW_WEAK_ADMIN_KEY"] = "1"
         try:
             from backend.main import app
             client = TestClient(app)
             resp = client.post("/api/fine-tune", json={"lora_rank": 16})
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["status"] == "unauthorized"
+            assert resp.status_code == 401
         finally:
             os.environ.pop("RLFUSION_ADMIN_KEY", None)
+            os.environ.pop("RLFUSION_ALLOW_WEAK_ADMIN_KEY", None)
 
     def test_endpoint_accepts_valid_auth(self):
         import os
         from fastapi.testclient import TestClient
         self._reset_limiter()
         os.environ["RLFUSION_ADMIN_KEY"] = "test-secret-key-456"
+        os.environ["RLFUSION_ALLOW_WEAK_ADMIN_KEY"] = "1"
         try:
             from backend.main import app
             client = TestClient(app)
             resp = client.post(
                 "/api/fine-tune",
-                json={"min_reward": 99.0},
+                json={"min_reward": 0.99},
                 headers={"Authorization": "Bearer test-secret-key-456"},
             )
             assert resp.status_code == 200
@@ -1346,6 +1344,7 @@ class TestFineTuneEndpoint:
             assert "job_id" in data
         finally:
             os.environ.pop("RLFUSION_ADMIN_KEY", None)
+            os.environ.pop("RLFUSION_ALLOW_WEAK_ADMIN_KEY", None)
 
     def test_endpoint_rejects_no_admin_key_set(self):
         import os
@@ -1359,6 +1358,5 @@ class TestFineTuneEndpoint:
             json={},
             headers={"Authorization": "Bearer anything"},
         )
-        data = resp.json()
-        assert data["status"] == "unauthorized"
+        assert resp.status_code == 401
 

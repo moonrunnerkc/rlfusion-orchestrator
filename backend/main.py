@@ -3,18 +3,19 @@
 # Originally built for personal offline use, now open-sourced for public benefit.
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
-import re
 import sys
 import time as _time_mod
 import types
 import uuid
 import warnings
+from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Deque, Dict
 
 warnings.filterwarnings("ignore", message="Gym has been unmaintained")
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="gym")
@@ -22,17 +23,28 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module="gym")
 import numpy as np
 import torch
 import yaml
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from prometheus_client import (
     Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST,
 )
+from pydantic import ValidationError
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from backend.config import cfg, PROJECT_ROOT
+from backend.api.auth import enforce_admin_key_at_boot, get_admin_key, require_admin
+from backend.api.integrity import ChecksumError, verify_model_checksums
+from backend.api.models import (
+    ChatRequest,
+    ConfigPatch,
+    FineTuneRequest,
+    UploadResponse,
+    WsControlFrame,
+    magic_bytes_for,
+)
 from backend.core.model_router import get_engine
 from backend.core.critique import critique, log_episode_to_replay_buffer, get_critique_instruction, strip_critique_block, check_safety
 from backend.core.memory import expand_query_with_context, record_turn, get_context_for_prompt, clear_memory
@@ -45,6 +57,10 @@ from backend.agents.orchestrator import Orchestrator, apply_markdown_formatting
 _MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 # Max query length (characters) to prevent prompt stuffing
 _MAX_QUERY_LEN = 4000
+
+# Pre-extract CAG thresholds so the magic numbers live in config, not code.
+_CAG_FAST_PATH = float(cfg.get("cag", {}).get("fast_path_threshold", 0.90))
+_CAG_CACHE_THRESHOLD = float(cfg.get("cag", {}).get("cache_threshold", 0.85))
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(name)s | %(message)s')
 logger = logging.getLogger(__name__)
@@ -115,18 +131,34 @@ _orchestrator: Orchestrator | None = None
 class CQLPolicyWrapper:
     """Wrapper for CQL policy weights loaded from d3rlpy checkpoint.
 
-    Handles both legacy 4-output policies and new 2-output policies.
-    For legacy policies, outputs 4D then the caller extracts CAG+Graph dims.
+    Encoder accepts 394-dim observations (384-d query embedding + 10
+    retrieval features) as produced by FusionEnv. Output dim is detected
+    from the saved tensor so legacy 4-output policies still load.
     """
     def __init__(self, policy_weights):
         import torch.nn as nn
         dev = "cuda" if USE_CUDA else "cpu"
 
-        # detect output size from mu weight shape
         mu_shape = policy_weights['_mu.weight'].shape[0]
         self.output_dim = mu_shape
 
-        self.encoder = nn.Sequential(nn.Linear(384, 256), nn.ReLU(), nn.Linear(256, 256), nn.ReLU()).to(dev)
+        # detect encoder input width from the saved tensor; warn loudly if it
+        # disagrees with the current obs shape so silent shape mismatches
+        # become visible at boot rather than at first prediction.
+        enc_in = int(policy_weights['_encoder._layers.0.weight'].shape[1])
+        if enc_in != 394:
+            logger.warning(
+                "Loaded CQL policy has encoder input width %d (expected 394). "
+                "The policy was trained on a different observation shape. "
+                "Re-train via `python -m backend.rl.train_rl` after the live "
+                "episodes are 394-dim.",
+                enc_in,
+            )
+        self._input_dim = enc_in
+        self.encoder = nn.Sequential(
+            nn.Linear(enc_in, 256), nn.ReLU(),
+            nn.Linear(256, 256), nn.ReLU(),
+        ).to(dev)
         self.mu = nn.Linear(256, mu_shape).to(dev)
         self.encoder[0].weight.data = policy_weights['_encoder._layers.0.weight']
         self.encoder[0].bias.data = policy_weights['_encoder._layers.0.bias']
@@ -141,6 +173,21 @@ class CQLPolicyWrapper:
     def predict(self, obs):
         with torch.no_grad():
             obs_t = torch.tensor(obs, dtype=torch.float32, device=self._device)
+            if obs_t.ndim == 1:
+                obs_t = obs_t.unsqueeze(0)
+            # accommodate callers that hand the 384-d embedding directly when
+            # the policy was actually trained on the full 394 features.
+            if obs_t.shape[-1] != self._input_dim:
+                if obs_t.shape[-1] > self._input_dim:
+                    obs_t = obs_t[..., : self._input_dim]
+                else:
+                    pad = torch.zeros(
+                        *obs_t.shape[:-1],
+                        self._input_dim - obs_t.shape[-1],
+                        dtype=obs_t.dtype,
+                        device=obs_t.device,
+                    )
+                    obs_t = torch.cat([obs_t, pad], dim=-1)
             return torch.clamp(self.mu(self.encoder(obs_t)), -1.0, 1.0).cpu().numpy()
 
 
@@ -148,6 +195,24 @@ class CQLPolicyWrapper:
 async def lifespan(app: FastAPI):
     global _rl_policy, _boot_id
     _boot_id = uuid.uuid4().hex[:12]
+
+    # F0.1 / F0.5: refuse to start under unsafe configuration.
+    enforce_admin_key_at_boot()
+
+    if cfg.get("model_integrity", {}).get("verify_at_boot", True):
+        try:
+            verify_model_checksums(PROJECT_ROOT / "models")
+        except ChecksumError as exc:
+            logger.error("Model integrity check failed: %s", exc)
+            raise
+
+    # F0.2: refuse to start with allow_origins=* + credentials=true.
+    cors = cfg.get("cors", {})
+    if cors.get("allow_credentials") and "*" in cors.get("allowed_origins", []):
+        raise RuntimeError(
+            "CORS misconfiguration: allow_credentials=true is incompatible with "
+            "allowed_origins=['*']. Pin explicit origins in backend/config.yaml."
+        )
 
     # ── Inference engine health check ────────────────────────
     engine = get_engine()
@@ -182,7 +247,11 @@ async def lifespan(app: FastAPI):
     if cql_path.exists():
         logger.info("Loading CQL policy...")
         try:
-            state_dict = torch.load(str(cql_path), weights_only=False, map_location=map_location)
+            # weights_only=True forbids arbitrary pickle classes inside the
+            # checkpoint. d3rlpy v2 saves plain tensor dicts so this is safe.
+            state_dict = torch.load(
+                str(cql_path), weights_only=True, map_location=map_location,
+            )
             _rl_policy = CQLPolicyWrapper(state_dict['policy'])
             policy_status = "CQL loaded"
             logger.info("CQL policy loaded successfully")
@@ -223,9 +292,28 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="RLFusion Orchestrator", version="0.1.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+_cors_cfg = cfg.get("cors", {})
+_cors_origins = list(_cors_cfg.get("allowed_origins", ["http://localhost:5173"]))
+if "*" in _cors_origins and _cors_cfg.get("allow_credentials", True):
+    # Boot enforce should have already raised; we belt-and-braces here so the
+    # middleware never sees a misconfigured combination.
+    _cors_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=bool(_cors_cfg.get("allow_credentials", True)),
+    allow_methods=list(_cors_cfg.get("allowed_methods", ["GET", "POST", "PATCH", "DELETE", "OPTIONS"])),
+    allow_headers=list(_cors_cfg.get("allowed_headers", ["Authorization", "Content-Type", "X-Correlation-ID"])),
+)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.exception_handler(ValidationError)
+async def _on_pydantic_validation(_request: Request, exc: ValidationError) -> JSONResponse:
+    """Surface Pydantic validation failures as 422 instead of 500."""
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 
 @app.middleware("http")
@@ -251,7 +339,7 @@ async def correlation_id_middleware(request: Request, call_next: object) -> Resp
     return response
 
 
-@app.get("/metrics")
+@app.get("/metrics", dependencies=[Depends(require_admin)])
 async def prometheus_metrics() -> Response:
     """Expose Prometheus metrics for scraping."""
     # update replay buffer gauge on each scrape
@@ -268,34 +356,6 @@ async def prometheus_metrics() -> Response:
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-def _apply_markdown_formatting(text: str) -> str:
-    text = re.sub(r'\[RAG:[^\]]+\]\s*', '', text)
-    text = re.sub(r'\[CAG:[^\]]+\]\s*', '', text)
-    text = re.sub(r'\[GRAPH:[^\]]+\]\s*', '', text)
-    text = re.sub(r'\[WEB:[^\]]+\]\s*', '', text)
-    text = re.sub(r'([^\n])(#{1,3}\s)', r'\1\n\n\2', text)
-    text = re.sub(r'([.!?:])\s*(-\s)', r'\1\n\n\2', text)
-    text = re.sub(r'([.!?])\s+([A-Z#])', r'\1\n\n\2', text)
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    return text.strip()
-
-
-def _compute_rl_fusion_weights(query: str, policy, retrieval_results=None) -> np.ndarray:
-    """Compute 2-path fusion weights. Delegates to the canonical implementation."""
-    from backend.agents.fusion_agent import compute_rl_weights
-    return compute_rl_weights(query, policy, retrieval_results)
-
-
-def _build_fusion_context(
-    retrieval_results: Dict[str, List[Dict[str, Any]]],
-    weights: np.ndarray,
-    query: str = "",
-) -> str:
-    """Build fused context. Delegates to the canonical implementation."""
-    from backend.agents.fusion_agent import build_fusion_context
-    return build_fusion_context(retrieval_results, weights, query=query)
-
-
 # Import prompts from orchestrator (single source of truth)
 from backend.agents.orchestrator import (
     generate_system_prompt as _generate_system_prompt,
@@ -306,14 +366,18 @@ from backend.agents.orchestrator import (
 
 @app.post("/chat")
 @limiter.limit("10/minute")
-async def chat_endpoint(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
-    query = body.get("query", "").strip()
-    mode = body.get("mode", "chat")
+async def chat_endpoint(request: Request, body: ChatRequest) -> Dict[str, Any]:
+    query = body.query.strip()
+    mode = body.mode
 
     if not query:
-        return {"response": "Please provide a query.", "fusion_weights": {"cag": 0, "graph": 0}, "reward": 0.0}
+        # ChatRequest already enforces min_length=1, but the trim could empty it.
+        raise HTTPException(status_code=400, detail="Query is empty after trimming.")
     if len(query) > _MAX_QUERY_LEN:
-        return {"response": f"Query too long ({len(query)} chars, max {_MAX_QUERY_LEN}).", "fusion_weights": {"cag": 0, "graph": 0}, "reward": 0.0}
+        raise HTTPException(
+            status_code=422,
+            detail=f"Query too long ({len(query)} chars, max {_MAX_QUERY_LEN}).",
+        )
 
     # Multi-agent orchestration (Phase 1)
     t_start = _time_mod.perf_counter()
@@ -341,15 +405,93 @@ async def chat_endpoint(request: Request, body: Dict[str, Any]) -> Dict[str, Any
     return response
 
 
+_WS_CFG = cfg.get("ws", {})
+_WS_AUTH_TIMEOUT = float(_WS_CFG.get("auth_timeout_secs", 2.0))
+_WS_RATE = int(_WS_CFG.get("frame_rate_per_minute", 10))
+_WS_FRAME_MAX_BYTES = int(_WS_CFG.get("frame_max_bytes", 32 * 1024))
+# WebSocket close codes per RFC 6455
+_WS_POLICY_VIOLATION = 1008
+_WS_FRAME_TOO_LARGE = 1009
+
+
+def _ws_origin_allowed(origin: str) -> bool:
+    allowed = list(_cors_origins or [])
+    if not origin:
+        return False
+    return origin in allowed
+
+
+async def _ws_authenticate(websocket: WebSocket) -> tuple[bool, str]:
+    """First-frame auth handshake.
+
+    Accepts the connection if the Origin header is in cors.allowed_origins
+    OR the client sends `{"auth": "Bearer <RLFUSION_ADMIN_KEY>"}` within
+    `ws.auth_timeout_secs` seconds. Returns (ok, reason).
+    """
+    origin = websocket.headers.get("origin", "")
+    if _ws_origin_allowed(origin):
+        return True, "origin-allowed"
+
+    admin_key = get_admin_key()
+    if not admin_key:
+        return False, "admin key not configured"
+
+    try:
+        raw = await asyncio.wait_for(
+            websocket.receive_text(), timeout=_WS_AUTH_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        return False, "auth handshake timed out"
+
+    if len(raw) > _WS_FRAME_MAX_BYTES:
+        return False, "auth frame too large"
+    try:
+        frame = WsControlFrame.model_validate_json(raw)
+    except ValidationError:
+        return False, "auth frame malformed"
+
+    bearer = (frame.auth or "").strip()
+    if not bearer.startswith("Bearer "):
+        return False, "auth frame missing bearer"
+    import hmac as _hmac
+    if not _hmac.compare_digest(bearer[len("Bearer "):], admin_key):
+        return False, "bearer mismatch"
+    return True, "bearer ok"
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     WS_CONNECTIONS.inc()
     session_id = str(id(websocket))
-
+    frame_window: Deque[float] = deque()
     try:
+        ok, reason = await _ws_authenticate(websocket)
+        if not ok:
+            logger.warning("WS auth failed: %s", reason)
+            await websocket.close(code=_WS_POLICY_VIOLATION, reason="unauthorized")
+            return
+
         while True:
-            data = await websocket.receive_text()
+            try:
+                data = await websocket.receive_text()
+            except WebSocketDisconnect:
+                raise
+            if len(data) > _WS_FRAME_MAX_BYTES:
+                logger.warning("WS frame too large: %d bytes", len(data))
+                await websocket.close(code=_WS_FRAME_TOO_LARGE, reason="frame too large")
+                return
+
+            now = _time_mod.monotonic()
+            cutoff = now - 60.0
+            while frame_window and frame_window[0] < cutoff:
+                frame_window.popleft()
+            if len(frame_window) >= _WS_RATE:
+                logger.warning("WS rate limit exceeded for session %s", session_id)
+                await websocket.close(code=_WS_FRAME_TOO_LARGE, reason="rate limit")
+                return
+            frame_window.append(now)
+
             try:
                 request = json.loads(data)
                 if "query" not in request and len(request.keys()) == 1:
@@ -469,7 +611,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
             # CAG fast-path: strong cache hit skips fusion + generation entirely
             cag_results = rr.get("cag", [])
-            if cag_n > 0 and graph_n == 0 and cag_results[0].get("score", 0) >= 0.90:
+            if cag_n > 0 and graph_n == 0 and cag_results[0].get("score", 0) >= _CAG_FAST_PATH:
                 cached_text = cag_results[0].get("text", "")
                 _t_cag = _time_mod.perf_counter()
                 logger.info("[CAG FAST-PATH] cache hit in %.0f ms, skipping generation",
@@ -490,6 +632,21 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 # record the turn for memory context
                 await asyncio.to_thread(record_turn, session_id, "user", query)
                 await asyncio.to_thread(record_turn, session_id, "assistant", cached_text)
+                try:
+                    from backend.core.critique import log_episode_to_replay_buffer
+                    await asyncio.to_thread(log_episode_to_replay_buffer, {
+                        "query": query,
+                        "response": cached_text,
+                        "weights": {"cag": 1.0, "graph": 0.0},
+                        "reward": float(cag_results[0].get("score", _CAG_FAST_PATH)),
+                        "fused_context": "",
+                        "from_cache": True,
+                        "policy_weights": [1.0, 0.0],
+                        "effective_weights": [1.0, 0.0],
+                        "had_empty_path": False,
+                    })
+                except Exception as exc:
+                    logger.warning("CAG fast-path episode log failed: %s", exc)
                 continue
 
             # Step 3: Fusion
@@ -563,7 +720,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     _ttft_logged = True
                 full_response += text_chunk
                 token_count += 1
-                await websocket.send_json({"chunk": text_chunk, "weights": actual_weights, "reward": 0.0})
+                await websocket.send_json({
+                    "chunk": text_chunk,
+                    "weights": {
+                        "cag": actual_weights[0] if len(actual_weights) > 0 else 0.0,
+                        "graph": actual_weights[1] if len(actual_weights) > 1 else 0.0,
+                    },
+                    "reward": 0.0,
+                })
 
             gen_detail = f"{token_count} tokens via {model_name}"
             _t_gen = _time_mod.perf_counter()
@@ -636,8 +800,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             ))
 
     except WebSocketDisconnect:
-        WS_CONNECTIONS.dec()
         logger.info("WebSocket client disconnected")
+    finally:
+        WS_CONNECTIONS.dec()
 
 
 @app.get("/api/config")
@@ -648,19 +813,17 @@ async def get_config(request: Request) -> Dict[str, Any]:
                     "search_timeout": cfg.get("web", {}).get("search_timeout", 10)}}
 
 
-@app.patch("/api/config")
+@app.patch("/api/config", dependencies=[Depends(require_admin)])
 @limiter.limit("10/minute")
-async def update_config(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
-    if "web" in body and "enabled" in body["web"]:
-        cfg["web"]["enabled"] = body["web"]["enabled"]
-        config_path = Path(__file__).parent / "config.yaml"
-        with open(config_path, 'r') as f:
-            current_config = yaml.safe_load(f)
-        current_config["web"]["enabled"] = cfg["web"]["enabled"]
-        with open(config_path, 'w') as f:
-            yaml.dump(current_config, f, default_flow_style=False, sort_keys=False)
-        return {"status": "updated", "web": {"enabled": cfg["web"]["enabled"]}}
-    return {"error": "Invalid config update"}
+async def update_config(request: Request, body: ConfigPatch) -> Dict[str, Any]:
+    cfg["web"]["enabled"] = body.web.enabled
+    config_path = Path(__file__).parent / "config.yaml"
+    with open(config_path, 'r') as f:
+        current_config = yaml.safe_load(f)
+    current_config["web"]["enabled"] = cfg["web"]["enabled"]
+    with open(config_path, 'w') as f:
+        yaml.dump(current_config, f, default_flow_style=False, sort_keys=False)
+    return {"status": "updated", "web": {"enabled": cfg["web"]["enabled"]}}
 
 
 @app.get("/ping")
@@ -692,14 +855,30 @@ async def ping(request: Request) -> Dict[str, Any]:
     }
 
 
-@app.post("/api/upload")
+def _content_passes_magic(ext: str, content: bytes) -> bool:
+    """Magic-byte sniff for uploads. Returns False on a clear mismatch."""
+    sigs = magic_bytes_for(ext)
+    if not sigs:
+        # For text formats, just verify the body decodes as UTF-8 or Latin-1.
+        for codec in ("utf-8", "latin-1"):
+            try:
+                content.decode(codec)
+                return True
+            except UnicodeDecodeError:
+                continue
+        return False
+    head = content[:8]
+    return any(head.startswith(sig) for sig in sigs)
+
+
+@app.post("/api/upload", dependencies=[Depends(require_admin)])
 @limiter.limit("10/minute")
 async def upload_documents(request: Request) -> Dict[str, Any]:
-    """Upload .txt/.md/.pdf files to data/docs/ for indexing."""
+    """Upload .txt/.md/.pdf files to data/docs/ for indexing. Admin-only."""
     form = await request.form()
     files = form.getlist("files")
     if not files:
-        return {"status": "error", "message": "No files provided"}
+        raise HTTPException(status_code=400, detail="No files provided.")
 
     docs_path = PROJECT_ROOT / "data" / "docs"
     docs_path.mkdir(parents=True, exist_ok=True)
@@ -710,22 +889,31 @@ async def upload_documents(request: Request) -> Dict[str, Any]:
     for f in files:
         if not hasattr(f, 'filename'):
             continue
-        ext = Path(f.filename).suffix.lower()
+        original_name = Path(f.filename).name  # strip path components
+        ext = Path(original_name).suffix.lower()
         if ext not in allowed:
             skipped.append(f.filename)
+            continue
+        if '..' in original_name or original_name.startswith('.'):
+            skipped.append(f"{f.filename} (invalid filename)")
             continue
         content = await f.read()
         if len(content) > _MAX_UPLOAD_BYTES:
             skipped.append(f"{f.filename} (>{_MAX_UPLOAD_BYTES // (1024*1024)}MB)")
             continue
-        dest = docs_path / Path(f.filename).name  # strip path components
-        # double-check: reject filenames with traversal attempts
-        if '..' in dest.name or dest.name.startswith('.'):
-            skipped.append(f"{f.filename} (invalid filename)")
+        if not _content_passes_magic(ext, content):
+            skipped.append(f"{f.filename} (content does not match extension)")
             continue
+
+        # Hash-prefix the filename so a poisoned upload cannot clobber existing
+        # docs on disk and so each upload is content-addressed.
+        digest = hashlib.sha256(content).hexdigest()[:12]
+        stem = Path(original_name).stem
+        safe_name = f"{digest}_{stem}{ext}"
+        dest = docs_path / safe_name
         dest.write_bytes(content)
-        saved.append(f.filename)
-        logger.info("Uploaded: %s (%d bytes)", f.filename, len(content))
+        saved.append(safe_name)
+        logger.info("Uploaded: %s -> %s (%d bytes)", f.filename, safe_name, len(content))
 
     return {
         "status": "uploaded",
@@ -736,7 +924,7 @@ async def upload_documents(request: Request) -> Dict[str, Any]:
     }
 
 
-@app.post("/api/reindex")
+@app.post("/api/reindex", dependencies=[Depends(require_admin)])
 @limiter.limit("3/minute")
 async def reindex_documents(request: Request) -> Dict[str, Any]:
     """Rechunk data/docs/ and rebuild the entity graph."""
@@ -776,7 +964,22 @@ async def reindex_documents(request: Request) -> Dict[str, Any]:
     }
 
 
-@app.delete("/api/reset")
+@app.post("/api/reset_gpu", dependencies=[Depends(require_admin)])
+@limiter.limit("5/minute")
+async def reset_gpu(request: Request) -> Dict[str, Any]:
+    """Force-reload the GPU executor (recover from sticky OOM)."""
+    try:
+        from backend.core.asymmetric_llm import get_orchestrator
+        orchestrator = get_orchestrator()
+        orchestrator._gpu_offloaded = False  # exit fallback mode
+        orchestrator._oom_recovery_counter = 0
+        orchestrator._ensure_gpu(force_reload=True)
+        return {"status": "reloaded"}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"GPU reload failed: {exc}")
+
+
+@app.delete("/api/reset", dependencies=[Depends(require_admin)])
 @limiter.limit("5/minute")
 async def reset_state(request: Request) -> Dict[str, Any]:
     """Wipe all transient state: cache, episodes, replay, conversations."""
@@ -798,42 +1001,53 @@ async def reset_state(request: Request) -> Dict[str, Any]:
     return {"status": "reset", "tables_cleared": ["cache", "episodes", "replay", "conversations"]}
 
 
-@app.post("/api/fine-tune")
+@app.post("/api/fine-tune", dependencies=[Depends(require_admin)])
 @limiter.limit("1/hour")
-async def fine_tune_endpoint(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
+async def fine_tune_endpoint(request: Request, body: FineTuneRequest) -> Dict[str, Any]:
     """Kick off LoRA fine-tuning on high-reward replay episodes. Admin-only."""
     from backend.rl.fine_tune import SFTJobConfig, default_config, run_sft
 
-    # admin auth: require RLFUSION_ADMIN_KEY as Bearer token
-    admin_key = os.environ.get("RLFUSION_ADMIN_KEY", "")
-    auth_header = request.headers.get("Authorization", "")
-    if not admin_key or auth_header != f"Bearer {admin_key}":
-        return {
-            "status": "unauthorized",
-            "message": "Set RLFUSION_ADMIN_KEY env var and pass as Bearer token.",
-        }
-
-    # build config from request body, falling back to defaults
     defaults = default_config()
+    provided = body.model_dump(exclude_none=True)
+    merged: Dict[str, Any] = {**defaults, **provided}
+
+    # F0.8: scope output_dir under PROJECT_ROOT / "models" no matter what.
+    requested_out = str(merged.get("output_dir", defaults["output_dir"]))
+    rel = Path(requested_out)
+    if rel.is_absolute():
+        rel = Path(rel.name)
+    out_path = (PROJECT_ROOT / "models" / rel).resolve()
+    models_root = (PROJECT_ROOT / "models").resolve()
+    try:
+        out_path.relative_to(models_root)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail="output_dir must resolve under models/.",
+        )
+    merged["output_dir"] = str(out_path)
+
     job_config = SFTJobConfig(
-        base_model=body.get("base_model", defaults["base_model"]),
-        lora_rank=int(body.get("lora_rank", defaults["lora_rank"])),
-        lora_alpha=int(body.get("lora_alpha", defaults["lora_alpha"])),
-        lora_dropout=float(body.get("lora_dropout", defaults["lora_dropout"])),
-        learning_rate=float(body.get("learning_rate", defaults["learning_rate"])),
-        num_epochs=int(body.get("num_epochs", defaults["num_epochs"])),
-        batch_size=int(body.get("batch_size", defaults["batch_size"])),
-        max_seq_length=int(body.get("max_seq_length", defaults["max_seq_length"])),
-        min_reward=float(body.get("min_reward", defaults["min_reward"])),
-        max_episodes=int(body.get("max_episodes", defaults["max_episodes"])),
-        val_split=float(body.get("val_split", defaults["val_split"])),
-        output_dir=str(body.get("output_dir", defaults["output_dir"])),
+        base_model=merged["base_model"],
+        lora_rank=int(merged["lora_rank"]),
+        lora_alpha=int(merged["lora_alpha"]),
+        lora_dropout=float(merged["lora_dropout"]),
+        learning_rate=float(merged["learning_rate"]),
+        num_epochs=int(merged["num_epochs"]),
+        batch_size=int(merged["batch_size"]),
+        max_seq_length=int(merged["max_seq_length"]),
+        min_reward=float(merged["min_reward"]),
+        max_episodes=int(merged["max_episodes"]),
+        val_split=float(merged["val_split"]),
+        output_dir=str(merged["output_dir"]),
     )
 
-    # run training (blocking; heavy workload)
     result = await asyncio.to_thread(run_sft, job_config)
     corr_id = uuid.uuid4().hex[:8]
-    logger.info("Fine-tune job %s: status=%s episodes=%d", corr_id, result["status"], result["episodes_used"])
+    logger.info(
+        "Fine-tune job %s: status=%s episodes=%d",
+        corr_id, result["status"], result["episodes_used"],
+    )
     return {**result, "job_id": corr_id}
 
 
