@@ -1,0 +1,41 @@
+# Keep build context lean and the production image clean of dev cruft.
+# data/, models/, db/ are bind-mounted at runtime, never baked in.
+
+# VCS
+.git
+.gitignore
+
+# Virtual envs and caches
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+htmlcov
+*.egg-info
+
+# Runtime artifacts that belong on bind mounts, not in the image
+data
+db
+indexes
+models
+training/logs
+tests/results
+
+# Frontend lives in its own image
+frontend
+node_modules
+
+# Tests and benchmarks don't ship to prod
+tests
+backend/tests
+.audit
+
+# Editor / OS noise
+.vscode
+.idea
+.DS_Store
+*.swp

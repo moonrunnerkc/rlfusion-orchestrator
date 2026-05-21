@@ -428,7 +428,10 @@ def log_episode_to_replay_buffer(episode: dict) -> bool:
         reward = episode.get("reward", 0.0)
 
         # cache high-quality responses for instant future retrieval
-        if reward >= 0.70:
+        cag_reinsert_threshold = float(
+            cfg.get("cag", {}).get("reinsert_reward_threshold", 0.70)
+        )
+        if reward >= cag_reinsert_threshold:
             query_key = episode.get("query", "").strip()
             response_val = episode.get("response", "")
             if query_key and response_val:

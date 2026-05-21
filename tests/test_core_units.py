@@ -1314,15 +1314,15 @@ class TestFineTuneEndpoint:
         import os
         from fastapi.testclient import TestClient
         self._reset_limiter()
-        # ensure admin key is set so the check can fail
-        os.environ["RLFUSION_ADMIN_KEY"] = "test-secret-key-123"
+        # 32+ char key so the require_admin gate accepts it as configured.
+        os.environ["RLFUSION_ADMIN_KEY"] = "test-secret-key-" + ("x" * 32)
         try:
             from backend.main import app
             client = TestClient(app)
             resp = client.post("/api/fine-tune", json={"lora_rank": 16})
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["status"] == "unauthorized"
+            # F0.1 / F0.9: require_admin raises HTTPException(401) on
+            # missing or invalid bearer; no more 200 with a JSON status body.
+            assert resp.status_code == 401
         finally:
             os.environ.pop("RLFUSION_ADMIN_KEY", None)
 
@@ -1330,18 +1330,21 @@ class TestFineTuneEndpoint:
         import os
         from fastapi.testclient import TestClient
         self._reset_limiter()
-        os.environ["RLFUSION_ADMIN_KEY"] = "test-secret-key-456"
+        admin = "test-secret-key-" + ("y" * 32)
+        os.environ["RLFUSION_ADMIN_KEY"] = admin
         try:
             from backend.main import app
             client = TestClient(app)
             resp = client.post(
                 "/api/fine-tune",
-                json={"min_reward": 99.0},
-                headers={"Authorization": "Bearer test-secret-key-456"},
+                # min_reward must stay in [0.0, 1.0] under the new pydantic body.
+                json={"min_reward": 0.99},
+                headers={"Authorization": f"Bearer {admin}"},
             )
             assert resp.status_code == 200
             data = resp.json()
-            # should succeed auth but return insufficient_data (no replay episodes)
+            # auth succeeds; job reports insufficient_data because no real
+            # replay episodes meet the unreachable min_reward.
             assert data["status"] == "insufficient_data"
             assert "job_id" in data
         finally:
@@ -1359,6 +1362,6 @@ class TestFineTuneEndpoint:
             json={},
             headers={"Authorization": "Bearer anything"},
         )
-        data = resp.json()
-        assert data["status"] == "unauthorized"
+        # Server-side admin key absent: fail closed with 401, never fail open.
+        assert resp.status_code == 401
 

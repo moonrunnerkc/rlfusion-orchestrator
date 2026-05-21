@@ -34,6 +34,24 @@ retrieval:
   paths:
     - cag
     - graph
+cag:
+  # CAG fast-path: a CAG-only hit with score >= fast_path_threshold short-
+  # circuits the full pipeline.
+  fast_path_threshold: 0.90
+  # build_fusion_context() keeps CAG entries scoring at or above this value.
+  cache_threshold: 0.85
+  # retrieve_cag() semantic-match cutoff (embedding cosine).
+  semantic_match_threshold: 0.92
+  # log_episode_to_replay_buffer() promotes high-reward responses back to
+  # the CAG cache when reward >= reinsert_reward_threshold.
+  reinsert_reward_threshold: 0.70
+cors:
+  # Explicit origins for the WebSocket and HTTP middleware. The previous
+  # "*" with allow_credentials=True is invalid per the CORS spec and was
+  # disabled in the security hardening pass.
+  allowed_origins:
+    - http://localhost:5173
+    - http://127.0.0.1:5173
 fusion:
   default_weights:
     cag: 0.4
@@ -134,8 +152,6 @@ tools:
   enabled: true
   max_calls_per_tool: 10
   rate_limit_window_secs: 60
-  code_executor_timeout_secs: 10
-  api_bridge_timeout_secs: 15
 scheduling:
   max_concurrent: 4
   safety_preempt: true

@@ -78,13 +78,30 @@ def save_quantiles(quantiles: dict):
 
 
 def extract_pdf_text(path: Path) -> str:
-    """Extract text from a PDF file."""
+    """Extract text from a PDF file, redacting prompt-injection markers.
+
+    PDFs sourced from the open web can carry the same "ignore previous
+    instructions" payload the safety agent screens out of user queries.
+    We redact those lines at extraction time so downstream embedding and
+    chunking never see them; filter_adversarial_chunks() catches anything
+    that slips through.
+    """
     import PyPDF2
-    text = ""
+
+    from backend.api.chunk_safety import text_looks_adversarial
+
+    out_lines: list[str] = []
     with open(path, "rb") as f:
         for page in PyPDF2.PdfReader(f).pages:
-            text += page.extract_text() + "\n"
-    return text
+            page_text = page.extract_text() or ""
+            for line in page_text.splitlines():
+                bad, _ = text_looks_adversarial(line)
+                if bad:
+                    logger.warning("PDF %s: redacted suspicious line", path.name)
+                    continue
+                out_lines.append(line)
+            out_lines.append("")
+    return "\n".join(out_lines)
 
 
 def _get_docs_path() -> Path:
@@ -506,7 +523,8 @@ def retrieve_cag(query: str, threshold: float = 0.75) -> list:
             sims = key_embs @ q_emb
             best_idx = int(np.argmax(sims))
             best_sim = float(sims[best_idx])
-            if best_sim >= 0.92:
+            cag_semantic = float(cfg.get("cag", {}).get("semantic_match_threshold", 0.92))
+            if best_sim >= cag_semantic:
                 _, v, s = rows[best_idx]
                 logger.debug(f"[CAG] SEMANTIC HIT: sim={best_sim:.2f}")
                 return [{"text": v, "source": "cag", "score": s}]
@@ -709,7 +727,8 @@ def retrieve(query: str, cag_weight: float = 1.0,
     matches. The CSWR re-rank lives in fusion_agent.build_fusion_context().
     """
     cag = retrieve_cag(query)
-    if cag and cag[0].get("score", 0) >= 0.90:
+    cag_fast_path = float(cfg.get("cag", {}).get("fast_path_threshold", 0.90))
+    if cag and cag[0].get("score", 0) >= cag_fast_path:
         for r in cag:
             r["score"] *= cag_weight
             r["retriever"] = "cag"

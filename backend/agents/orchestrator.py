@@ -505,7 +505,8 @@ class Orchestrator:
         rr = prepared.get("retrieval_results", {})
         cag_hits = rr.get("cag", [])
         graph_hits = rr.get("graph", [])
-        if cag_hits and not graph_hits and cag_hits[0].get("score", 0) >= 0.90:
+        _cag_fast_path = float(cfg.get("cag", {}).get("fast_path_threshold", 0.90))
+        if cag_hits and not graph_hits and cag_hits[0].get("score", 0) >= _cag_fast_path:
             cached_text = cag_hits[0].get("text", "")
             logger.info("[CAG FAST-PATH] /chat cache hit, skipping generation")
             record_turn(session_id, "user", query)

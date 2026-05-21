@@ -1,8 +1,13 @@
 # Author: Bradley R. Kinnard
-# docker-compose.yml - CPU and GPU profiles for RLFusion (2-path architecture)
-# Usage: docker compose --profile cpu up
-#        docker compose --profile gpu up
-# Models must be pre-downloaded to models/ before first run.
+# docker-compose.yml - CPU and GPU profiles for RLFusion (2-path architecture).
+#
+# Usage:
+#   docker compose --profile cpu up
+#   docker compose --profile gpu up
+#
+# Models must be pre-downloaded to ./models/ before first run. Set
+# RLFUSION_ADMIN_KEY in the host environment (>= 32 chars); the backend
+# refuses to boot without it.
 
 services:
   backend-cpu:
@@ -12,13 +17,30 @@ services:
     profiles: ["cpu"]
     ports:
       - "8000:8000"
+    user: "1000:1000"
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
     volumes:
+      # data/ stays read-write so /api/upload can drop new documents.
       - ./data:/app/data
       - ./db:/app/db
-      - ./models:/app/models
+      - ./indexes:/app/indexes
+      # Models are pinned in CHECKSUMS.txt; mount read-only so a poisoned
+      # backend cannot rewrite them.
+      - ./models:/app/models:ro
     environment:
       - CUDA_VISIBLE_DEVICES=""
       - INFERENCE_ENGINE=llama_cpp_dual
+      - RLFUSION_ADMIN_KEY=${RLFUSION_ADMIN_KEY:?set RLFUSION_ADMIN_KEY in env}
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+    restart: unless-stopped
     command: python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 
   backend-gpu:
@@ -28,12 +50,21 @@ services:
     profiles: ["gpu"]
     ports:
       - "8000:8000"
+    user: "1000:1000"
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
     volumes:
       - ./data:/app/data
       - ./db:/app/db
-      - ./models:/app/models
+      - ./indexes:/app/indexes
+      - ./models:/app/models:ro
     environment:
       - INFERENCE_ENGINE=llama_cpp_dual
+      - RLFUSION_ADMIN_KEY=${RLFUSION_ADMIN_KEY:?set RLFUSION_ADMIN_KEY in env}
     deploy:
       resources:
         reservations:
@@ -43,6 +74,7 @@ services:
               capabilities: [gpu]
         limits:
           memory: 24G
+    restart: unless-stopped
     command: python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 
   frontend:
@@ -52,4 +84,5 @@ services:
     profiles: ["cpu", "gpu"]
     ports:
       - "5173:5173"
+    restart: unless-stopped
     command: npm run dev -- --host

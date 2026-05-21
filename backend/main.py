@@ -22,16 +22,29 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module="gym")
 import numpy as np
 import torch
 import yaml
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from prometheus_client import (
     Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST,
 )
+from pydantic import ValidationError
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
+from backend.api.auth import assert_admin_key_configured, require_admin
+from backend.api.integrity import verify_model_checksums
+from backend.api.models import ChatRequest, ConfigPatch, FineTuneRequest
 from backend.config import cfg, PROJECT_ROOT
 from backend.core.model_router import get_engine
 from backend.core.critique import critique, log_episode_to_replay_buffer, get_critique_instruction, strip_critique_block, check_safety
@@ -45,6 +58,13 @@ from backend.agents.orchestrator import Orchestrator, apply_markdown_formatting
 _MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 # Max query length (characters) to prevent prompt stuffing
 _MAX_QUERY_LEN = 4000
+# CAG threshold lookup (single source of truth in backend.config.yaml).
+_CAG_CFG = cfg.get("cag", {}) or {}
+_CAG_FAST_PATH = float(_CAG_CFG.get("fast_path_threshold", 0.90))
+# WS hardening: per-connection caps. Mirrors slowapi's "10/minute" on /chat.
+_WS_AUTH_TIMEOUT_S = 2.0
+_WS_MAX_FRAME_BYTES = 32 * 1024
+_WS_MAX_FRAMES_PER_MINUTE = 10
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(name)s | %(message)s')
 logger = logging.getLogger(__name__)
@@ -149,6 +169,12 @@ async def lifespan(app: FastAPI):
     global _rl_policy, _boot_id
     _boot_id = uuid.uuid4().hex[:12]
 
+    # ── Fail-closed boot gates ───────────────────────────────
+    # 1. No admin key, no boot. Several endpoints mutate disk and state.
+    assert_admin_key_configured()
+    # 2. Verify pinned GGUF checksums if the manifest exists.
+    verify_model_checksums(PROJECT_ROOT / "models")
+
     # ── Inference engine health check ────────────────────────
     engine = get_engine()
     try:
@@ -182,7 +208,11 @@ async def lifespan(app: FastAPI):
     if cql_path.exists():
         logger.info("Loading CQL policy...")
         try:
-            state_dict = torch.load(str(cql_path), weights_only=False, map_location=map_location)
+            # weights_only=True refuses to unpickle arbitrary objects; d3rlpy
+            # saves a dict-of-tensors that survives this stricter loader.
+            state_dict = torch.load(
+                str(cql_path), weights_only=True, map_location=map_location,
+            )
             _rl_policy = CQLPolicyWrapper(state_dict['policy'])
             policy_status = "CQL loaded"
             logger.info("CQL policy loaded successfully")
@@ -223,7 +253,40 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="RLFusion Orchestrator", version="0.1.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+
+def _build_cors_origins() -> list[str]:
+    """Return the explicit CORS origin allowlist from config.
+
+    `["*"]` paired with `allow_credentials=True` is illegal per the CORS
+    spec and was the previous default; refuse to start in that combo so
+    a careless edit can't reintroduce it.
+    """
+    raw = cfg.get("cors", {}).get("allowed_origins", []) or []
+    if not isinstance(raw, list) or not all(isinstance(o, str) for o in raw):
+        raise RuntimeError(
+            "cors.allowed_origins must be a list of origin strings, e.g. "
+            "['http://localhost:5173']."
+        )
+    if "*" in raw:
+        raise RuntimeError(
+            "cors.allowed_origins contains '*' but the server enforces "
+            "allow_credentials=True. Set explicit origins or remove the "
+            "wildcard entry."
+        )
+    if not raw:
+        # Empty list is a safer default than '*'; admin can set it explicitly.
+        logger.warning("cors.allowed_origins is empty; browser clients will be blocked.")
+    return raw
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_build_cors_origins(),
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_headers=["Authorization", "Content-Type", "X-Correlation-ID"],
+)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -251,9 +314,14 @@ async def correlation_id_middleware(request: Request, call_next: object) -> Resp
     return response
 
 
-@app.get("/metrics")
+@app.get("/metrics", dependencies=[Depends(require_admin)])
 async def prometheus_metrics() -> Response:
-    """Expose Prometheus metrics for scraping."""
+    """Expose Prometheus metrics for scraping. Admin-gated.
+
+    Metrics include request counts and reward distributions; treat them
+    as operational data rather than public, since a hostile scraper can
+    use latency histograms to profile pipeline behavior.
+    """
     # update replay buffer gauge on each scrape
     try:
         import sqlite3
@@ -306,14 +374,15 @@ from backend.agents.orchestrator import (
 
 @app.post("/chat")
 @limiter.limit("10/minute")
-async def chat_endpoint(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
-    query = body.get("query", "").strip()
-    mode = body.get("mode", "chat")
+async def chat_endpoint(request: Request, body: ChatRequest) -> Dict[str, Any]:
+    query = body.query.strip()
+    mode = body.mode
 
     if not query:
-        return {"response": "Please provide a query.", "fusion_weights": {"cag": 0, "graph": 0}, "reward": 0.0}
-    if len(query) > _MAX_QUERY_LEN:
-        return {"response": f"Query too long ({len(query)} chars, max {_MAX_QUERY_LEN}).", "fusion_weights": {"cag": 0, "graph": 0}, "reward": 0.0}
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Query must be a non-empty string.",
+        )
 
     # Multi-agent orchestration (Phase 1)
     t_start = _time_mod.perf_counter()
@@ -341,15 +410,97 @@ async def chat_endpoint(request: Request, body: Dict[str, Any]) -> Dict[str, Any
     return response
 
 
+async def _ws_authorize(websocket: WebSocket) -> bool:
+    """Allow the WS handshake if the Origin is on the allowlist, otherwise
+    require a first-frame bearer-token auth message.
+
+    Returns True on success. On failure, closes the socket and returns
+    False so the caller can fall through cleanly.
+    """
+    allowed = set(cfg.get("cors", {}).get("allowed_origins", []) or [])
+    origin = websocket.headers.get("origin", "")
+    if origin and origin in allowed:
+        return True
+
+    # Origin not on allowlist: require first-frame `{"auth": "Bearer ..."}`.
+    try:
+        frame = await asyncio.wait_for(
+            websocket.receive_text(), timeout=_WS_AUTH_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("WS auth timeout; closing")
+        await websocket.close(code=4401)
+        return False
+    except WebSocketDisconnect:
+        return False
+
+    try:
+        body = json.loads(frame)
+    except json.JSONDecodeError:
+        await websocket.close(code=4400)
+        return False
+
+    presented = str(body.get("auth", "")).strip()
+    admin_key = os.environ.get("RLFUSION_ADMIN_KEY", "")
+    if not presented.startswith("Bearer ") or not admin_key:
+        await websocket.close(code=4401)
+        return False
+    import hmac as _hmac
+    if not _hmac.compare_digest(
+        presented[len("Bearer "):].encode("utf-8"),
+        admin_key.encode("utf-8"),
+    ):
+        await websocket.close(code=4401)
+        return False
+    return True
+
+
+class _WsTokenBucket:
+    """Per-connection sliding-window rate limiter for inbound frames."""
+
+    def __init__(self, max_frames: int, window_s: float = 60.0) -> None:
+        self._max = max_frames
+        self._window = window_s
+        self._stamps: list[float] = []
+
+    def allow(self) -> bool:
+        now = _time_mod.monotonic()
+        self._stamps = [t for t in self._stamps if now - t < self._window]
+        if len(self._stamps) >= self._max:
+            return False
+        self._stamps.append(now)
+        return True
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     WS_CONNECTIONS.inc()
     session_id = str(id(websocket))
+    bucket = _WsTokenBucket(_WS_MAX_FRAMES_PER_MINUTE)
 
     try:
+        if not await _ws_authorize(websocket):
+            return
+
         while True:
             data = await websocket.receive_text()
+
+            # Frame-size cap before json.loads. A 1 GB JSON bomb would
+            # otherwise allocate that much before the parser even errors.
+            if len(data) > _WS_MAX_FRAME_BYTES:
+                logger.warning(
+                    "WS frame %d bytes exceeds cap %d; closing",
+                    len(data), _WS_MAX_FRAME_BYTES,
+                )
+                await websocket.close(code=1009)
+                return
+
+            if not bucket.allow():
+                logger.info("WS rate limit hit for session %s", session_id)
+                await websocket.close(code=1008)
+                return
+
             try:
                 request = json.loads(data)
                 if "query" not in request and len(request.keys()) == 1:
@@ -469,7 +620,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
             # CAG fast-path: strong cache hit skips fusion + generation entirely
             cag_results = rr.get("cag", [])
-            if cag_n > 0 and graph_n == 0 and cag_results[0].get("score", 0) >= 0.90:
+            if cag_n > 0 and graph_n == 0 and cag_results[0].get("score", 0) >= _CAG_FAST_PATH:
                 cached_text = cag_results[0].get("text", "")
                 _t_cag = _time_mod.perf_counter()
                 logger.info("[CAG FAST-PATH] cache hit in %.0f ms, skipping generation",
@@ -636,8 +787,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             ))
 
     except WebSocketDisconnect:
-        WS_CONNECTIONS.dec()
         logger.info("WebSocket client disconnected")
+    finally:
+        # decrement no matter how we leave the loop: auth fail, rate limit,
+        # frame overflow, JSON error, or clean disconnect.
+        WS_CONNECTIONS.dec()
 
 
 @app.get("/api/config")
@@ -648,19 +802,17 @@ async def get_config(request: Request) -> Dict[str, Any]:
                     "search_timeout": cfg.get("web", {}).get("search_timeout", 10)}}
 
 
-@app.patch("/api/config")
+@app.patch("/api/config", dependencies=[Depends(require_admin)])
 @limiter.limit("10/minute")
-async def update_config(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
-    if "web" in body and "enabled" in body["web"]:
-        cfg["web"]["enabled"] = body["web"]["enabled"]
-        config_path = Path(__file__).parent / "config.yaml"
-        with open(config_path, 'r') as f:
-            current_config = yaml.safe_load(f)
-        current_config["web"]["enabled"] = cfg["web"]["enabled"]
-        with open(config_path, 'w') as f:
-            yaml.dump(current_config, f, default_flow_style=False, sort_keys=False)
-        return {"status": "updated", "web": {"enabled": cfg["web"]["enabled"]}}
-    return {"error": "Invalid config update"}
+async def update_config(request: Request, body: ConfigPatch) -> Dict[str, Any]:
+    cfg["web"]["enabled"] = body.web.enabled
+    config_path = Path(__file__).parent / "config.yaml"
+    with open(config_path, 'r') as f:
+        current_config = yaml.safe_load(f)
+    current_config["web"]["enabled"] = cfg["web"]["enabled"]
+    with open(config_path, 'w') as f:
+        yaml.dump(current_config, f, default_flow_style=False, sort_keys=False)
+    return {"status": "updated", "web": {"enabled": cfg["web"]["enabled"]}}
 
 
 @app.get("/ping")
@@ -692,14 +844,37 @@ async def ping(request: Request) -> Dict[str, Any]:
     }
 
 
-@app.post("/api/upload")
+# Magic-byte sniffing for the allowed upload types. PDF and image files have
+# stable file-magic prefixes; .txt/.md fall through to a UTF-8 decode check.
+_MAGIC_BYTES = {
+    ".pdf": b"%PDF-",
+}
+
+
+def _looks_like_extension(content: bytes, ext: str) -> bool:
+    """Crude content sniff to reject mismatched extensions."""
+    if ext in _MAGIC_BYTES:
+        return content.startswith(_MAGIC_BYTES[ext])
+    if ext in (".txt", ".md"):
+        try:
+            content[:4096].decode("utf-8")
+        except UnicodeDecodeError:
+            return False
+        return True
+    return False
+
+
+@app.post("/api/upload", dependencies=[Depends(require_admin)])
 @limiter.limit("10/minute")
 async def upload_documents(request: Request) -> Dict[str, Any]:
-    """Upload .txt/.md/.pdf files to data/docs/ for indexing."""
+    """Upload .txt/.md/.pdf files to data/docs/ for indexing. Admin-only."""
     form = await request.form()
     files = form.getlist("files")
     if not files:
-        return {"status": "error", "message": "No files provided"}
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No files provided in form field 'files'.",
+        )
 
     docs_path = PROJECT_ROOT / "data" / "docs"
     docs_path.mkdir(parents=True, exist_ok=True)
@@ -712,20 +887,29 @@ async def upload_documents(request: Request) -> Dict[str, Any]:
             continue
         ext = Path(f.filename).suffix.lower()
         if ext not in allowed:
-            skipped.append(f.filename)
+            skipped.append(f"{f.filename} (extension)")
             continue
         content = await f.read()
         if len(content) > _MAX_UPLOAD_BYTES:
             skipped.append(f"{f.filename} (>{_MAX_UPLOAD_BYTES // (1024*1024)}MB)")
             continue
-        dest = docs_path / Path(f.filename).name  # strip path components
+        if not _looks_like_extension(content, ext):
+            skipped.append(f"{f.filename} (content/extension mismatch)")
+            continue
+        safe_name = Path(f.filename).name  # strip path components
         # double-check: reject filenames with traversal attempts
-        if '..' in dest.name or dest.name.startswith('.'):
+        if '..' in safe_name or safe_name.startswith('.'):
             skipped.append(f"{f.filename} (invalid filename)")
             continue
+        # Hash-prefix the destination so two uploads with the same name don't
+        # silently overwrite each other and so a poisoned reupload can't take
+        # the slot of a trusted document.
+        import hashlib as _hashlib
+        digest = _hashlib.sha256(content).hexdigest()[:12]
+        dest = docs_path / f"{digest}_{safe_name}"
         dest.write_bytes(content)
         saved.append(f.filename)
-        logger.info("Uploaded: %s (%d bytes)", f.filename, len(content))
+        logger.info("Uploaded: %s -> %s (%d bytes)", f.filename, dest.name, len(content))
 
     return {
         "status": "uploaded",
@@ -736,7 +920,7 @@ async def upload_documents(request: Request) -> Dict[str, Any]:
     }
 
 
-@app.post("/api/reindex")
+@app.post("/api/reindex", dependencies=[Depends(require_admin)])
 @limiter.limit("3/minute")
 async def reindex_documents(request: Request) -> Dict[str, Any]:
     """Rechunk data/docs/ and rebuild the entity graph."""
@@ -776,10 +960,10 @@ async def reindex_documents(request: Request) -> Dict[str, Any]:
     }
 
 
-@app.delete("/api/reset")
+@app.delete("/api/reset", dependencies=[Depends(require_admin)])
 @limiter.limit("5/minute")
 async def reset_state(request: Request) -> Dict[str, Any]:
-    """Wipe all transient state: cache, episodes, replay, conversations."""
+    """Wipe all transient state: cache, episodes, replay, conversations. Admin-only."""
     import sqlite3
     db_path = PROJECT_ROOT / cfg["paths"]["db"]
     if not db_path.exists():
@@ -798,36 +982,36 @@ async def reset_state(request: Request) -> Dict[str, Any]:
     return {"status": "reset", "tables_cleared": ["cache", "episodes", "replay", "conversations"]}
 
 
-@app.post("/api/fine-tune")
+@app.post("/api/fine-tune", dependencies=[Depends(require_admin)])
 @limiter.limit("1/hour")
-async def fine_tune_endpoint(request: Request, body: Dict[str, Any]) -> Dict[str, Any]:
+async def fine_tune_endpoint(request: Request, body: FineTuneRequest) -> Dict[str, Any]:
     """Kick off LoRA fine-tuning on high-reward replay episodes. Admin-only."""
     from backend.rl.fine_tune import SFTJobConfig, default_config, run_sft
 
-    # admin auth: require RLFUSION_ADMIN_KEY as Bearer token
-    admin_key = os.environ.get("RLFUSION_ADMIN_KEY", "")
-    auth_header = request.headers.get("Authorization", "")
-    if not admin_key or auth_header != f"Bearer {admin_key}":
-        return {
-            "status": "unauthorized",
-            "message": "Set RLFUSION_ADMIN_KEY env var and pass as Bearer token.",
-        }
-
-    # build config from request body, falling back to defaults
     defaults = default_config()
+    # FineTuneRequest already bounds every numeric field. Resolve output_dir
+    # against the project root to make sure the validator's "relative path"
+    # invariant is anchored where the rest of the app expects it.
+    requested_output = (PROJECT_ROOT / body.output_dir).resolve()
+    if not str(requested_output).startswith(str(PROJECT_ROOT.resolve())):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="output_dir resolves outside the project root.",
+        )
+
     job_config = SFTJobConfig(
-        base_model=body.get("base_model", defaults["base_model"]),
-        lora_rank=int(body.get("lora_rank", defaults["lora_rank"])),
-        lora_alpha=int(body.get("lora_alpha", defaults["lora_alpha"])),
-        lora_dropout=float(body.get("lora_dropout", defaults["lora_dropout"])),
-        learning_rate=float(body.get("learning_rate", defaults["learning_rate"])),
-        num_epochs=int(body.get("num_epochs", defaults["num_epochs"])),
-        batch_size=int(body.get("batch_size", defaults["batch_size"])),
-        max_seq_length=int(body.get("max_seq_length", defaults["max_seq_length"])),
-        min_reward=float(body.get("min_reward", defaults["min_reward"])),
-        max_episodes=int(body.get("max_episodes", defaults["max_episodes"])),
-        val_split=float(body.get("val_split", defaults["val_split"])),
-        output_dir=str(body.get("output_dir", defaults["output_dir"])),
+        base_model=body.base_model or defaults["base_model"],
+        lora_rank=body.lora_rank,
+        lora_alpha=body.lora_alpha,
+        lora_dropout=body.lora_dropout,
+        learning_rate=body.learning_rate,
+        num_epochs=body.num_epochs,
+        batch_size=body.batch_size,
+        max_seq_length=body.max_seq_length,
+        min_reward=body.min_reward,
+        max_episodes=body.max_episodes,
+        val_split=body.val_split,
+        output_dir=str(requested_output.relative_to(PROJECT_ROOT.resolve())),
     )
 
     # run training (blocking; heavy workload)

@@ -140,19 +140,27 @@ def build_fusion_context(
     allocation. The RL fusion weights determine how many slots each path
     gets out of a total of 12.
     """
+    from backend.api.chunk_safety import filter_adversarial_chunks
     from backend.config import cfg as _cfg
 
     total_items = 12
     cag_take = max(1, int(weights[0] * total_items))
     graph_take = max(1, int(weights[1] * total_items))
 
-    cag_items = [
-        c for c in retrieval_results.get("cag", [])
-        if c.get("score", 0) >= 0.85
-    ][:cag_take]
+    # Drop chunks that look like prompt-injection payloads BEFORE slot
+    # allocation. A poisoned CAG entry or a malicious PDF page can carry
+    # the same "ignore previous instructions" text the safety agent
+    # already screens out of the user's query.
+    safe_cag = filter_adversarial_chunks(
+        list(retrieval_results.get("cag", [])), source_label="cag",
+    )
+    cag_cache_threshold = float(_cfg.get("cag", {}).get("cache_threshold", 0.85))
+    cag_items = [c for c in safe_cag if c.get("score", 0) >= cag_cache_threshold][:cag_take]
 
     # CSWR re-rank graph results, gate by min_csw_score
-    raw_graph = list(retrieval_results.get("graph", []))
+    raw_graph = filter_adversarial_chunks(
+        list(retrieval_results.get("graph", [])), source_label="graph",
+    )
     min_csw = float(_cfg.get("cswr", {}).get("min_csw_score", 0.25))
     if raw_graph and query:
         scored_graph = _csw_rerank_graph(raw_graph, query)

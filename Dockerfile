@@ -34,25 +34,39 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.10 python3-pip sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
+# Non-root execution: every endpoint mutates files under data/, db/, or
+# indexes/, and the container can be made to read those mount points
+# in r/w mode without granting it root over anything else on the host.
+RUN groupadd --system rlfusion \
+    && useradd --system --gid rlfusion --create-home --shell /usr/sbin/nologin rlfusion
+
 WORKDIR /app
 
 # Copy installed packages from builder
 COPY --from=builder /usr/local/lib/python3.10/dist-packages /usr/local/lib/python3.10/dist-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
-# Copy application code (no training scripts, no test files, no FAISS artifacts)
+# Copy application code only. data/ and models/ are bind-mounted at
+# runtime so a poisoned image cannot inject documents or model weights
+# into a deployment.
 COPY backend/ backend/
 COPY conftest.py .
-COPY data/ data/
-COPY models/ models/
 COPY scripts/init_db.sh scripts/init_db.sh
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
-# Initialize the database
-RUN mkdir -p db indexes && bash scripts/init_db.sh
+# Pre-create writable mount targets owned by the runtime user.
+RUN mkdir -p /app/db /app/indexes /app/data /app/models \
+    && chown -R rlfusion:rlfusion /app \
+    && chmod +x /usr/local/bin/entrypoint.sh
+
+USER rlfusion
 
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/ping')" || exit 1
 
+# entrypoint.sh idempotently initializes the SQLite database against the
+# bind-mounted db/ volume before handing off to uvicorn.
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["python3", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

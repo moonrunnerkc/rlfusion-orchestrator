@@ -1,8 +1,9 @@
 #!/bin/bash
 # Author: Bradley R. Kinnard
-# Initialize the RLFusion database
+# Initialize the RLFusion database. Idempotent: every statement uses
+# IF NOT EXISTS so re-running against a populated DB is a no-op.
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -60,5 +61,5 @@ CREATE TABLE IF NOT EXISTS user_profile (
 );
 EOF
 
-echo "✅ Database initialized at: $DB_PATH"
-echo "   Tables: cache, episodes, replay, conversations"
+echo "Database initialized at: $DB_PATH"
+echo "Tables: cache, episodes, replay, conversations, user_profile"
