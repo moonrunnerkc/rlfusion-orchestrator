@@ -382,8 +382,8 @@ class TestFrontendContracts:
                 assert "web" not in line.lower(), "Weights interface should not have web"
 
     def test_no_four_retrieval_paths_text(self):
-        """ChatList should not mention four retrieval paths."""
-        p = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "ChatList.tsx"
+        """chat-list should not mention four retrieval paths."""
+        p = Path(__file__).resolve().parents[1] / "frontend" / "src" / "components" / "chat-list.tsx"
         content = p.read_text()
         assert "four retrieval" not in content.lower()
 

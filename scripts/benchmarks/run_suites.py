@@ -5,7 +5,7 @@ import warnings
 warnings.filterwarnings("ignore", message=".*Gym.*")
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-from tests.sim_env import run_benchmark
+from scripts.benchmarks.sim_env import run_benchmark
 import json
 import os
 import time
@@ -523,5 +523,5 @@ if __name__ == "__main__":
         iters = int(sys.argv[2]) if len(sys.argv) > 2 else 100
         run_all_suites(iters) if suite == "all" else run_test_suite(suite, iters)
     else:
-        print("Usage: python -m tests.test_suites <suite|all> [iterations]")
+        print("Usage: python -m scripts.benchmarks.run_suites <suite|all> [iterations]")
         print(f"Suites: {', '.join(SUITE_MAP.keys())}")

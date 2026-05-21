@@ -77,19 +77,19 @@ Complete implementation of 6 test suites for RLFusion Orchestrator:
 ### Run a single suite
 ```bash
 # From project root with venv activated
-python -m tests.test_suites hallucination 50
-python -m tests.test_suites proactive 100
-python -m tests.test_suites adversarial 200
+python -m scripts.benchmarks.run_suites hallucination 50
+python -m scripts.benchmarks.run_suites proactive 100
+python -m scripts.benchmarks.run_suites adversarial 200
 ```
 
 ### Run all suites
 ```bash
-python -m tests.test_suites all 100
+python -m scripts.benchmarks.run_suites all 100
 ```
 
 ### Programmatic usage (in Python code)
 ```python
-from tests.test_suites import run_test_suite, run_all_suites
+from scripts.benchmarks.run_suites import run_test_suite, run_all_suites
 
 # Run a specific suite
 metrics = run_test_suite("hallucination", iterations=100)
@@ -105,7 +105,7 @@ for suite_name, metrics in all_results.items():
 ### Import into pytest
 ```python
 # In your test file
-from tests.test_suites import run_test_suite
+from scripts.benchmarks.run_suites import run_test_suite
 
 def test_hallucination_threshold():
     metrics = run_test_suite("hallucination", iterations=50)
