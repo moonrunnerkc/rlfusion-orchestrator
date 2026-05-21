@@ -7,29 +7,19 @@ rewriting proven logic. Runs as the first gate in every pipeline shape.
 from __future__ import annotations
 
 import logging
-import re
 from typing import ClassVar
 
 from backend.agents.base import PipelineState
+from backend.api.injection_filter import find_attack_match
 
 logger = logging.getLogger(__name__)
-
-# Known prompt-injection / attack signatures for pre-filter
-_ATTACK_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"ignore\s+(previous|above|all)\s+(instructions|prompts|rules)", re.IGNORECASE),
-    re.compile(r"you\s+are\s+now\s+(?:DAN|evil|unrestricted|jailbroken)", re.IGNORECASE),
-    re.compile(r"(?:system|admin)\s*:\s*override", re.IGNORECASE),
-    re.compile(r"<\s*script\b", re.IGNORECASE),
-    re.compile(r";\s*(?:DROP|DELETE|INSERT|UPDATE)\s+", re.IGNORECASE),
-    re.compile(r"\$\{.*\}", re.IGNORECASE),  # template injection
-]
 
 
 def _pre_filter_attacks(query: str) -> tuple[bool, str]:
     """Fast regex check for known attack patterns before calling LLM safety."""
-    for pattern in _ATTACK_PATTERNS:
-        if pattern.search(query):
-            return False, f"Query matched attack pattern: {pattern.pattern[:40]}..."
+    match = find_attack_match(query)
+    if match:
+        return False, f"Query matched attack pattern: {match[:40]}..."
     return True, ""
 
 

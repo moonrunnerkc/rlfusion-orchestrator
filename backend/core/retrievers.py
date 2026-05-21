@@ -78,13 +78,29 @@ def save_quantiles(quantiles: dict):
 
 
 def extract_pdf_text(path: Path) -> str:
-    """Extract text from a PDF file."""
+    """Extract text from a PDF file, screening pages for injection payloads.
+
+    The screen runs at index time so a poisoned PDF cannot reach the LLM at
+    retrieval time. Affected pages are dropped (with a warning) and the rest
+    of the PDF is kept intact.
+    """
     import PyPDF2
-    text = ""
+
+    from backend.api.injection_filter import find_attack_match
+
+    chunks: list[str] = []
     with open(path, "rb") as f:
-        for page in PyPDF2.PdfReader(f).pages:
-            text += page.extract_text() + "\n"
-    return text
+        for idx, page in enumerate(PyPDF2.PdfReader(f).pages):
+            page_text = page.extract_text() or ""
+            match = find_attack_match(page_text)
+            if match:
+                logger.warning(
+                    "Dropped PDF page %d in %s for injection pattern %s",
+                    idx, path.name, match,
+                )
+                continue
+            chunks.append(page_text)
+    return "\n".join(chunks) + ("\n" if chunks else "")
 
 
 def _get_docs_path() -> Path:
@@ -193,6 +209,8 @@ def build_doc_chunks() -> int:
     endpoint calls; there is no FAISS index any more, only chunk metadata
     used by the in-memory cosine search in _retrieve_doc_chunks().
     """
+    from backend.api.injection_filter import find_attack_match
+
     docs_path = _get_docs_path()
     files = (list(docs_path.rglob("*.txt")) + list(docs_path.rglob("*.md"))
              + list(docs_path.rglob("*.pdf")))
@@ -204,6 +222,13 @@ def build_doc_chunks() -> int:
             project = rel.parts[0] if len(rel.parts) > 1 else "default"
             from backend.core.utils import chunk_text
             for chunk in chunk_text(content, max_tokens=400):
+                match = find_attack_match(chunk)
+                if match:
+                    logger.warning(
+                        "Dropped chunk from %s for injection pattern %s",
+                        rel, match,
+                    )
+                    continue
                 all_chunks.append({"text": chunk, "source": str(rel), "project": project})
         except Exception as e:
             logger.warning("Failed to process %s: %s", fpath, e)
@@ -506,7 +531,8 @@ def retrieve_cag(query: str, threshold: float = 0.75) -> list:
             sims = key_embs @ q_emb
             best_idx = int(np.argmax(sims))
             best_sim = float(sims[best_idx])
-            if best_sim >= 0.92:
+            semantic_thresh = float(cfg.get("cag", {}).get("semantic_match_threshold", 0.92))
+            if best_sim >= semantic_thresh:
                 _, v, s = rows[best_idx]
                 logger.debug(f"[CAG] SEMANTIC HIT: sim={best_sim:.2f}")
                 return [{"text": v, "source": "cag", "score": s}]
@@ -709,7 +735,8 @@ def retrieve(query: str, cag_weight: float = 1.0,
     matches. The CSWR re-rank lives in fusion_agent.build_fusion_context().
     """
     cag = retrieve_cag(query)
-    if cag and cag[0].get("score", 0) >= 0.90:
+    fast_path = float(cfg.get("cag", {}).get("fast_path_threshold", 0.90))
+    if cag and cag[0].get("score", 0) >= fast_path:
         for r in cag:
             r["score"] *= cag_weight
             r["retriever"] = "cag"
