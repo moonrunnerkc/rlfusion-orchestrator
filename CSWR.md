@@ -56,17 +56,18 @@ After scoring and filtering, chunks are packed into coherent neighborhoods:
 5. Answerability filtering (drop low-confidence packs)
 6. Fused context assembly for generation
 
-## Results
+## Status
 
-- Near-zero hallucinations on edge chunks
-- 40-60% noise reduction vs standard top-k retrieval
-- Fully local, private, runs on consumer GPUs
-- All scoring weights configurable in `backend/config.yaml` under `cswr:`
+CSWR was previously called by the FAISS-era `retrieve_rag()` function,
+which has been deleted in the v2 overhaul. As of Phase 2 of the overhaul
+plan, CSWR is called inside `FusionAgent.build_fusion_context()` to
+re-rank the merged CAG + Graph result set before the LLM call. See the
+test coverage in `tests/test_core_units.py::TestCSWRScoring` for the
+exact contract.
 
 ## Implementation
 
 - `backend/core/retrievers.py`: `score_chunks()`, `compute_stability()`,
   `compute_fit()`, `compute_drift()`, `build_pack()`
 - `backend/config.yaml`: `cswr:` and `cswr_quantiles:` sections
-- Tests: 168 unit tests in `tests/test_core_units.py`
-- Full technical details: [WHITEPAPER.md](WHITEPAPER.md) Section 3
+- Scoring weights configurable in `backend/config.yaml` under `cswr:`
