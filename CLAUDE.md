@@ -146,6 +146,7 @@ Drop `.txt`/`.md`/`.pdf` files there. The entity graph in `data/entity_graph.jso
 - Python formatter is Black, line length 88; isort uses the Black-compatible profile. `target-version = py310` in `pyproject.toml`.
 - Most modules have a `# Author: Bradley R. Kinnard` header. Preserve it when editing.
 - The codebase is mid-migration: an older 4-path architecture (RAG + Web + CAG + Graph) was reduced to 2 paths (CAG + Graph). Some comments still reference the old paths (`no_rag`, `no_web` ablations in `run_all.sh`, `rag_weight` column in the episodes table). New code targets 2-path. Do not reintroduce `faiss` or `tavily` to the hot path. `web.enabled` defaults to `false`.
+- `.claude/` is gitignored except `commands/`. The shared OCR slash-command stubs ship with the repo; per-user state (settings, transcripts, caches) stays local.
 
 ---
 
