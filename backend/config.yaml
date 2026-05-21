@@ -5,7 +5,9 @@ llm:
   max_tokens: 8192
 embedding:
   model: BAAI/bge-small-en-v1.5
-  device: cuda
+  # auto -> cuda if available, else mps on Apple Silicon, else cpu.
+  # override with RLFUSION_DEVICE or RLFUSION_FORCE_CPU env vars.
+  device: auto
 rl:
   policy_path: models/rl_policy_cql.d3
   timesteps: 10000
@@ -42,6 +44,9 @@ critique:
   proactive_threshold: 0.75
   critique_temperature: 0.2
   proactive_reward_bonus: 0.25
+  # how long the post-generation critique LLM call is allowed to take.
+  # bump this on slow CPU hosts; lower on GPU boxes where the call is fast.
+  timeout_secs: 60
 web:
   enabled: false
   search_type: all
@@ -103,9 +108,15 @@ fine_tuning:
   output_dir: models/fine_tuned
   export_gguf: true
 inference:
+  # engine: llama_cpp_dual loads two GGUFs locally; ollama hits the daemon at
+  # base_url. With auto_detect: true (default), the resolver in
+  # backend/core/engine_detect.py falls back to ollama if the GGUFs are
+  # missing, and to the smallest installed ollama model if `model` is empty
+  # or not installed. Override with INFERENCE_ENGINE / INFERENCE_MODEL.
   engine: llama_cpp_dual
-  base_url: http://localhost:8001
-  model: Qwen/Qwen2.5-3B-Instruct
+  auto_detect: true
+  base_url: http://localhost:11434
+  model: ""
   max_concurrent: 4
   timeout_secs: 60
   openai_api_key: ""

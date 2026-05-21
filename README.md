@@ -25,21 +25,33 @@ The repo is built for one user, on one box, with no cloud calls. The fusion mete
 ## Quick start
 
 ```bash
-# 1. Models (Qwen 2.5 1.5B Q4_K_M for triage, Llama 3.1 8B Q8_0 for generation)
-huggingface-cli download Qwen/Qwen2.5-1.5B-Instruct-GGUF \
-  qwen2.5-1.5b-instruct-q4_k_m.gguf --local-dir models/
-huggingface-cli download bartowski/Meta-Llama-3.1-8B-Instruct-GGUF \
-  Meta-Llama-3.1-8B-Instruct-Q8_0.gguf --local-dir models/
-
-# 2. SQLite cache + replay buffer
+# 1. SQLite cache + replay buffer
 ./scripts/init_db.sh
 
-# 3. Backend (FastAPI on :8000, loads both GGUF files on startup)
+# 2. (optional) override the inference engine and model
+cp .env.example .env
+# edit .env to set INFERENCE_MODEL=<your-installed-ollama-model>
+# or leave it unset to let the resolver auto-pick
+
+# 3. Backend (FastAPI on :8000)
 uvicorn backend.main:app --port 8000 --reload
 
 # 4. Frontend (Vite on :5173)
 cd frontend && npm install && npm run dev
 ```
+
+**Engine resolution.** The default config requests `llama_cpp_dual` (the
+dual-GGUF asymmetric path). If those GGUFs aren't on disk,
+`backend/core/engine_detect.resolve_inference_config()` falls back to
+ollama at `http://localhost:11434` and picks the highest-scoring
+installed model (general chat preferred, 15-40 GB band preferred). Pin
+a specific model with `INFERENCE_MODEL=<name>` in `.env`. The active
+engine and model show up on `/ping` as `engine_resolution`. No model
+name is hard-coded in the committed config.
+
+**Embedding device.** `embedding.device: auto` in `backend/config.yaml`
+turns into cuda if available, mps on Apple Silicon, cpu everywhere
+else. Force with `RLFUSION_DEVICE` or `RLFUSION_FORCE_CPU`.
 
 The v1 pre-trained CQL policy was trained on a broken reward signal and
 has been deleted (see [overhaul-plan.md](overhaul-plan.md) Phase 3). The

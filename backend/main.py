@@ -668,14 +668,24 @@ async def update_config(request: Request, body: Dict[str, Any]) -> Dict[str, Any
 async def ping(request: Request) -> Dict[str, Any]:
     gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
 
+    # report what the engine actually resolved to, not the static config value
+    try:
+        engine = get_engine()
+        active_engine = engine.engine
+        active_model = engine.model
+        engine_resolution = getattr(engine, "_resolution", "")
+    except Exception:
+        active_engine = cfg.get("inference", {}).get("engine", "ollama")
+        active_model = cfg.get("llm", {}).get("model", "?")
+        engine_resolution = "engine init failed"
+
     return {
         "status": "alive",
         "gpu": gpu_name,
         "device": "cuda" if torch.cuda.is_available() else "cpu",
-        "model": cfg["llm"]["model"],
-        "inference_engine": cfg.get("inference", {}).get("engine", "ollama"),
-        "cpu_model": "Qwen 2.5 1.5B (Q4_K_M)",
-        "gpu_model": "Llama 3.1 8B (Q8_0)",
+        "model": active_model,
+        "inference_engine": active_engine,
+        "engine_resolution": engine_resolution,
         "policy": "CQL" if Path(cfg["rl"]["policy_path"]).exists() else "heuristic",
         "policy_exists": Path(cfg["rl"]["policy_path"]).exists(),
         "boot_id": _boot_id,

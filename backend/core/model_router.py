@@ -49,16 +49,17 @@ class InferenceEngine:
     (yields token chunks). Engine selection is config-driven, not code-driven.
     """
 
-    def __init__(self) -> None:
-        inf = get_inference_config()
+    def __init__(self, resolved: dict[str, object] | None = None) -> None:
+        inf = resolved if resolved is not None else get_inference_config()
         self._engine: str = str(inf["engine"])
         self._base_url: str = str(inf["base_url"])
         self._model: str = str(inf["model"])
         self._timeout: int = int(inf["timeout_secs"])
         self._api_key: str = str(inf.get("openai_api_key", ""))
+        self._resolution: str = str(inf.get("resolution", f"config: {self._engine}"))
         logger.info(
-            "InferenceEngine: engine=%s, base_url=%s, model=%s",
-            self._engine, self._base_url, self._model,
+            "InferenceEngine: engine=%s, base_url=%s, model=%s, source=%s",
+            self._engine, self._base_url, self._model, self._resolution,
         )
 
     @property
@@ -283,21 +284,24 @@ _engine: InferenceEngine | None = None
 def get_engine() -> InferenceEngine:
     """Return the module-level InferenceEngine singleton.
 
-    When inference.engine == 'llama_cpp_dual', returns an adapter wrapping
-    the AsymmetricLLMOrchestrator so existing call sites (generate/stream)
-    work transparently.
+    Engine + model are auto-detected against what's actually on the host.
+    If `inference.engine: llama_cpp_dual` is configured but the GGUFs
+    aren't on disk, falls back to ollama if the daemon is reachable.
+    For ollama, if the configured model isn't installed, picks the
+    smallest installed model. See backend/core/engine_detect.py.
     """
     global _engine
     if _engine is None:
-        inf = get_inference_config()
+        from backend.core.engine_detect import resolve_inference_config
+        inf = resolve_inference_config()
         if str(inf["engine"]) == "llama_cpp_dual":
-            _engine = _build_asymmetric_adapter()
+            _engine = _build_asymmetric_adapter(inf)
         else:
-            _engine = InferenceEngine()
+            _engine = InferenceEngine(resolved=inf)
     return _engine
 
 
-def _build_asymmetric_adapter() -> InferenceEngine:
+def _build_asymmetric_adapter(resolved: dict[str, object] | None = None) -> InferenceEngine:
     """Wrap AsymmetricLLMOrchestrator in an InferenceEngine-compatible shell.
 
     This lets existing code call engine.generate() / engine.stream() without
@@ -314,6 +318,7 @@ def _build_asymmetric_adapter() -> InferenceEngine:
     adapter._model = "dual-model"
     adapter._timeout = 60
     adapter._api_key = ""
+    adapter._resolution = str((resolved or {}).get("resolution", "config: llama_cpp_dual"))
 
     def generate_adapter(
         messages: list[dict[str, str]],

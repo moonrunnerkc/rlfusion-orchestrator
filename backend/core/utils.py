@@ -14,20 +14,65 @@ from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
-# Load device from config, fallback to env var, then to cuda if available
-def _get_device() -> str:
-    env_device = os.environ.get("RLFUSION_DEVICE")
-    if env_device:
-        return env_device
+# Resolve embedder device dynamically. Inputs in priority order:
+#   1. RLFUSION_FORCE_CPU=true                     -> cpu
+#   2. RLFUSION_DEVICE  (cpu|cuda|mps|auto)
+#   3. embedding.device in config.yaml             (same set)
+#   4. fallback                                    -> auto
+# "auto" then resolves to cuda if available, else mps on Apple Silicon,
+# else cpu. Anything torch doesn't recognize is treated as auto.
+_VALID = {"cpu", "cuda", "mps"}
+
+
+def _resolve_to_torch(requested: str) -> str:
+    """Turn the textual preference into a device torch will accept."""
+    if requested == "cpu":
+        return "cpu"
     try:
-        cfg_path = Path(__file__).parent.parent / "config.yaml"
-        with open(cfg_path) as f:
-            cfg = yaml.safe_load(f)
-        return cfg.get("embedding", {}).get("device", "cuda")
+        import torch
+        cuda_ok = torch.cuda.is_available()
+        mps_ok = bool(getattr(torch.backends, "mps", None)) and torch.backends.mps.is_available()
     except Exception:
+        return "cpu"
+
+    if requested == "cuda":
+        if cuda_ok:
+            return "cuda"
+        logger.info("embedding.device=cuda requested but CUDA unavailable; falling back")
+    if requested == "mps":
+        if mps_ok:
+            return "mps"
+        logger.info("embedding.device=mps requested but MPS unavailable; falling back")
+    # auto / unrecognized
+    if cuda_ok:
         return "cuda"
+    if mps_ok:
+        return "mps"
+    return "cpu"
+
+
+def _get_device() -> str:
+    if os.environ.get("RLFUSION_FORCE_CPU", "").lower() in ("1", "true", "yes"):
+        return "cpu"
+    env_device = (os.environ.get("RLFUSION_DEVICE") or "").strip().lower()
+    if env_device in _VALID:
+        return env_device
+    if env_device and env_device != "auto":
+        logger.warning("Unknown RLFUSION_DEVICE=%r; treating as auto", env_device)
+
+    requested = env_device or "auto"
+    if requested == "auto":
+        try:
+            cfg_path = Path(__file__).parent.parent / "config.yaml"
+            with open(cfg_path) as f:
+                cfg = yaml.safe_load(f)
+            requested = str(cfg.get("embedding", {}).get("device", "auto")).strip().lower()
+        except Exception:
+            requested = "auto"
+    return _resolve_to_torch(requested)
 
 _device = _get_device()
+logger.info("Embedding device: %s", _device)
 embedder = SentenceTransformer("BAAI/bge-small-en-v1.5", device=_device)
 
 

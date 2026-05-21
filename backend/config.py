@@ -10,6 +10,27 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = PROJECT_ROOT / "backend" / "config.yaml"
 
+# Per-host overrides (gitignored). Anything in .env (INFERENCE_MODEL,
+# RLFUSION_DEVICE, RLFUSION_ADMIN_KEY, etc.) is loaded into os.environ
+# before the YAML and `get_inference_config()` reads it. This is the
+# right place for per-machine model picks — they don't belong in the
+# committed config.yaml.
+_DOTENV_PATH = PROJECT_ROOT / ".env"
+if _DOTENV_PATH.exists():
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(_DOTENV_PATH, override=False)
+    except ImportError:
+        # graceful fallback: parse KEY=VAL lines ourselves
+        for raw in _DOTENV_PATH.read_text().splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k = k.strip()
+            v = v.strip().strip('"').strip("'")
+            os.environ.setdefault(k, v)
+
 if not CONFIG_PATH.exists():
     raise FileNotFoundError(f"Config file missing: {CONFIG_PATH}")
 
@@ -67,7 +88,8 @@ def get_inference_config() -> dict[str, str | int]:
     return {
         "engine": os.environ.get("INFERENCE_ENGINE") or str(inf.get("engine", "ollama")),
         "base_url": os.environ.get("INFERENCE_BASE_URL") or str(inf.get("base_url", "http://localhost:11434")),
-        "model": os.environ.get("INFERENCE_MODEL") or str(inf.get("model", cfg.get("llm", {}).get("model", "dolphin-llama3:8b"))),
+        # empty string is fine — the resolver picks an installed model in that case
+        "model": os.environ.get("INFERENCE_MODEL", str(inf.get("model", ""))),
         "max_concurrent": int(os.environ.get("INFERENCE_MAX_CONCURRENT", str(inf.get("max_concurrent", 4)))),
         "timeout_secs": int(os.environ.get("INFERENCE_TIMEOUT", str(inf.get("timeout_secs", 30)))),
         "openai_api_key": os.environ.get("INFERENCE_API_KEY") or str(inf.get("openai_api_key", "")),
@@ -76,7 +98,16 @@ def get_inference_config() -> dict[str, str | int]:
         "cpu_ctx_size": int(inf.get("cpu_ctx_size", 8192)),
         "gpu_ctx_size": int(inf.get("gpu_ctx_size", 8192)),
         "seed": int(inf.get("seed", 42)),
+        "auto_detect": _to_bool(inf.get("auto_detect", True)),
     }
+
+
+def _to_bool(val: object) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() in ("1", "true", "yes", "on")
+    return bool(val)
 
 
 __all__ = ["cfg", "PROJECT_ROOT", "get_project_root", "get_data_path",

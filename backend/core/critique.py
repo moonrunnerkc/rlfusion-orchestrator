@@ -158,9 +158,12 @@ def _run_critique_llm(query: str, fused_context: str, response: str) -> Dict[str
             response=response[:1200],
         )
 
+        # critique timeout is configurable per host; defaults to 60s because
+        # local CPU inference of a 30B model takes longer than a vLLM call would
+        critique_timeout = float(cfg.get("critique", {}).get("timeout_secs", 60))
         content = engine.generate(
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.0, num_predict=300, num_ctx=4096, timeout=15.0,
+            temperature=0.0, num_predict=300, num_ctx=4096, timeout=critique_timeout,
         ).strip()
 
         # try JSON parse, fall back to regex extraction from partial output
