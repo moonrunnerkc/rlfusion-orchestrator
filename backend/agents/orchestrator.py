@@ -45,11 +45,19 @@ If context contains a USER PROFILE section, use those facts to personalize answe
 # Token budgets per mode (generation cap)
 NUM_PREDICT = {"chat": 400, "build": 500}
 
-# Keywords that indicate a personal/memory query
-_PERSONAL_KEYWORDS = [
-    "my ", "me ", "i ", "brad", "preference", "like", "favorite",
-    "remember", "told you", "you know", "recall", "profile",
-]
+# Keywords that signal a personal/memory query. Word-boundary regex so we
+# don't false-match "me " inside "lifetime" or "i " inside "literature".
+_PERSONAL_KEYWORD_RE = re.compile(
+    r"(?:\bmy\b|\bmine\b|\bmyself\b|\bremember\b|\brecall\b|\bprofile\b|"
+    r"\btold you\b|\byou know\b|\bfavorite\b|\bpreference\b|\bbrad\b|"
+    r"^i\s|\si\s)",
+    re.IGNORECASE,
+)
+
+
+def _looks_personal(query: str) -> bool:
+    """True if the query looks like a personal/memory request."""
+    return bool(_PERSONAL_KEYWORD_RE.search(query))
 
 # Adversarial indicators for complexity classification
 _ADVERSARIAL_PATTERNS = [
@@ -294,7 +302,7 @@ class Orchestrator:
     ) -> PreparedContext:
         """Assemble system/user prompts from pipeline results. No agent execution."""
         # inject user profile for personal queries
-        if any(w in query.lower() for w in _PERSONAL_KEYWORDS):
+        if _looks_personal(query):
             profile = get_user_profile()
             if profile:
                 fused_context = profile + "\n" + fused_context
@@ -398,7 +406,7 @@ class Orchestrator:
         retrieval_results = result.get("retrieval_results", {"cag": [], "graph": []})
 
         # inject user profile for personal queries
-        if any(w in query.lower() for w in _PERSONAL_KEYWORDS):
+        if _looks_personal(query):
             profile = get_user_profile()
             if profile:
                 fused_context = profile + "\n" + fused_context
@@ -505,15 +513,32 @@ class Orchestrator:
         rr = prepared.get("retrieval_results", {})
         cag_hits = rr.get("cag", [])
         graph_hits = rr.get("graph", [])
-        if cag_hits and not graph_hits and cag_hits[0].get("score", 0) >= 0.90:
+        fast_path_threshold = float(cfg.get("cag", {}).get("fast_path_threshold", 0.90))
+        if cag_hits and not graph_hits and cag_hits[0].get("score", 0) >= fast_path_threshold:
             cached_text = cag_hits[0].get("text", "")
+            cached_score = float(cag_hits[0].get("score", fast_path_threshold))
             logger.info("[CAG FAST-PATH] /chat cache hit, skipping generation")
             record_turn(session_id, "user", query)
             record_turn(session_id, "assistant", cached_text)
+            try:
+                from backend.core.critique import log_episode_to_replay_buffer
+                log_episode_to_replay_buffer({
+                    "query": query,
+                    "response": cached_text,
+                    "weights": {"cag": 1.0, "graph": 0.0},
+                    "reward": cached_score,
+                    "fused_context": "",
+                    "from_cache": True,
+                    "policy_weights": [1.0, 0.0],
+                    "effective_weights": [1.0, 0.0],
+                    "had_empty_path": False,
+                })
+            except Exception as exc:
+                logger.warning("CAG fast-path episode log failed: %s", exc)
             return OrchestrationResult(
                 response=cached_text,
                 fusion_weights={"cag": 1.0, "graph": 0.0},
-                reward=cag_hits[0].get("score", 0.9),
+                reward=cached_score,
                 proactive_suggestions=[],
                 blocked=False,
                 safety_reason="Safe",

@@ -61,6 +61,12 @@ class CritiqueAgent:
             "reward": critique_result["reward"],
             "proactive_suggestions": critique_result.get("proactive_suggestions", []),
             "fused_context": fused_context,
+            "obs_features": state.get("obs_features"),
+            "from_cache": False,
+            "policy_weights": state.get("policy_weights"),
+            "effective_weights": state.get("effective_weights"),
+            "had_empty_path": state.get("had_empty_path", False),
+            "policy_action": state.get("policy_action"),
         })
 
         return {  # type: ignore[return-value]

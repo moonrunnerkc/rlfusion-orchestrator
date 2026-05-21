@@ -39,10 +39,11 @@ Be harsh but fair.
 # Regex patterns - match with or without closing tag (LLM often omits </critique>)
 _CRITIQUE_BLOCK_RE = re.compile(r"<critique>(.*?)(?:</critique>|$)", re.DOTALL | re.IGNORECASE)
 _CITATION_RE = re.compile(r'\[(\d+)\]')
-_SCORE_RE = re.compile(r"(?:final reward|reward)[:\s]*([0-9]+\.?[0-9]*)", re.IGNORECASE)
-_FACTUAL_RE = re.compile(r"factual accuracy[:\s]*([0-9]+\.?[0-9]*)", re.IGNORECASE)
-_PROACTIVE_RE = re.compile(r"proactivity score[:\s]*([0-9]+\.?[0-9]*)", re.IGNORECASE)
-_HELPFULNESS_RE = re.compile(r"helpfulness[:\s]*([0-9]+\.?[0-9]*)", re.IGNORECASE)
+_NUM = r"-?[0-9]+\.?[0-9]*"
+_SCORE_RE = re.compile(rf"(?:final reward|reward)[:\s]*({_NUM})", re.IGNORECASE)
+_FACTUAL_RE = re.compile(rf"factual accuracy[:\s]*({_NUM})", re.IGNORECASE)
+_PROACTIVE_RE = re.compile(rf"proactivity score[:\s]*({_NUM})", re.IGNORECASE)
+_HELPFULNESS_RE = re.compile(rf"helpfulness[:\s]*({_NUM})", re.IGNORECASE)
 _SUGGESTION_RE = re.compile(r"[•\-\*]\s*(.+)")
 
 # Internal tag patterns to strip from output
@@ -373,66 +374,74 @@ def compute_reward(query: str, fused_context: str, response: str) -> float:
 def log_episode_to_replay_buffer(episode: dict) -> bool:
     """Log an episode to the replay buffer database for RL training.
 
-    Writes to the 2-path episodes schema (cag_weight, graph_weight). If
-    an older 4-path schema is present, falls back to writing rag_weight=0
-    so the insert still succeeds — migration drops the column on the
-    next ./scripts/init_db.sh run.
+    Episode dict shape:
+        query, response, reward            — turn outcome
+        weights                            — {"cag": ..., "graph": ...}
+        fused_context, proactive_suggestions
+        obs_features                       — list[float] (10) from obs_builder
+        from_cache                         — bool, CAG fast-path hit
+        policy_weights / effective_weights — list[float] (2) for F1.7
+        had_empty_path                     — bool, true when rebalancer fired
+        policy_action                      — list[float] (2) pre-softmax
+
+    The trainer reads `policy_weights` so it learns from the policy's actual
+    decision, not the empty-path override.
     """
+    import json as _json
+
+    from backend.config import cfg as _cfg
+
     db_path = PROJECT_ROOT / "db" / "rlfo_cache.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
         conn = sqlite3.connect(str(db_path))
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS episodes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                query TEXT, response TEXT, reward REAL,
-                cag_weight REAL, graph_weight REAL,
-                fused_context TEXT, proactive_suggestions TEXT
-            )
-        """)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(episodes)").fetchall()}
 
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(episodes)").fetchall()]
-        has_rag = "rag_weight" in cols
+        weights = episode.get("weights", {}) or {}
+        cag_w = float(weights.get("cag", 0.0))
+        graph_w = float(weights.get("graph", 0.0))
+        reward = float(episode.get("reward", 0.0))
+        query_val = str(episode.get("query", ""))
+        response_val = str(episode.get("response", ""))
+        fused_ctx = str(episode.get("fused_context", ""))
+        proactive = " | ".join(episode.get("proactive_suggestions", []) or [])
 
-        if has_rag:
-            cursor = conn.execute("""
-                INSERT INTO episodes (query, response, reward, rag_weight, cag_weight, graph_weight, fused_context, proactive_suggestions)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                episode.get("query", ""),
-                episode.get("response", ""),
-                episode.get("reward", 0.0),
-                0.0,
-                episode.get("weights", {}).get("cag", 0.0),
-                episode.get("weights", {}).get("graph", 0.0),
-                episode.get("fused_context", ""),
-                " | ".join(episode.get("proactive_suggestions", [])),
-            ))
-        else:
-            cursor = conn.execute("""
-                INSERT INTO episodes (query, response, reward, cag_weight, graph_weight, fused_context, proactive_suggestions)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                episode.get("query", ""),
-                episode.get("response", ""),
-                episode.get("reward", 0.0),
-                episode.get("weights", {}).get("cag", 0.0),
-                episode.get("weights", {}).get("graph", 0.0),
-                episode.get("fused_context", ""),
-                " | ".join(episode.get("proactive_suggestions", [])),
-            ))
+        def _maybe(name: str, value: Any) -> tuple[str, Any] | None:
+            if name in cols:
+                return name, value
+            return None
 
+        columns: list[str] = ["query", "response", "reward", "cag_weight", "graph_weight",
+                              "fused_context", "proactive_suggestions"]
+        values: list[Any] = [query_val, response_val, reward, cag_w, graph_w,
+                             fused_ctx, proactive]
+
+        for entry in (
+            _maybe("obs_features", _json.dumps(episode["obs_features"]) if episode.get("obs_features") is not None else None),
+            _maybe("from_cache", 1 if episode.get("from_cache") else 0),
+            _maybe("policy_weights", _json.dumps(episode["policy_weights"]) if episode.get("policy_weights") is not None else None),
+            _maybe("effective_weights", _json.dumps(episode["effective_weights"]) if episode.get("effective_weights") is not None else None),
+            _maybe("had_empty_path", 1 if episode.get("had_empty_path") else 0),
+            _maybe("policy_action", _json.dumps(episode["policy_action"]) if episode.get("policy_action") is not None else None),
+        ):
+            if entry is None:
+                continue
+            name, value = entry
+            columns.append(name)
+            values.append(value)
+
+        placeholders = ", ".join(["?"] * len(columns))
+        sql = f"INSERT INTO episodes ({', '.join(columns)}) VALUES ({placeholders})"
+        cursor = conn.execute(sql, values)
         episode_id = cursor.lastrowid
-        reward = episode.get("reward", 0.0)
 
-        # cache high-quality responses for instant future retrieval
-        if reward >= 0.70:
-            query_key = episode.get("query", "").strip()
-            response_val = episode.get("response", "")
+        reinsert_thresh = float(_cfg.get("cag", {}).get("reinsert_reward_threshold", 0.70))
+        cache_thresh = float(_cfg.get("cag", {}).get("cache_threshold", 0.85))
+        if reward >= reinsert_thresh and not episode.get("from_cache"):
+            query_key = query_val.strip()
             if query_key and response_val:
-                cache_score = max(0.90, reward)
+                cache_score = max(cache_thresh + 0.05, reward)
                 key_hash = hashlib.sha256(query_key.strip().lower().encode("utf-8")).hexdigest()
                 try:
                     conn.execute(
@@ -440,16 +449,21 @@ def log_episode_to_replay_buffer(episode: dict) -> bool:
                         (query_key, key_hash, response_val, cache_score),
                     )
                 except sqlite3.OperationalError:
-                    # fallback if key_hash column doesn't exist yet
                     conn.execute(
                         "INSERT OR REPLACE INTO cache (key, value, score) VALUES (?, ?, ?)",
                         (query_key, response_val, cache_score),
                     )
-                logger.info("High-quality episode cached in CAG (reward=%.2f, cached as %.2f)", reward, cache_score)
+                logger.info(
+                    "High-quality episode cached in CAG (reward=%.2f, cached as %.2f)",
+                    reward, cache_score,
+                )
 
         conn.commit()
         conn.close()
-        logger.info("Episode #%d logged | reward=%.2f | query='%s...'", episode_id, reward, episode.get('query', '')[:50])
+        logger.info(
+            "Episode #%d logged | reward=%.2f | from_cache=%s | query='%s...'",
+            episode_id, reward, bool(episode.get("from_cache")), query_val[:50],
+        )
         return True
 
     except Exception as e:
