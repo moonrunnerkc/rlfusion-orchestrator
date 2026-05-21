@@ -50,14 +50,14 @@ rag_index.faiss
 # === User data & training artifacts ===
 data/docs/*
 !data/docs/.gitkeep
-!data/docs/images/
 !data/docs/rlfusion/
+data/docs/images/
+data/images/
 data/synthetic_episodes/
-training/logs/
+training/
 d3rlpy_logs/
-tests/results/*
-!tests/results/.gitkeep
-!tests/results/master_report_all_suites_*.json
+tests/results/
+backend/tests/results/
 
 # === IDE / Editor junk ===
 .vscode/
@@ -97,6 +97,7 @@ test.md
 overhaul-plan.md
 .audit/
 
-# Claude Code: only ship the shared OCR command stubs, ignore per-user state
-.claude/*
-!.claude/commands/
+# AI / code-review tool state (local only — not shipped publicly)
+AGENTS.md
+.claude/
+.ocr/
